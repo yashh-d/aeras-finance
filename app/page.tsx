@@ -1193,27 +1193,6 @@ function Footer() {
               world&apos;s most popular assets.
             </p>
           </div>
-          <div className="foot-col">
-            <h4>Product</h4>
-            <a href="#">Earn</a>
-            <a href="#">Borrow</a>
-            <a href="#">Aeras Card</a>
-            <a href="#">Assets</a>
-          </div>
-          <div className="foot-col">
-            <h4>Build</h4>
-            <a href="#">Docs</a>
-            <a href="#">API</a>
-            <a href="#">Audits</a>
-            <a href="#">GitHub</a>
-          </div>
-          <div className="foot-col">
-            <h4>Company</h4>
-            <a href="#">About</a>
-            <a href="#">Blog</a>
-            <a href="#">Careers</a>
-            <a href="#">Contact</a>
-          </div>
         </div>
         <div className="foot-bot">
           <span>© 2026 Aeras Finance</span>
