@@ -1163,24 +1163,6 @@
   flex-wrap: wrap;
   gap: 40px;
 }
-.aeras-landing .foot-col h4 {
-  font-size: 13px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--aeras-300);
-  margin-bottom: 16px;
-}
-.aeras-landing .foot-col a {
-  display: block;
-  font-size: 14.5px;
-  color: var(--aeras-500);
-  margin-bottom: 10px;
-  transition: color 0.2s;
-}
-.aeras-landing .foot-col a:hover {
-  color: var(--aeras-900);
-}
 .aeras-landing .foot-bot {
   display: flex;
   justify-content: space-between;
