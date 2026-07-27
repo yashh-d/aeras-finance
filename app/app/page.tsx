@@ -3,13 +3,16 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePrivy, type WalletWithMetadata } from "@privy-io/react-auth";
+import { ChevronDown } from "lucide-react";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AssetGrid } from "@/components/AssetGrid";
 import { BorrowPanel } from "@/components/BorrowPanel";
 import { EarnPanel } from "@/components/EarnPanel";
+import { OpenLimitOrders } from "@/components/OpenLimitOrders";
 import { PositionsPanel } from "@/components/PositionsPanel";
 import { PriceChart } from "@/components/PriceChart";
 import { SwapForm } from "@/components/SwapForm";
+import { TriggerForm } from "@/components/TriggerForm";
 import { WalletPanel } from "@/components/WalletPanel";
 import { WaitlistPending, type UserView } from "@/components/WaitlistPending";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
@@ -27,6 +30,7 @@ import {
 import { fetchSparklines, type SparklinesResponse } from "@/lib/jupiter/charts";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useJupiterPrices } from "@/lib/jupiter/use-prices";
+import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
 import { XSTOCKS, type XStock } from "@/lib/jupiter/xstocks";
 import {
   totalAccountUsd,
@@ -109,8 +113,8 @@ export default function AppPage() {
   if (!ready || !authenticated || gate.state === "checking") {
     return (
       <div className="flex flex-1 items-center justify-center bg-aeras-canvas px-6 py-12">
-        <main className="w-full max-w-md rounded-2xl border border-aeras-border bg-white p-8">
-          <p className="text-sm text-aeras-300">Loading...</p>
+        <main className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8">
+          <p className="text-sm text-white/50">Loading...</p>
         </main>
       </div>
     );
@@ -119,15 +123,15 @@ export default function AppPage() {
   if (gate.state === "error") {
     return (
       <div className="flex min-h-screen items-center justify-center bg-aeras-canvas px-6 py-12">
-        <main className="w-full max-w-md rounded-2xl border border-aeras-border bg-white p-8">
-          <h1 className="font-light text-xl tracking-tight text-aeras-900">
+        <main className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8">
+          <h1 className="font-light text-xl tracking-tight text-white">
             Something went wrong
           </h1>
-          <p className="mt-2 text-sm text-aeras-300">{gate.message}</p>
+          <p className="mt-2 text-sm text-white/50">{gate.message}</p>
           <button
             type="button"
             onClick={logout}
-            className="mt-6 text-xs text-aeras-300 underline-offset-2 hover:text-aeras-900 hover:underline"
+            className="mt-6 text-xs text-white/50 underline-offset-2 hover:text-white hover:underline"
           >
             Sign out
           </button>
@@ -170,7 +174,7 @@ function CopyAddressButton({
 
   const cls = dark
     ? "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white/50 underline-offset-2 hover:bg-white/10 hover:text-white"
-    : "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-aeras-300 underline-offset-2 hover:bg-aeras-surface hover:text-aeras-900";
+    : "rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white/50 underline-offset-2 hover:bg-white/5 hover:text-white";
 
   return (
     <button type="button" onClick={handleCopy} className={cls}>
@@ -197,6 +201,7 @@ function SignedIn({
     error: balancesError,
     refreshing: balancesRefreshing,
     refresh: refreshBalances,
+    refreshSettled: settleBalances,
   } = useBalances(walletAddress);
 
   const tickerPrice = prices?.[ticker.mint]?.usdPrice;
@@ -242,7 +247,7 @@ function SignedIn({
 
         <nav className="hidden lg:mt-10 lg:flex lg:flex-col lg:gap-0.5">
           <SidebarNavItem
-            label="Portfolio"
+            label="Home"
             active={activeSection === "portfolio"}
             onClick={() => setActiveSection("portfolio")}
           />
@@ -268,7 +273,7 @@ function SignedIn({
             onClick={() => setActiveSection("withdraw")}
           />
           <SidebarNavItem
-            label="Positions"
+            label="Portfolio"
             active={activeSection === "positions"}
             onClick={() => setActiveSection("positions")}
           />
@@ -316,7 +321,7 @@ function SignedIn({
                 prices={prices}
               />
             ) : (
-              <p className="text-sm text-aeras-300">
+              <p className="text-sm text-white/50">
                 Waiting for embedded Solana wallet to provision...
               </p>
             )
@@ -326,10 +331,10 @@ function SignedIn({
                 walletAddress={walletAddress}
                 balances={balances}
                 prices={prices}
-                onRefresh={refreshBalances}
+                onRefresh={settleBalances}
               />
             ) : (
-              <p className="text-sm text-aeras-300">
+              <p className="text-sm text-white/50">
                 Waiting for embedded Solana wallet to provision...
               </p>
             )
@@ -339,10 +344,10 @@ function SignedIn({
                 walletAddress={walletAddress}
                 balances={balances}
                 prices={prices}
-                onRefresh={refreshBalances}
+                onRefresh={settleBalances}
               />
             ) : (
-              <p className="text-sm text-aeras-300">
+              <p className="text-sm text-white/50">
                 Waiting for embedded Solana wallet to provision...
               </p>
             )
@@ -351,19 +356,31 @@ function SignedIn({
               prices={prices}
               pricesError={pricesError}
               balances={balances}
-              selectedMint={ticker.mint}
-              onSelect={handleAssetSelect}
+              walletAddress={walletAddress ?? null}
+              onRefresh={settleBalances}
             />
           ) : activeSection === "activity" ? (
             walletAddress ? (
               <ActivityPanel walletAddress={walletAddress} />
             ) : (
-              <p className="text-sm text-aeras-300">
+              <p className="text-sm text-white/50">
                 Waiting for embedded Solana wallet to provision...
               </p>
             )
           ) : walletAddress ? (
             <>
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+                  Home
+                </div>
+                <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+                  Your account
+                </h2>
+                <p className="text-sm text-aeras-300">
+                  Fund your wallet, buy tokenized stocks, and track your balance.
+                </p>
+              </div>
+
               {/* Top row on desktop: Wallet | Assets (3/4 cols) */}
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
                 <Card className="lg:col-span-1">
@@ -373,7 +390,7 @@ function SignedIn({
                     balancesError={balancesError}
                     balancesRefreshing={balancesRefreshing}
                     prices={prices}
-                    onSent={refreshBalances}
+                    onSent={settleBalances}
                     onRefresh={refreshBalances}
                   />
                 </Card>
@@ -399,14 +416,14 @@ function SignedIn({
                     walletAddress={walletAddress}
                     balances={balances}
                     prices={prices}
-                    onRefresh={refreshBalances}
+                    onRefresh={settleBalances}
                   />
                 </Card>
               </div>
 
             </>
           ) : (
-            <p className="text-sm text-aeras-300">
+            <p className="text-sm text-white/50">
               Waiting for embedded Solana wallet to provision...
             </p>
           )}
@@ -415,17 +432,20 @@ function SignedIn({
 
       {walletAddress && (
         <Sheet open={tradeOpen} onOpenChange={setTradeOpen}>
-          <SheetContent side="right" className="w-full sm:max-w-md">
-            <SheetHeader className="border-b border-aeras-border">
-              <SheetTitle>
+          <SheetContent
+            side="right"
+            className="w-full border-l border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to text-white sm:max-w-md"
+          >
+            <SheetHeader className="border-b border-white/10">
+              <SheetTitle className="text-white">
                 Trade {ticker.symbol}{" "}
-                <span className="font-normal text-aeras-300">
+                <span className="font-normal text-white/50">
                   · {ticker.name}
                 </span>
               </SheetTitle>
               <SheetDescription className="font-mono text-xs">
                 {tickerPrice != null
-                  ? `$${tickerPrice.toFixed(2)} · Jupiter Ultra route`
+                  ? `$${tickerPrice.toFixed(2)}`
                   : "Loading price..."}
               </SheetDescription>
             </SheetHeader>
@@ -436,7 +456,7 @@ function SignedIn({
                   walletAddress={walletAddress}
                   prices={prices}
                   balances={balances}
-                  onBalanceChange={refreshBalances}
+                  onBalanceChange={settleBalances}
                 />
               )}
             </div>
@@ -456,7 +476,7 @@ function Card({
 }) {
   return (
     <div
-      className={`rounded-2xl border border-aeras-border bg-white p-5 lg:p-6 ${className ?? ""}`}
+      className={`rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6 ${className ?? ""}`}
     >
       {children}
     </div>
@@ -467,16 +487,20 @@ function MarketsSection({
   prices,
   pricesError,
   balances,
-  selectedMint,
-  onSelect,
+  walletAddress,
+  onRefresh,
 }: {
   prices: JupiterPriceMap | null;
   pricesError: string | null;
   balances: AccountBalances | null;
-  selectedMint: string;
-  onSelect: (xstock: XStock) => void;
+  walletAddress: string | null;
+  onRefresh: () => void;
 }) {
   const [sparks, setSparks] = useState<SparklinesResponse | null>(null);
+  const [expandedMint, setExpandedMint] = useState<string | null>(null);
+  // One shared in-memory Trigger JWT for the whole table, so placing an order and
+  // viewing it in the same expanded row don't each prompt a wallet signature.
+  const auth = useTriggerAuth(walletAddress);
 
   useEffect(() => {
     let cancelled = false;
@@ -506,19 +530,18 @@ function MarketsSection({
           Tokenized stocks
         </h2>
         <p className="text-sm text-aeras-300">
-          Buy and sell xStocks issued by Backed Finance. Orders route through
-          Jupiter Ultra for best execution. xStocks are tokenized
-          representations; holders do not have direct shareholder rights.
+          Buy and sell tokenized stocks. They are tokenized representations of
+          equities; holders do not have direct shareholder rights.
         </p>
       </div>
 
-      <div className="rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+      <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
         <div className="flex items-baseline justify-between">
           <div>
-            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
               Catalog
             </div>
-            <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+            <div className="mt-1 text-sm font-medium tracking-tight text-white">
               {XSTOCKS.length} assets
             </div>
           </div>
@@ -528,15 +551,15 @@ function MarketsSection({
               Price feed offline
             </span>
           ) : (
-            <span className="inline-flex items-center gap-1 text-xs text-aeras-300">
+            <span className="inline-flex items-center gap-1 text-xs text-white/50">
               <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
               Live · 10s
             </span>
           )}
         </div>
 
-        <div className="mt-5 divide-y divide-aeras-border">
-          <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="mt-5 divide-y divide-white/10">
+          <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             <div className="col-span-4">Asset</div>
             <div className="col-span-2 text-right">Price</div>
             <div className="col-span-1 text-right">24h</div>
@@ -544,25 +567,39 @@ function MarketsSection({
             <div className="col-span-2 text-right">Holdings</div>
             <div className="col-span-1 text-right" />
           </div>
-          {XSTOCKS.map((x) => (
-            <MarketsRow
-              key={x.mint}
-              xstock={x}
-              entry={prices?.[x.mint]}
-              sparkline={sparks?.[x.mint]}
-              held={balances?.xstocks[x.mint] ?? 0}
-              selected={selectedMint === x.mint}
-              borrowable={vaultByCollateralMint(x.mint) != null}
-              onSelect={() => onSelect(x)}
-            />
-          ))}
+          {XSTOCKS.map((x) => {
+            const expanded = expandedMint === x.mint;
+            return (
+              <div key={x.mint}>
+                <MarketsRow
+                  xstock={x}
+                  entry={prices?.[x.mint]}
+                  sparkline={sparks?.[x.mint]}
+                  held={balances?.xstocks[x.mint] ?? 0}
+                  expanded={expanded}
+                  borrowable={vaultByCollateralMint(x.mint) != null}
+                  onToggle={() => setExpandedMint(expanded ? null : x.mint)}
+                />
+                {expanded && (
+                  <MarketsRowExpanded
+                    xstock={x}
+                    prices={prices}
+                    balances={balances}
+                    walletAddress={walletAddress}
+                    auth={auth}
+                    onRefresh={onRefresh}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <p className="text-[11px] text-aeras-300">
-        xStocks are subject to KYC and geographic restrictions at the issuer
-        level. {XSTOCK_BORROW_VAULTS.length} of {XSTOCKS.length} are borrowable
-        on Jupiter Lend today; the rest can be held and sold but not used as
+      <p className="text-[11px] text-white/50">
+        Tokenized stocks are subject to KYC and geographic restrictions at the
+        issuer level. {XSTOCK_BORROW_VAULTS.length} of {XSTOCKS.length} are
+        borrowable today; the rest can be held and sold but not used as
         collateral yet.
       </p>
     </div>
@@ -574,24 +611,24 @@ function MarketsRow({
   entry,
   sparkline,
   held,
-  selected,
+  expanded,
   borrowable,
-  onSelect,
+  onToggle,
 }: {
   xstock: XStock;
   entry: JupiterPriceMap[string] | undefined;
   sparkline: number[] | undefined;
   held: number;
-  selected: boolean;
+  expanded: boolean;
   borrowable: boolean;
-  onSelect: () => void;
+  onToggle: () => void;
 }) {
   const price = entry?.usdPrice;
   const change = entry?.priceChange24h;
   const positive = change == null ? null : change >= 0;
   const changeColor =
     positive == null
-      ? "text-aeras-300"
+      ? "text-white/50"
       : positive
         ? "text-aeras-positive"
         : "text-aeras-negative";
@@ -604,24 +641,24 @@ function MarketsRow({
   const heldUsd = price != null ? held * price : null;
   return (
     <div
-      className={`grid grid-cols-12 items-center gap-2 py-3 text-sm ${
-        selected ? "bg-aeras-blue-wash/40" : ""
+      className={`grid w-full grid-cols-12 items-center gap-2 py-3 text-left text-sm transition-colors ${
+        expanded ? "bg-aeras-blue/15/40" : ""
       }`}
     >
       <div className="col-span-4">
         <div className="flex items-center gap-2">
-          <span className="font-medium tracking-tight text-aeras-900">
+          <span className="font-medium tracking-tight text-white">
             {xstock.symbol}
           </span>
           {borrowable && (
-            <span className="rounded-md bg-aeras-blue-wash px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-blue">
+            <span className="rounded-md bg-aeras-blue/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-blue">
               Collateral
             </span>
           )}
         </div>
-        <div className="truncate text-[11px] text-aeras-300">{xstock.name}</div>
+        <div className="truncate text-[11px] text-white/50">{xstock.name}</div>
       </div>
-      <div className="col-span-2 text-right font-mono tabular-nums text-aeras-900">
+      <div className="col-span-2 text-right font-mono tabular-nums text-white">
         {price == null ? "—" : `$${formatPrice(price)}`}
       </div>
       <div
@@ -637,27 +674,117 @@ function MarketsRow({
       <div className="col-span-2 text-right">
         {held > 0 ? (
           <>
-            <div className="font-mono tabular-nums text-aeras-900">
+            <div className="font-mono tabular-nums text-white">
               {held.toFixed(4)}
             </div>
             {heldUsd != null && (
-              <div className="font-mono text-[11px] text-aeras-300">
+              <div className="font-mono text-[11px] text-white/50">
                 ${heldUsd.toFixed(2)}
               </div>
             )}
           </>
         ) : (
-          <span className="font-mono text-[11px] text-aeras-300">—</span>
+          <span className="font-mono text-[11px] text-white/50">—</span>
         )}
       </div>
-      <div className="col-span-1 text-right">
+      <div className="col-span-1 flex justify-end">
         <button
           type="button"
-          onClick={onSelect}
-          className="rounded-lg bg-aeras-blue px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-aeras-blue-medium"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-white/10 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:border-white/25 hover:bg-white/5"
         >
           Trade
+          <ChevronDown
+            className={`size-3.5 text-white/50 transition-transform ${
+              expanded ? "rotate-180" : ""
+            }`}
+          />
         </button>
+      </div>
+    </div>
+  );
+}
+
+function MarketsRowExpanded({
+  xstock,
+  prices,
+  balances,
+  walletAddress,
+  auth,
+  onRefresh,
+}: {
+  xstock: XStock;
+  prices: JupiterPriceMap | null;
+  balances: AccountBalances | null;
+  walletAddress: string | null;
+  auth: ReturnType<typeof useTriggerAuth>;
+  onRefresh: () => void;
+}) {
+  const [tab, setTab] = useState<"market" | "limit">("market");
+  // Bumped after a limit order is placed so the open-orders list refetches.
+  const [ordersRefresh, setOrdersRefresh] = useState(0);
+
+  return (
+    <div className="border-t border-white/10 px-1 py-5">
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
+          <PriceChart ticker={xstock} />
+        </div>
+
+        <div className="space-y-4">
+          {walletAddress ? (
+            <>
+              <div className="inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
+                {(["market", "limit"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setTab(t)}
+                    className={`rounded-md px-3 py-1 font-medium capitalize transition-colors ${
+                      tab === t
+                        ? "bg-aeras-blue text-white"
+                        : "text-white/60 hover:text-white"
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+
+              {tab === "market" ? (
+                <SwapForm
+                  ticker={xstock}
+                  walletAddress={walletAddress}
+                  prices={prices}
+                  balances={balances}
+                  onBalanceChange={onRefresh}
+                />
+              ) : (
+                <TriggerForm
+                  ticker={xstock}
+                  walletAddress={walletAddress}
+                  prices={prices}
+                  balances={balances}
+                  auth={auth}
+                  onBalanceChange={onRefresh}
+                  onOrderPlaced={() => setOrdersRefresh((n) => n + 1)}
+                />
+              )}
+
+              <OpenLimitOrders
+                ticker={xstock}
+                auth={auth}
+                refreshKey={ordersRefresh}
+                onChanged={onRefresh}
+              />
+            </>
+          ) : (
+            <p className="text-sm text-white/50">
+              Waiting for embedded Solana wallet to provision...
+            </p>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -729,24 +856,22 @@ function BorrowSection({
           Borrow
         </div>
         <h2 className="font-light text-2xl tracking-tight text-aeras-900">
-          Borrow USDC against your xStocks
+          Borrow USDC against your tokenized stocks
         </h2>
         <p className="text-sm text-aeras-300">
           Pledge tokenized stocks as collateral, draw USDC at a variable rate,
-          repay any time. Positions route to Jupiter Lend on Solana.
+          repay any time. Positions settle on Solana.
         </p>
       </div>
 
       <VaultCatalog balances={balances} prices={prices} />
 
-      <div className="rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
-        <BorrowPanel
-          walletAddress={walletAddress}
-          balances={balances}
-          prices={prices}
-          onRefresh={onRefresh}
-        />
-      </div>
+      <BorrowPanel
+        walletAddress={walletAddress}
+        balances={balances}
+        prices={prices}
+        onRefresh={onRefresh}
+      />
     </div>
   );
 }
@@ -759,23 +884,20 @@ function VaultCatalog({
   prices: JupiterPriceMap | null;
 }) {
   return (
-    <div className="rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             Markets
           </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+          <div className="mt-1 text-sm font-medium tracking-tight text-white">
             Available vaults
           </div>
         </div>
-        <span className="text-xs text-aeras-300">
-          via <span className="text-aeras-blue">Jupiter Lend</span>
-        </span>
       </div>
 
-      <div className="mt-5 divide-y divide-aeras-border">
-        <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+      <div className="mt-5 divide-y divide-white/10">
+        <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           <div className="col-span-4">Collateral → Borrow</div>
           <div className="col-span-2 text-right">CF</div>
           <div className="col-span-2 text-right">LT</div>
@@ -792,33 +914,33 @@ function VaultCatalog({
               className="grid grid-cols-12 items-center gap-2 py-2.5 text-sm"
             >
               <div className="col-span-4">
-                <div className="font-medium tracking-tight text-aeras-900">
+                <div className="font-medium tracking-tight text-white">
                   {v.collateralSymbol} → {v.borrowSymbol}
                 </div>
-                <div className="font-mono text-[11px] text-aeras-300">
+                <div className="font-mono text-[11px] text-white/50">
                   #{v.vaultId}
                 </div>
               </div>
-              <div className="col-span-2 text-right font-mono tabular-nums text-xs text-aeras-500">
+              <div className="col-span-2 text-right font-mono tabular-nums text-xs text-white/60">
                 {(v.collateralFactor / 10).toFixed(0)}%
               </div>
-              <div className="col-span-2 text-right font-mono tabular-nums text-xs text-aeras-500">
+              <div className="col-span-2 text-right font-mono tabular-nums text-xs text-white/60">
                 {(v.liquidationThreshold / 10).toFixed(0)}%
               </div>
               <div className="col-span-4 text-right">
                 {eligible ? (
                   <>
-                    <div className="font-mono tabular-nums text-sm text-aeras-900">
+                    <div className="font-mono tabular-nums text-sm text-white">
                       {held.toFixed(4)} {v.collateralSymbol}
                     </div>
                     {usd != null && (
-                      <div className="font-mono text-[11px] text-aeras-300">
+                      <div className="font-mono text-[11px] text-white/50">
                         ${usd.toFixed(2)}
                       </div>
                     )}
                   </>
                 ) : (
-                  <span className="rounded-md bg-aeras-blue-wash px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-blue">
+                  <span className="rounded-md bg-aeras-blue/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-blue">
                     Buy {v.collateralSymbol} to use
                   </span>
                 )}

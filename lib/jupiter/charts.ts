@@ -92,40 +92,48 @@ export async function fetchChart(
   const cached = chartCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  const res = await cgFetch(`/coins/${xstock.coingeckoId}/market_chart`, {
-    vs_currency: "usd",
-    days: String(rangeToDays(range)),
-  });
-  if (res.status === 429) {
-    throw new Error(
-      "Coingecko rate limit hit. Set COINGECKO_API_KEY in .env.local or wait ~1 minute.",
-    );
-  }
-  if (!res.ok) {
-    throw new Error(
-      `Coingecko /market_chart ${xstock.coingeckoId} ${range}: ${res.status}`,
-    );
-  }
-  const json = (await res.json()) as CGMarketChart;
-  const prices = json.prices ?? [];
-  if (prices.length === 0) {
-    throw new Error(`Coingecko returned no prices for ${xstock.coingeckoId} ${range}`);
-  }
+  try {
+    const res = await cgFetch(`/coins/${xstock.coingeckoId}/market_chart`, {
+      vs_currency: "usd",
+      days: String(rangeToDays(range)),
+    });
+    if (res.status === 429) {
+      throw new Error(
+        "Coingecko rate limit hit. Set COINGECKO_API_KEY in .env.local or wait ~1 minute.",
+      );
+    }
+    if (!res.ok) {
+      throw new Error(
+        `Coingecko /market_chart ${xstock.coingeckoId} ${range}: ${res.status}`,
+      );
+    }
+    const json = (await res.json()) as CGMarketChart;
+    const prices = json.prices ?? [];
+    if (prices.length === 0) {
+      throw new Error(`Coingecko returned no prices for ${xstock.coingeckoId} ${range}`);
+    }
 
-  const candles: OhlcCandle[] = prices.map(([ms, price]) => ({
-    t: Math.floor(ms / 1000),
-    o: price,
-    h: price,
-    l: price,
-    c: price,
-    v: 0,
-  }));
+    const candles: OhlcCandle[] = prices.map(([ms, price]) => ({
+      t: Math.floor(ms / 1000),
+      o: price,
+      h: price,
+      l: price,
+      c: price,
+      v: 0,
+    }));
 
-  chartCache.set(cacheKey, {
-    data: candles,
-    expiresAt: Date.now() + CHART_TTL_MS,
-  });
-  return candles;
+    chartCache.set(cacheKey, {
+      data: candles,
+      expiresAt: Date.now() + CHART_TTL_MS,
+    });
+    return candles;
+  } catch (err) {
+    // Upstream blip (429, 5xx, network). Serve the last good candles if we ever
+    // fetched them so a transient Coingecko failure doesn't blank a chart that
+    // loaded fine moments ago. Freshness resumes on the next successful call.
+    if (cached) return cached.data;
+    throw err;
+  }
 }
 
 // One round trip pulls 24h sparklines for every curated xStock. Coingecko's
@@ -133,46 +141,56 @@ export async function fetchChart(
 // We trim each coin's sparkline to the last 24 hours of points for compactness.
 export async function fetchAllSparklines(): Promise<Record<string, number[]>> {
   if (Date.now() < sparklineCache.expiresAt) return sparklineCache.data;
+  // True only after at least one successful fetch — distinguishes "stale" from
+  // "never loaded" so we don't serve the empty backfill as if it were real data.
+  const hasPriorData = sparklineCache.expiresAt > 0;
 
-  const ids = XSTOCKS.map((x) => x.coingeckoId).join(",");
-  const res = await cgFetch("/coins/markets", {
-    vs_currency: "usd",
-    ids,
-    sparkline: "true",
-    price_change_percentage: "24h",
-  });
-  if (res.status === 429) {
-    throw new Error(
-      "Coingecko rate limit hit. Set COINGECKO_API_KEY in .env.local or wait ~1 minute.",
-    );
-  }
-  if (!res.ok) {
-    throw new Error(`Coingecko /coins/markets: ${res.status}`);
-  }
-  const json = (await res.json()) as Array<{
-    id: string;
-    sparkline_in_7d?: { price?: number[] };
-  }>;
+  try {
+    const ids = XSTOCKS.map((x) => x.coingeckoId).join(",");
+    const res = await cgFetch("/coins/markets", {
+      vs_currency: "usd",
+      ids,
+      sparkline: "true",
+      price_change_percentage: "24h",
+    });
+    if (res.status === 429) {
+      throw new Error(
+        "Coingecko rate limit hit. Set COINGECKO_API_KEY in .env.local or wait ~1 minute.",
+      );
+    }
+    if (!res.ok) {
+      throw new Error(`Coingecko /coins/markets: ${res.status}`);
+    }
+    const json = (await res.json()) as Array<{
+      id: string;
+      sparkline_in_7d?: { price?: number[] };
+    }>;
 
-  const idToMint = new Map(XSTOCKS.map((x) => [x.coingeckoId, x.mint]));
-  const map: Record<string, number[]> = {};
-  for (const coin of json) {
-    const mint = idToMint.get(coin.id);
-    if (!mint) continue;
-    const points = coin.sparkline_in_7d?.price ?? [];
-    // Coingecko's 7d sparkline is hourly (~168 points). Keep the last 24 for a
-    // 24h sparkline.
-    map[mint] = points.slice(-24);
-  }
-  // Backfill empties for any xStock Coingecko didn't return so the client UI
-  // sees a stable shape.
-  for (const x of XSTOCKS) {
-    if (!(x.mint in map)) map[x.mint] = [];
-  }
+    const idToMint = new Map(XSTOCKS.map((x) => [x.coingeckoId, x.mint]));
+    const map: Record<string, number[]> = {};
+    for (const coin of json) {
+      const mint = idToMint.get(coin.id);
+      if (!mint) continue;
+      const points = coin.sparkline_in_7d?.price ?? [];
+      // Coingecko's 7d sparkline is hourly (~168 points). Keep the last 24 for a
+      // 24h sparkline.
+      map[mint] = points.slice(-24);
+    }
+    // Backfill empties for any xStock Coingecko didn't return so the client UI
+    // sees a stable shape.
+    for (const x of XSTOCKS) {
+      if (!(x.mint in map)) map[x.mint] = [];
+    }
 
-  sparklineCache.data = map;
-  sparklineCache.expiresAt = Date.now() + SPARKLINE_TTL_MS;
-  return map;
+    sparklineCache.data = map;
+    sparklineCache.expiresAt = Date.now() + SPARKLINE_TTL_MS;
+    return map;
+  } catch (err) {
+    // Serve the last good sparklines on a transient upstream failure rather than
+    // wiping every asset-grid chart to empty.
+    if (hasPriorData) return sparklineCache.data;
+    throw err;
+  }
 }
 
 // Client-side helpers --------------------------------------------------------
@@ -188,11 +206,26 @@ export async function fetchSparklines(): Promise<SparklinesResponse> {
 export async function fetchChartViaProxy(
   mint: string,
   range: ChartRange,
+  opts?: { retries?: number },
 ): Promise<OhlcCandle[]> {
-  const res = await fetch(
-    `/api/jupiter/chart?mint=${mint}&range=${range}`,
-    { cache: "no-store" },
-  );
-  if (!res.ok) throw new Error(`Chart fetch failed: ${res.status}`);
-  return (await res.json()) as OhlcCandle[];
+  // Retry transient failures (502 from an upstream 429, network blips) with
+  // backoff so a single hiccup doesn't leave the chart stuck on an error.
+  const retries = opts?.retries ?? 2;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(
+        `/api/jupiter/chart?mint=${mint}&range=${range}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`Chart fetch failed: ${res.status}`);
+      return (await res.json()) as OhlcCandle[];
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        await new Promise((r) => setTimeout(r, 500 * 2 ** attempt));
+      }
+    }
+  }
+  throw lastErr;
 }

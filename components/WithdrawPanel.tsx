@@ -65,13 +65,13 @@ export function WithdrawPanel({
 function PageHeader() {
   return (
     <div className="space-y-1.5">
-      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300 dark:text-white/50">
         Withdraw
       </div>
-      <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+      <h2 className="font-light text-2xl tracking-tight text-aeras-900 dark:text-white">
         Off-ramp USDC to your bank
       </h2>
-      <p className="text-sm text-aeras-300">
+      <p className="text-sm text-aeras-300 dark:text-white/50">
         Send USDC from this wallet to a centralized exchange deposit address,
         then withdraw to your bank in that exchange. Aeras does not touch fiat
         in v1.
@@ -160,16 +160,16 @@ function WithdrawCard({
 
   if (status.kind === "done") {
     return (
-      <div className="space-y-4 rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+      <div className="space-y-4 rounded-2xl border border-aeras-border dark:border-white/10 bg-white dark:bg-gradient-to-br dark:from-aeras-hero-from dark:to-aeras-hero-to p-5 lg:p-6">
         <div className="space-y-1">
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300 dark:text-white/50">
             Sent
           </div>
-          <div className="text-sm font-medium tracking-tight text-aeras-900">
+          <div className="text-sm font-medium tracking-tight text-aeras-900 dark:text-white">
             USDC transfer broadcast to Solana
           </div>
         </div>
-        <p className="text-xs text-aeras-300">
+        <p className="text-xs text-aeras-300 dark:text-white/50">
           Funds typically land in {exchangeMeta.label} within 1-2 minutes.
           {" "}Once {exchangeMeta.label} credits your balance, complete the bank
           withdrawal from inside their app.
@@ -178,7 +178,7 @@ function WithdrawCard({
           href={`${SOLSCAN_TX_BASE}${status.signature}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="block break-all rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 font-mono text-xs text-aeras-positive underline decoration-aeras-border"
+          className="block break-all rounded-lg border border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 px-3 py-2 font-mono text-xs text-aeras-positive underline decoration-aeras-border dark:decoration-white/10"
         >
           {status.signature}
         </a>
@@ -190,7 +190,7 @@ function WithdrawCard({
             setRecipient("");
             setConfirmedNetwork(false);
           }}
-          className="w-full rounded-xl border border-aeras-border bg-white px-4 py-2.5 text-sm font-medium text-aeras-900 transition-colors hover:bg-aeras-surface"
+          className="w-full rounded-xl border border-aeras-border dark:border-white/15 bg-white dark:bg-white/10 px-4 py-2.5 text-sm font-medium text-aeras-900 dark:text-white transition-colors hover:bg-aeras-surface dark:hover:bg-white/15"
         >
           Send another withdrawal
         </button>
@@ -199,21 +199,21 @@ function WithdrawCard({
   }
 
   return (
-    <div className="space-y-5 rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+    <div className="space-y-5 rounded-2xl border border-aeras-border dark:border-white/10 bg-white dark:bg-gradient-to-br dark:from-aeras-hero-from dark:to-aeras-hero-to p-5 lg:p-6">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300 dark:text-white/50">
             Send USDC
           </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900 dark:text-white">
             To a centralized exchange
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wider text-aeras-300">
+          <div className="text-[10px] uppercase tracking-wider text-aeras-300 dark:text-white/50">
             Available
           </div>
-          <div className="font-mono text-sm tabular-nums text-aeras-900">
+          <div className="font-mono text-sm tabular-nums text-aeras-900 dark:text-white">
             {usdcBalance.toLocaleString(undefined, {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
@@ -224,7 +224,7 @@ function WithdrawCard({
       </div>
 
       <div>
-        <label className="text-xs font-medium uppercase tracking-wide text-aeras-300">
+        <label className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50">
           Destination exchange
         </label>
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -238,8 +238,8 @@ function WithdrawCard({
                 onClick={() => setExchange(key)}
                 className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
                   active
-                    ? "border-aeras-blue bg-aeras-blue-wash text-aeras-blue"
-                    : "border-aeras-border bg-white text-aeras-500 hover:border-aeras-border-strong hover:bg-aeras-surface"
+                    ? "border-aeras-blue bg-aeras-blue-wash dark:bg-aeras-blue/15 text-aeras-blue"
+                    : "border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 text-aeras-500 dark:text-white/60 hover:border-aeras-border-strong dark:hover:border-white/25 hover:bg-aeras-surface dark:hover:bg-white/5"
                 }`}
               >
                 {meta.label}
@@ -253,11 +253,11 @@ function WithdrawCard({
         <div className="mb-1 flex items-baseline justify-between">
           <label
             htmlFor="withdraw-recipient"
-            className="text-xs font-medium uppercase tracking-wide text-aeras-300"
+            className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50"
           >
             {exchangeMeta.label} USDC deposit address
           </label>
-          <span className="text-[10px] uppercase tracking-wider text-aeras-300">
+          <span className="text-[10px] uppercase tracking-wider text-aeras-300 dark:text-white/50">
             Solana network
           </span>
         </div>
@@ -267,7 +267,7 @@ function WithdrawCard({
           placeholder="Paste Solana address from your exchange"
           value={recipient}
           onChange={(e) => setRecipient(e.target.value.trim())}
-          className="block w-full rounded-lg border border-aeras-border bg-white px-3 py-2 font-mono text-xs text-aeras-900 focus:border-aeras-blue focus:outline-none"
+          className="block w-full rounded-lg border border-aeras-border dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 font-mono text-xs text-aeras-900 dark:text-white placeholder:text-aeras-300 dark:placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
         />
         {recipient && !recipientPubkey && (
           <p className="mt-1 text-xs text-aeras-negative">
@@ -287,14 +287,14 @@ function WithdrawCard({
         <div className="mb-1 flex items-baseline justify-between">
           <label
             htmlFor="withdraw-amount"
-            className="text-xs font-medium uppercase tracking-wide text-aeras-300"
+            className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50"
           >
             Amount (USDC)
           </label>
           <button
             type="button"
             onClick={() => setAmountInput(usdcBalance.toFixed(USDC_DECIMALS))}
-            className="text-xs text-aeras-500 underline-offset-2 hover:underline"
+            className="text-xs text-aeras-500 dark:text-white/60 underline-offset-2 hover:underline"
           >
             Max
           </button>
@@ -307,9 +307,9 @@ function WithdrawCard({
             step="any"
             value={amountInput}
             onChange={(e) => setAmountInput(e.target.value)}
-            className="block w-full rounded-lg border border-aeras-border bg-white px-3 py-2 pr-16 text-sm text-aeras-900 focus:border-aeras-blue focus:outline-none"
+            className="block w-full rounded-lg border border-aeras-border dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 pr-16 text-sm text-aeras-900 dark:text-white placeholder:text-aeras-300 dark:placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
           />
-          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-aeras-300">
+          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-aeras-300 dark:text-white/50">
             USDC
           </span>
         </div>
@@ -326,7 +326,7 @@ function WithdrawCard({
         )}
       </div>
 
-      <label className="flex items-start gap-2 rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2.5 text-xs text-aeras-500">
+      <label className="flex items-start gap-2 rounded-lg border border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 px-3 py-2.5 text-xs text-aeras-500 dark:text-white/60">
         <input
           type="checkbox"
           checked={confirmedNetwork}
@@ -343,7 +343,7 @@ function WithdrawCard({
       <GasEstimate balanceSol={solBalance} solPrice={solPrice} />
 
       {status.kind === "error" && (
-        <p className="rounded-lg bg-aeras-surface px-3 py-2 text-sm text-aeras-negative">
+        <p className="rounded-lg bg-aeras-surface dark:bg-white/5 px-3 py-2 text-sm text-aeras-negative">
           {status.message}
         </p>
       )}
@@ -373,13 +373,13 @@ function GasEstimate({
   const gasUsd = solPrice ? gasSol * solPrice : null;
   const noSol = balanceSol < 0.001;
   return (
-    <div className="rounded-lg bg-aeras-surface px-3 py-2 text-xs">
+    <div className="rounded-lg bg-aeras-surface dark:bg-white/5 px-3 py-2 text-xs">
       <div className="flex justify-between">
-        <span className="text-aeras-300">Network fee (paid in SOL)</span>
-        <span className="tabular-nums text-aeras-500">
+        <span className="text-aeras-300 dark:text-white/50">Network fee (paid in SOL)</span>
+        <span className="tabular-nums text-aeras-500 dark:text-white/60">
           ~{gasSol.toFixed(6)} SOL
           {gasUsd != null && (
-            <span className="text-aeras-300"> · ${gasUsd.toFixed(4)}</span>
+            <span className="text-aeras-300 dark:text-white/50"> · ${gasUsd.toFixed(4)}</span>
           )}
         </span>
       </div>
@@ -397,16 +397,16 @@ function GasEstimate({
 
 function InstructionsCard() {
   return (
-    <div className="space-y-4 rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+    <div className="space-y-4 rounded-2xl border border-aeras-border dark:border-white/10 bg-white dark:bg-gradient-to-br dark:from-aeras-hero-from dark:to-aeras-hero-to p-5 lg:p-6">
       <div>
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300 dark:text-white/50">
           How it works
         </div>
-        <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+        <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900 dark:text-white">
           USDC to bank account
         </div>
       </div>
-      <ol className="space-y-3 text-xs text-aeras-500">
+      <ol className="space-y-3 text-xs text-aeras-500 dark:text-white/60">
         <Step n={1} title="Open your exchange">
           Log in to Coinbase, Kraken, Binance, or another USDC-supporting
           exchange. Your bank must already be linked there.
@@ -430,7 +430,7 @@ function InstructionsCard() {
           fee.
         </Step>
       </ol>
-      <p className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-[11px] text-aeras-300">
+      <p className="rounded-lg border border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 px-3 py-2 text-[11px] text-aeras-300 dark:text-white/50">
         Aeras never holds fiat. The exchange is responsible for KYC and the
         bank transfer. Tax reporting on disposals is your responsibility.
       </p>
@@ -449,11 +449,11 @@ function Step({
 }) {
   return (
     <li className="flex gap-3">
-      <span className="flex size-5 flex-none items-center justify-center rounded-full bg-aeras-blue-wash font-mono text-[10px] tabular-nums text-aeras-blue">
+      <span className="flex size-5 flex-none items-center justify-center rounded-full bg-aeras-blue-wash dark:bg-aeras-blue/20 font-mono text-[10px] tabular-nums text-aeras-blue-medium">
         {n}
       </span>
       <div>
-        <div className="text-xs font-medium text-aeras-900">{title}</div>
+        <div className="text-xs font-medium text-aeras-900 dark:text-white">{title}</div>
         <div className="mt-0.5 leading-relaxed">{children}</div>
       </div>
     </li>
@@ -464,7 +464,7 @@ function Step({
 
 function CardComingSoon() {
   return (
-    <div className="overflow-hidden rounded-2xl border border-aeras-border bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-6 text-white lg:p-8">
+    <div className="overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-6 text-white lg:p-8">
       <div className="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between">
         <div className="space-y-2">
           <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.12em] text-white/80">

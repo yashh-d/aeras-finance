@@ -111,7 +111,7 @@ function Card({
 }) {
   return (
     <div
-      className={`rounded-2xl border border-aeras-border bg-white p-5 lg:p-6 ${className ?? ""}`}
+      className={`rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6 ${className ?? ""}`}
     >
       {children}
     </div>
@@ -135,7 +135,7 @@ function Header({
     <div className="space-y-4">
       <div className="space-y-1.5">
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
-          Positions
+          Portfolio
         </div>
         <h2 className="font-light text-2xl tracking-tight text-aeras-900">
           Portfolio overview
@@ -277,16 +277,16 @@ function AllocationCard({
   return (
     <div className="space-y-3">
       <div>
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Allocation
         </div>
-        <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+        <div className="mt-1 text-sm font-medium tracking-tight text-white">
           By asset
         </div>
       </div>
 
       {allocation.length === 0 ? (
-        <div className="flex h-56 items-center justify-center text-xs text-aeras-300">
+        <div className="flex h-56 items-center justify-center text-xs text-white/50">
           No balances yet
         </div>
       ) : (
@@ -312,10 +312,10 @@ function AllocationCard({
               </PieChart>
             </ResponsiveContainer>
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <div className="text-[10px] uppercase tracking-[0.12em] text-aeras-300">
+              <div className="text-[10px] uppercase tracking-[0.12em] text-white/50">
                 Total
               </div>
-              <div className="font-mono text-base tabular-nums text-aeras-900">
+              <div className="font-mono text-base tabular-nums text-white">
                 {fmtUsd(totalUsd)}
               </div>
             </div>
@@ -334,14 +334,14 @@ function AllocationCard({
                       className="inline-block size-2 rounded-full flex-shrink-0"
                       style={{ background: a.color }}
                     />
-                    <span className="font-medium text-aeras-900 truncate">
+                    <span className="font-medium text-white truncate">
                       {a.symbol}
                     </span>
-                    <span className="text-aeras-300 truncate">{a.name}</span>
+                    <span className="text-white/50 truncate">{a.name}</span>
                   </span>
                   <span className="flex items-baseline gap-2 font-mono tabular-nums">
-                    <span className="text-aeras-900">${a.usd.toFixed(2)}</span>
-                    <span className="text-aeras-300">{pct.toFixed(1)}%</span>
+                    <span className="text-white">${a.usd.toFixed(2)}</span>
+                    <span className="text-white/50">{pct.toFixed(1)}%</span>
                   </span>
                 </li>
               );
@@ -366,11 +366,11 @@ function AllocationTooltip({
   const slice = payload[0].payload;
   const pct = total > 0 ? (slice.usd / total) * 100 : 0;
   return (
-    <div className="rounded-md border border-aeras-border bg-white px-2.5 py-1.5 text-xs shadow-sm">
-      <div className="font-medium text-aeras-900">
-        {slice.symbol} <span className="text-aeras-300">· {slice.name}</span>
+    <div className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs shadow-sm">
+      <div className="font-medium text-white">
+        {slice.symbol} <span className="text-white/50">· {slice.name}</span>
       </div>
-      <div className="font-mono tabular-nums text-aeras-900">
+      <div className="font-mono tabular-nums text-white">
         ${slice.usd.toFixed(2)} · {pct.toFixed(1)}%
       </div>
     </div>
@@ -463,11 +463,11 @@ function PortfolioTrend({
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             Portfolio value · indicative
           </div>
           <div className="mt-1 flex items-baseline gap-3">
-            <span className="font-mono text-2xl font-light tracking-tight text-aeras-900 tabular-nums">
+            <span className="font-mono text-2xl font-light tracking-tight text-white tabular-nums">
               {last != null ? `$${last.toFixed(2)}` : "—"}
             </span>
             {change != null && (
@@ -481,11 +481,11 @@ function PortfolioTrend({
               </span>
             )}
           </div>
-          <div className="mt-1 text-[11px] text-aeras-300">
-            Current holdings priced against the historical xStock curve.
+          <div className="mt-1 text-[11px] text-white/50">
+            Current holdings priced against the historical price curve.
           </div>
         </div>
-        <div className="flex gap-0.5 rounded-lg border border-aeras-border p-0.5">
+        <div className="flex gap-0.5 rounded-lg border border-white/10 p-0.5">
           {TREND_RANGES.map((r) => (
             <button
               key={r}
@@ -493,8 +493,8 @@ function PortfolioTrend({
               onClick={() => setRange(r)}
               className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                 r === range
-                  ? "bg-aeras-900 text-white"
-                  : "text-aeras-300 hover:text-aeras-900"
+                  ? "bg-aeras-blue text-white"
+                  : "text-white/50 hover:text-white"
               }`}
             >
               {r}
@@ -505,17 +505,17 @@ function PortfolioTrend({
 
       <div className="h-48 w-full">
         {heldXStocks.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-aeras-300">
-            Buy an xStock to see your portfolio trend.
+          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-white/50">
+            Buy a tokenized stock to see your portfolio trend.
           </div>
         ) : error ? (
-          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-aeras-500">
+          <div className="flex h-full items-center justify-center px-4 text-center text-xs text-white/60">
             {/rate limit/i.test(error)
               ? "Price history rate-limited"
               : "Price history unavailable"}
           </div>
         ) : loading || !series || series.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-xs text-aeras-300">
+          <div className="flex h-full items-center justify-center text-xs text-white/50">
             {loading ? "Loading…" : "No data"}
           </div>
         ) : (
@@ -608,11 +608,11 @@ function TrendTooltip({
   if (!active || !payload?.length) return null;
   const p = payload[0].payload;
   return (
-    <div className="rounded-md border border-aeras-border bg-white px-2 py-1.5 text-xs shadow-sm">
-      <div className="font-mono tabular-nums text-aeras-900">
+    <div className="rounded-md border border-white/10 bg-white/5 px-2 py-1.5 text-xs shadow-sm">
+      <div className="font-mono tabular-nums text-white">
         ${p.v.toFixed(2)}
       </div>
-      <div className="text-aeras-300">
+      <div className="text-white/50">
         {new Date(p.t * 1000).toLocaleDateString()}
       </div>
     </div>
@@ -757,19 +757,19 @@ function HealthCard({ positions }: { positions: AggregatePosition[] }) {
   return (
     <div className="space-y-3">
       <div>
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Health factor
         </div>
-        <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+        <div className="mt-1 text-sm font-medium tracking-tight text-white">
           Across borrow positions
         </div>
       </div>
 
       {positions.length === 0 ? (
         <div className="flex h-56 flex-col items-center justify-center text-center">
-          <span className="text-xs text-aeras-300">No open borrow positions</span>
-          <span className="mt-1 text-[11px] text-aeras-300">
-            Pledge an xStock to start tracking health here.
+          <span className="text-xs text-white/50">No open borrow positions</span>
+          <span className="mt-1 text-[11px] text-white/50">
+            Pledge a tokenized stock to start tracking health here.
           </span>
         </div>
       ) : (
@@ -801,7 +801,7 @@ function HealthCard({ positions }: { positions: AggregatePosition[] }) {
               </RadialBarChart>
             </ResponsiveContainer>
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-              <div className="font-mono text-3xl font-light tabular-nums text-aeras-900">
+              <div className="font-mono text-3xl font-light tabular-nums text-white">
                 {Number.isFinite(portfolioHealth)
                   ? `${portfolioHealth.toFixed(2)}×`
                   : "∞"}
@@ -839,9 +839,9 @@ function HealthCard({ positions }: { positions: AggregatePosition[] }) {
 
 function MiniStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2">
-      <div className="text-[11px] text-aeras-300">{label}</div>
-      <div className="mt-0.5 font-mono tabular-nums text-sm text-aeras-900">
+    <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+      <div className="text-[11px] text-white/50">{label}</div>
+      <div className="mt-0.5 font-mono tabular-nums text-sm text-white">
         {value}
       </div>
     </div>
@@ -857,7 +857,7 @@ function PositionHealthRow({ pos }: { pos: AggregatePosition }) {
     <li className="flex items-center justify-between gap-3 text-xs">
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between">
-          <span className="font-medium text-aeras-900">
+          <span className="font-medium text-white">
             {pos.vault.collateralSymbol} → {pos.vault.borrowSymbol}
           </span>
           <span className="font-mono tabular-nums" style={{ color }}>
@@ -866,13 +866,13 @@ function PositionHealthRow({ pos }: { pos: AggregatePosition }) {
               : "∞"}
           </span>
         </div>
-        <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-aeras-surface">
+        <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/5">
           <div
             className="h-full rounded-full"
             style={{ width: `${ratio * 100}%`, background: color }}
           />
         </div>
-        <div className="mt-1 flex justify-between text-[10px] text-aeras-300">
+        <div className="mt-1 flex justify-between text-[10px] text-white/50">
           <span>
             LTV {pos.ltvPct.toFixed(1)}% / LT{" "}
             {pos.liquidationPct.toFixed(0)}%
@@ -907,25 +907,25 @@ function HoldingsTable({
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             Holdings
           </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+          <div className="mt-1 text-sm font-medium tracking-tight text-white">
             Detail
           </div>
         </div>
-        <span className="text-xs text-aeras-300">
+        <span className="text-xs text-white/50">
           {allocation.length} asset{allocation.length === 1 ? "" : "s"}
         </span>
       </div>
 
       {allocation.length === 0 ? (
-        <div className="flex h-40 items-center justify-center text-xs text-aeras-300">
-          No balances yet. Fund USDC or buy an xStock to populate this table.
+        <div className="flex h-40 items-center justify-center text-xs text-white/50">
+          No balances yet. Fund USDC or buy a tokenized stock to populate this table.
         </div>
       ) : (
-        <div className="divide-y divide-aeras-border">
-          <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="divide-y divide-white/10">
+          <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             <div className="col-span-4">Asset</div>
             <div className="col-span-3 text-right">Amount</div>
             <div className="col-span-3 text-right">Value</div>
@@ -945,23 +945,23 @@ function HoldingsTable({
                       className="inline-block size-2 rounded-full flex-shrink-0"
                       style={{ background: a.color }}
                     />
-                    <span className="font-medium tracking-tight text-aeras-900 truncate">
+                    <span className="font-medium tracking-tight text-white truncate">
                       {a.symbol}
                     </span>
                   </div>
-                  <div className="text-[11px] text-aeras-300 truncate">
+                  <div className="text-[11px] text-white/50 truncate">
                     {a.name}
                   </div>
                 </div>
-                <div className="col-span-3 text-right font-mono tabular-nums text-aeras-900">
+                <div className="col-span-3 text-right font-mono tabular-nums text-white">
                   {a.amount.toLocaleString(undefined, {
                     maximumFractionDigits: decimals,
                   })}
                 </div>
-                <div className="col-span-3 text-right font-mono tabular-nums text-aeras-900">
+                <div className="col-span-3 text-right font-mono tabular-nums text-white">
                   ${a.usd.toFixed(2)}
                 </div>
-                <div className="col-span-2 text-right font-mono tabular-nums text-aeras-300">
+                <div className="col-span-2 text-right font-mono tabular-nums text-white/50">
                   {pct.toFixed(1)}%
                 </div>
               </div>
@@ -1022,10 +1022,10 @@ function ActivityFeed({ walletAddress }: { walletAddress: string }) {
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             Activity
           </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+          <div className="mt-1 text-sm font-medium tracking-tight text-white">
             On-chain transactions
           </div>
         </div>
@@ -1040,19 +1040,19 @@ function ActivityFeed({ walletAddress }: { walletAddress: string }) {
       </div>
 
       {error ? (
-        <p className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs text-aeras-500">
+        <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60">
           Activity unavailable. {error}
         </p>
       ) : rows == null ? (
-        <div className="flex h-32 items-center justify-center text-xs text-aeras-300">
+        <div className="flex h-32 items-center justify-center text-xs text-white/50">
           Loading…
         </div>
       ) : rows.length === 0 ? (
-        <div className="flex h-32 items-center justify-center text-xs text-aeras-300">
+        <div className="flex h-32 items-center justify-center text-xs text-white/50">
           No transactions yet.
         </div>
       ) : (
-        <ul className="divide-y divide-aeras-border">
+        <ul className="divide-y divide-white/10">
           {rows.map((r) => (
             <ActivityRowView key={r.signature} row={r} />
           ))}
@@ -1080,18 +1080,18 @@ function ActivityRowView({ row }: { row: ActivityRow }) {
           <span className={`text-[10px] font-medium uppercase tracking-wider ${statusColor}`}>
             {status}
           </span>
-          <span className="font-mono text-xs text-aeras-500 truncate">
+          <span className="font-mono text-xs text-white/60 truncate">
             {row.signature.slice(0, 8)}…{row.signature.slice(-8)}
           </span>
         </div>
         {row.memo && (
-          <div className="mt-0.5 text-[11px] text-aeras-300 truncate">
+          <div className="mt-0.5 text-[11px] text-white/50 truncate">
             {row.memo}
           </div>
         )}
       </div>
       <div className="flex items-center gap-3 text-xs">
-        <span className="text-aeras-300 whitespace-nowrap">{when}</span>
+        <span className="text-white/50 whitespace-nowrap">{when}</span>
         <a
           href={`${SOLSCAN_TX_BASE}${row.signature}`}
           target="_blank"

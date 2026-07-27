@@ -145,46 +145,107 @@ export function atomicToUiString(atomicStr: string, decimals: number): string {
   return frac ? `${whole}.${frac}` : whole;
 }
 
+// True when two snapshots hold the same amounts. Compares the exact atomic
+// strings (not the float uiAmounts) so the settle loop can reliably tell whether
+// a just-submitted transaction has been reflected by the RPC yet.
+function balancesEqual(a: AccountBalances, b: AccountBalances): boolean {
+  if (a.sol !== b.sol) return false;
+  if (a.usdcAtomic !== b.usdcAtomic) return false;
+  const mints = new Set([
+    ...Object.keys(a.xstocksAtomic),
+    ...Object.keys(b.xstocksAtomic),
+  ]);
+  for (const mint of mints) {
+    if ((a.xstocksAtomic[mint] ?? "0") !== (b.xstocksAtomic[mint] ?? "0")) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Backoff (ms) for the post-action settle loop. A confirmed swap/deposit is often
+// not yet visible to the next getParsedTokenAccountsByOwner read, so we re-read a
+// few times until the holdings actually change instead of waiting for the poll.
+const SETTLE_DELAYS_MS = [0, 1200, 2500, 4000];
+
 export function useBalances(walletAddress: string | undefined): {
   balances: AccountBalances | null;
   error: string | null;
   refreshing: boolean;
   refresh: () => Promise<void>;
+  refreshSettled: () => Promise<void>;
 } {
   const [balances, setBalances] = useState<AccountBalances | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  // Bumped on every refresh and on wallet change. A response only commits if its
+  // Bumped on every fetch and on wallet change. A response only commits if its
   // captured epoch is still current, so a slow in-flight fetch can't clobber a
   // newer fast one (which is what made post-swap balances "sometimes" vanish).
   const epochRef = useRef(0);
+  // Latest committed balances, readable synchronously inside the settle loop.
+  const balancesRef = useRef<AccountBalances | null>(null);
+  // In-flight fetch count so "Refreshing…" stays on for the whole settle loop and
+  // clears exactly once nothing is running.
+  const inFlightRef = useRef(0);
 
-  const refresh = useCallback(async () => {
-    if (!walletAddress) return;
-    const myEpoch = ++epochRef.current;
+  const beginFetch = useCallback(() => {
+    inFlightRef.current += 1;
     setRefreshing(true);
+  }, []);
+  const endFetch = useCallback(() => {
+    inFlightRef.current = Math.max(0, inFlightRef.current - 1);
+    if (inFlightRef.current === 0) setRefreshing(false);
+  }, []);
+
+  // One fetch that commits to state only if it is still the latest request.
+  // Returns the committed balances, or null if superseded or errored.
+  const fetchOnce = useCallback(async (): Promise<AccountBalances | null> => {
+    if (!walletAddress) return null;
+    const myEpoch = ++epochRef.current;
+    beginFetch();
     try {
       const next = await fetchAllBalances(walletAddress);
-      if (epochRef.current !== myEpoch) return;
+      if (epochRef.current !== myEpoch) return null;
       setBalances(next);
+      balancesRef.current = next;
       setError(null);
+      return next;
     } catch (err) {
-      if (epochRef.current !== myEpoch) return;
+      if (epochRef.current !== myEpoch) return null;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
       console.error("[useBalances]", err);
+      return null;
     } finally {
-      if (epochRef.current === myEpoch) setRefreshing(false);
+      endFetch();
     }
-  }, [walletAddress]);
+  }, [walletAddress, beginFetch, endFetch]);
+
+  const refresh = useCallback(async () => {
+    await fetchOnce();
+  }, [fetchOnce]);
+
+  // Call after an action that should change balances (swap, send, deposit,
+  // withdraw). Re-reads with backoff until the holdings differ from what we had
+  // before, so the new balance appears without a manual refresh or page reload.
+  const refreshSettled = useCallback(async () => {
+    if (!walletAddress) return;
+    const before = balancesRef.current;
+    for (const delay of SETTLE_DELAYS_MS) {
+      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      const next = await fetchOnce();
+      if (!next) return; // superseded (e.g. wallet change) — stop retrying
+      if (!before || !balancesEqual(before, next)) return; // change landed
+    }
+  }, [walletAddress, fetchOnce]);
 
   // When the wallet changes, invalidate any in-flight requests and clear state so
   // we never briefly render the previous wallet's balances.
   useEffect(() => {
     epochRef.current++;
     setBalances(null);
+    balancesRef.current = null;
     setError(null);
-    setRefreshing(false);
   }, [walletAddress]);
 
   useEffect(() => {
@@ -194,5 +255,5 @@ export function useBalances(walletAddress: string | undefined): {
     return () => clearInterval(id);
   }, [refresh, walletAddress]);
 
-  return { balances, error, refreshing, refresh };
+  return { balances, error, refreshing, refresh, refreshSettled };
 }

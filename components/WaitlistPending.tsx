@@ -40,10 +40,10 @@ export function WaitlistPending({
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-aeras-canvas px-6 py-12">
-      <main className="w-full max-w-md rounded-2xl border border-aeras-border bg-white p-8">
+      <main className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src="/aeras-logo-black.png"
+          src="/aeras-logo-white.png"
           alt="Aeras"
           className="mb-6 h-10 w-auto"
         />
@@ -51,20 +51,20 @@ export function WaitlistPending({
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-blue">
           {blocked ? "Access" : "Waitlist"}
         </div>
-        <h1 className="mt-2 font-light text-2xl tracking-tight text-aeras-900">
+        <h1 className="mt-2 font-light text-2xl tracking-tight text-white">
           {blocked ? "Access is not available" : "You are on the list"}
         </h1>
 
         {!blocked && user.position != null && (
-          <div className="mt-4 inline-flex items-baseline gap-2 rounded-xl border border-aeras-border bg-aeras-surface px-4 py-2.5">
-            <span className="font-mono text-2xl tabular-nums text-aeras-900">
+          <div className="mt-4 inline-flex items-baseline gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5">
+            <span className="font-mono text-2xl tabular-nums text-white">
               #{user.position}
             </span>
-            <span className="text-sm text-aeras-300">in line</span>
+            <span className="text-sm text-white/50">in line</span>
           </div>
         )}
 
-        <p className="mt-4 text-sm leading-relaxed text-aeras-300">
+        <p className="mt-4 text-sm leading-relaxed text-white/50">
           {blocked ? (
             "Your account is not eligible for access right now. If you think this is a mistake, reach out and we will take another look."
           ) : (
@@ -74,7 +74,7 @@ export function WaitlistPending({
               {user.email ? (
                 <>
                   {" "}
-                  <span className="font-medium text-aeras-700">
+                  <span className="font-medium text-white/80">
                     {user.email}
                   </span>
                 </>
@@ -87,23 +87,23 @@ export function WaitlistPending({
         </p>
 
         {inviteLink && (
-          <div className="mt-6 rounded-xl border border-aeras-border bg-aeras-surface p-4">
-            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="mt-6 rounded-xl border border-white/10 bg-white/5 p-4">
+            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
               Your invite link
             </div>
             <div className="mt-2 flex items-center gap-2">
-              <code className="flex-1 truncate rounded-lg bg-white px-3 py-2 font-mono text-xs text-aeras-500">
+              <code className="flex-1 truncate rounded-lg bg-white/10 px-3 py-2 font-mono text-xs text-white/60">
                 {inviteLink}
               </code>
               <button
                 type="button"
                 onClick={copy}
-                className="rounded-lg bg-aeras-900 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-aeras-blue"
+                className="rounded-lg bg-aeras-blue px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-aeras-blue-medium"
               >
                 {copied ? "Copied" : "Copy"}
               </button>
             </div>
-            <p className="mt-2 text-[11px] text-aeras-300">
+            <p className="mt-2 text-[11px] text-white/50">
               Share Aeras with others who want access to tokenized asset lending.
             </p>
           </div>
@@ -112,7 +112,7 @@ export function WaitlistPending({
         <button
           type="button"
           onClick={onLogout}
-          className="mt-6 text-xs text-aeras-300 underline-offset-2 hover:text-aeras-900 hover:underline"
+          className="mt-6 text-xs text-white/50 underline-offset-2 hover:text-white hover:underline"
         >
           Sign out
         </button>

@@ -101,23 +101,20 @@ const STATIC_VAULTS: VaultRow[] = [
 function VaultsCard({ prices }: Props) {
   void prices; // currently unused; reserved for live APY display
   return (
-    <div className="rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             Vaults
           </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+          <div className="mt-1 text-sm font-medium tracking-tight text-white">
             Deposit, hold, earn
           </div>
         </div>
-        <span className="text-xs text-aeras-300">
-          via <span className="text-aeras-blue">Jupiter Lend Earn</span>
-        </span>
       </div>
 
-      <div className="mt-5 divide-y divide-aeras-border">
-        <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+      <div className="mt-5 divide-y divide-white/10">
+        <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           <div className="col-span-4">Asset</div>
           <div className="col-span-2 text-right">APY</div>
           <div className="col-span-3 text-right">TVL</div>
@@ -136,27 +133,27 @@ function VaultRowView({ row }: { row: VaultRow }) {
   return (
     <div className="grid grid-cols-12 items-center gap-2 py-2.5 text-sm">
       <div className="col-span-4">
-        <div className="font-medium tracking-tight text-aeras-900">
+        <div className="font-medium tracking-tight text-white">
           {row.symbol}
         </div>
-        <div className="text-[11px] text-aeras-300">{row.name}</div>
+        <div className="text-[11px] text-white/50">{row.name}</div>
       </div>
       <div className="col-span-2 text-right">
         <span className="font-mono tabular-nums text-aeras-positive">
           {row.apyPct.toFixed(2)}%
         </span>
       </div>
-      <div className="col-span-3 text-right font-mono text-xs tabular-nums text-aeras-500">
+      <div className="col-span-3 text-right font-mono text-xs tabular-nums text-white/60">
         ${formatLargeUsd(row.tvlUsd)}
       </div>
-      <div className="col-span-1 text-right text-[10px] uppercase tracking-wider text-aeras-300">
+      <div className="col-span-1 text-right text-[10px] uppercase tracking-wider text-white/50">
         {row.risk}
       </div>
       <div className="col-span-2 text-right">
         <button
           type="button"
           disabled
-          className="rounded-lg border border-aeras-border bg-white px-3 py-1.5 text-xs font-medium text-aeras-300 disabled:cursor-not-allowed"
+          className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-medium text-white/50 disabled:cursor-not-allowed"
           title="Coming soon"
         >
           Deposit
@@ -179,30 +176,30 @@ function LoopingCard() {
   const risky = ltvAtLeverage >= 65;
 
   return (
-    <div className="space-y-4 rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+    <div className="space-y-4 rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             Looping
           </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+          <div className="mt-1 text-sm font-medium tracking-tight text-white">
             Leveraged yield
           </div>
         </div>
-        <span className="rounded-md bg-aeras-surface px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-warning">
+        <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-warning">
           Medium risk
         </span>
       </div>
 
-      <p className="text-xs text-aeras-300">
+      <p className="text-xs text-white/50">
         Deposit collateral, borrow USDC against it, redeposit, repeat. Compounds
         your yield up to the vault&apos;s collateral factor.
       </p>
 
       <div>
         <div className="mb-2 flex items-baseline justify-between text-xs">
-          <span className="text-aeras-300">Target leverage</span>
-          <span className="font-mono tabular-nums text-aeras-900">
+          <span className="text-white/50">Target leverage</span>
+          <span className="font-mono tabular-nums text-white">
             {leverage.toFixed(1)}×
           </span>
         </div>
@@ -215,7 +212,7 @@ function LoopingCard() {
           onChange={(e) => setLeverage(Number(e.target.value))}
           className="w-full accent-aeras-blue"
         />
-        <div className="mt-1 flex justify-between text-[10px] uppercase tracking-wider text-aeras-300">
+        <div className="mt-1 flex justify-between text-[10px] uppercase tracking-wider text-white/50">
           <span>1×</span>
           <span>2×</span>
           <span>3×</span>
@@ -238,7 +235,7 @@ function LoopingCard() {
       <button
         type="button"
         disabled
-        className="w-full rounded-xl border border-aeras-border bg-white px-4 py-2.5 text-sm font-medium text-aeras-300 disabled:cursor-not-allowed"
+        className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white/50 disabled:cursor-not-allowed"
         title="Coming soon — needs Kamino multiply integration"
       >
         Open looped position
@@ -251,23 +248,23 @@ function LoopingCard() {
 
 function DirectLendCard() {
   return (
-    <div className="space-y-4 rounded-2xl border border-aeras-border bg-white p-5 lg:p-6">
+    <div className="space-y-4 rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             Lend
           </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-aeras-900">
+          <div className="mt-1 text-sm font-medium tracking-tight text-white">
             Direct lending
           </div>
         </div>
-        <span className="rounded-md bg-aeras-blue-wash px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-blue">
+        <span className="rounded-md bg-aeras-blue/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-blue-medium">
           Low risk
         </span>
       </div>
 
-      <p className="text-xs text-aeras-300">
-        Lend stables and SOL to xStock borrowers. Variable rate tied to vault
+      <p className="text-xs text-white/50">
+        Lend stables and SOL to tokenized-stock borrowers. Variable rate tied to vault
         utilization. Withdraw at any time, subject to liquidity.
       </p>
 
@@ -281,7 +278,7 @@ function DirectLendCard() {
       <button
         type="button"
         disabled
-        className="w-full rounded-xl border border-aeras-border bg-white px-4 py-2.5 text-sm font-medium text-aeras-300 disabled:cursor-not-allowed"
+        className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white/50 disabled:cursor-not-allowed"
         title="Coming soon — direct lend launches with Kamino integration"
       >
         Lend USDC or SOL
@@ -303,13 +300,13 @@ function Stat({
   highlight?: boolean;
   warning?: boolean;
 }) {
-  let valueClass = "font-mono tabular-nums text-sm text-aeras-900";
+  let valueClass = "font-mono tabular-nums text-sm text-white";
   if (highlight) valueClass = "font-mono tabular-nums text-sm text-aeras-positive";
   if (warning) valueClass = "font-mono tabular-nums text-sm text-aeras-warning";
 
   return (
-    <div className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2">
-      <div className="text-[11px] text-aeras-300">{label}</div>
+    <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
+      <div className="text-[11px] text-white/50">{label}</div>
       <div className={`mt-0.5 ${valueClass}`}>{value}</div>
     </div>
   );

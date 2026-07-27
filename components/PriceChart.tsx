@@ -15,33 +15,70 @@ import type { XStock } from "@/lib/jupiter/xstocks";
 const RANGES = ["1D", "1W", "1M", "3M"] as const;
 type Range = (typeof RANGES)[number];
 
+// Module-scoped cache of the last good candles per (mint, range). Survives
+// component remounts and range toggles so switching assets/ranges renders the
+// previous chart instantly and a failed refetch can fall back to it instead of
+// blanking to an error screen.
+const clientChartCache = new Map<string, OhlcCandle[]>();
+
+// How often a chart with nothing to show retries on its own.
+const AUTO_RETRY_MS = 15_000;
+
 export function PriceChart({ ticker }: { ticker: XStock }) {
   const [range, setRange] = useState<Range>("1D");
   const [candles, setCandles] = useState<OhlcCandle[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // Bumped to force a refetch (auto-retry / manual retry) without changing the
+  // ticker or range.
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setError(null);
+    const cacheKey = `${ticker.mint}:${range}`;
+    const cachedNow = clientChartCache.get(cacheKey);
+    // Show last-good data immediately while we refetch in the background. Only
+    // fall back to the spinner when we have nothing cached for this view.
+    if (cachedNow) {
+      setCandles(cachedNow);
+      setError(null);
+      setLoading(false);
+    } else {
+      setCandles(null);
+      setError(null);
+      setLoading(true);
+    }
+
     fetchChartViaProxy(ticker.mint, range)
       .then((data) => {
-        if (!cancelled) {
-          setCandles(data);
-          setLoading(false);
-        }
+        if (cancelled) return;
+        clientChartCache.set(cacheKey, data);
+        setCandles(data);
+        setError(null);
+        setLoading(false);
       })
       .catch((err) => {
-        if (!cancelled) {
+        if (cancelled) return;
+        setLoading(false);
+        // Keep whatever we last rendered. Surface the error only when there is
+        // no cached data to fall back to, so a transient failure never wipes a
+        // chart that was loading fine.
+        if (!clientChartCache.has(cacheKey)) {
           setError(err instanceof Error ? err.message : String(err));
-          setLoading(false);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [ticker.mint, range]);
+  }, [ticker.mint, range, reloadTick]);
+
+  // Self-heal: while a chart is stuck with nothing to show, keep retrying so it
+  // recovers on its own once Coingecko's rate limit clears.
+  useEffect(() => {
+    if (!error) return;
+    const id = setTimeout(() => setReloadTick((n) => n + 1), AUTO_RETRY_MS);
+    return () => clearTimeout(id);
+  }, [error]);
 
   const first = candles?.[0]?.c;
   const last = candles?.[candles.length - 1]?.c;
@@ -57,11 +94,11 @@ export function PriceChart({ ticker }: { ticker: XStock }) {
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
         <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
             {ticker.symbol} price
           </div>
           <div className="mt-1 flex items-baseline gap-3">
-            <span className="font-mono text-2xl font-light tracking-tight text-aeras-900 tabular-nums">
+            <span className="font-mono text-2xl font-light tracking-tight text-white tabular-nums">
               {last != null ? `$${formatPrice(last)}` : "—"}
             </span>
             {change != null && (
@@ -76,7 +113,7 @@ export function PriceChart({ ticker }: { ticker: XStock }) {
             )}
           </div>
         </div>
-        <div className="flex gap-0.5 rounded-lg border border-aeras-border p-0.5">
+        <div className="flex gap-0.5 rounded-lg border border-white/10 p-0.5">
           {RANGES.map((r) => (
             <button
               key={r}
@@ -84,8 +121,8 @@ export function PriceChart({ ticker }: { ticker: XStock }) {
               onClick={() => setRange(r)}
               className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                 r === range
-                  ? "bg-aeras-900 text-white"
-                  : "text-aeras-300 hover:text-aeras-900"
+                  ? "bg-aeras-blue text-white"
+                  : "text-white/50 hover:text-white"
               }`}
             >
               {r}
@@ -97,17 +134,24 @@ export function PriceChart({ ticker }: { ticker: XStock }) {
       <div className="h-32 w-full">
         {error ? (
           <div className="flex h-full flex-col items-center justify-center px-4 text-center">
-            <span className="text-xs font-medium text-aeras-500">
+            <span className="text-xs font-medium text-white/60">
               {/rate limit/i.test(error)
                 ? "Price history rate-limited"
                 : "Price history unavailable"}
             </span>
-            <span className="mt-1 text-[11px] text-aeras-300">
+            <span className="mt-1 text-[11px] text-white/50">
               Live oracle price is still available.
             </span>
+            <button
+              type="button"
+              onClick={() => setReloadTick((n) => n + 1)}
+              className="mt-2 text-[11px] font-medium text-white/70 underline-offset-2 hover:text-white hover:underline"
+            >
+              Retry now
+            </button>
           </div>
         ) : loading || !candles || candles.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-xs text-aeras-300">
+          <div className="flex h-full items-center justify-center text-xs text-white/50">
             {loading ? "Loading…" : "No data"}
           </div>
         ) : (
@@ -148,11 +192,11 @@ function ChartTooltip({
   if (!active || !payload || payload.length === 0) return null;
   const c = payload[0].payload;
   return (
-    <div className="rounded-md border border-aeras-border bg-white px-2 py-1.5 text-xs shadow-sm">
-      <div className="font-mono tabular-nums text-aeras-900">
+    <div className="rounded-md border border-aeras-border dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1.5 text-xs shadow-sm">
+      <div className="font-mono tabular-nums text-aeras-900 dark:text-white">
         ${formatPrice(c.c)}
       </div>
-      <div className="text-aeras-300">
+      <div className="text-aeras-300 dark:text-white/50">
         {new Date(c.t * 1000).toLocaleString()}
       </div>
     </div>

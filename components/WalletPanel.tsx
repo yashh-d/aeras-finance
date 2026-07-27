@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useFundWallet } from "@privy-io/react-auth/solana";
 import { SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { XSTOCKS, type XStock } from "@/lib/jupiter/xstocks";
+import { AssetLogo } from "@/components/AssetLogo";
 import type { AccountBalances } from "@/lib/solana/balances";
 import { totalAccountUsd } from "@/lib/solana/balances";
 import { SendForm } from "./SendForm";
@@ -33,15 +34,11 @@ export function WalletPanel({
   onSent: () => void;
   onRefresh: () => Promise<void> | void;
 }) {
-  const [open, setOpen] = useState(() => {
-    // Open by default when balance is unknown or empty.
-    if (!balances) return true;
-    const empty =
-      balances.sol < 0.0001 &&
-      balances.usdc < 0.01 &&
-      Object.values(balances.xstocks).every((v) => v < 0.0001);
-    return empty;
-  });
+  // Expanded by default so holdings are visible as soon as they load. This panel
+  // remounts on section navigation; deriving the initial state from `balances`
+  // left it collapsed (hiding every row) whenever it mounted after balances had
+  // already loaded. Users can still collapse it manually.
+  const [open, setOpen] = useState(true);
   const [sending, setSending] = useState(false);
   const [fundError, setFundError] = useState<string | null>(null);
   const { fundWallet } = useFundWallet({
@@ -69,27 +66,27 @@ export function WalletPanel({
   return (
     <div className="space-y-3">
       <div className="flex w-full items-baseline justify-between">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Balances
           {totalUsd != null && (
-            <span className="ml-2 font-mono text-aeras-500 normal-case tracking-normal">
+            <span className="ml-2 font-mono text-white/60 normal-case tracking-normal">
               · ${totalUsd.toFixed(2)}
             </span>
           )}
         </div>
-        <div className="flex items-baseline gap-3 text-xs text-aeras-300">
+        <div className="flex items-baseline gap-3 text-xs text-white/50">
           <button
             type="button"
             onClick={() => onRefresh()}
             disabled={balancesRefreshing}
-            className="underline-offset-2 hover:text-aeras-900 hover:underline disabled:opacity-50"
+            className="underline-offset-2 hover:text-white hover:underline disabled:opacity-50"
           >
             {balancesRefreshing ? "Refreshing…" : "Refresh"}
           </button>
           <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="hover:text-aeras-900"
+            className="hover:text-white"
           >
             {open ? "Collapse" : "Expand"}
           </button>
@@ -97,7 +94,7 @@ export function WalletPanel({
       </div>
 
       {balancesError && (
-        <p className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs text-aeras-500">
+        <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60">
           Balance fetch interrupted. {balancesError}
         </p>
       )}
@@ -115,6 +112,12 @@ export function WalletPanel({
                   ? balances.sol * prices[SOL_MINT].usdPrice
                   : null
               }
+              icon={
+                <AssetLogo
+                  xstock={{ symbol: "SOL", name: "Solana", logo: "/logos/solana.jpg" }}
+                  size={30}
+                />
+              }
             />
             <BalanceRow
               label="USDC"
@@ -122,6 +125,12 @@ export function WalletPanel({
               amount={balances.usdc}
               decimals={2}
               usd={balances.usdc}
+              icon={
+                <AssetLogo
+                  xstock={{ symbol: "USDC", name: "USD Coin", logo: "/logos/usdc.png" }}
+                  size={30}
+                />
+              }
             />
             {XSTOCKS.filter(
               (x) => (balances.xstocks[x.mint] ?? 0) > 0,
@@ -136,7 +145,7 @@ export function WalletPanel({
             {balances.usdc === 0 &&
               balances.sol === 0 &&
               Object.values(balances.xstocks).every((v) => v === 0) && (
-                <div className="px-3 py-4 text-center text-xs text-aeras-300">
+                <div className="px-3 py-4 text-center text-xs text-white/50">
                   No balances yet. Fund USDC or SOL to start.
                 </div>
               )}
@@ -148,14 +157,14 @@ export function WalletPanel({
             <ActionButton onClick={() => setSending(true)}>Send</ActionButton>
           </div>
           {fundError && (
-            <p className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs text-aeras-500">
+            <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60">
               Funding unavailable. {fundError}
             </p>
           )}
 
           <Sheet open={sending} onOpenChange={setSending}>
             <SheetContent side="right" className="w-full sm:max-w-md">
-              <SheetHeader className="border-b border-aeras-border">
+              <SheetHeader className="border-b border-white/10">
                 <SheetTitle>Send tokens</SheetTitle>
                 <SheetDescription className="font-mono text-xs">
                   From {walletAddress.slice(0, 4)}…{walletAddress.slice(-4)}
@@ -191,7 +200,7 @@ function ActionButton({
     <button
       type="button"
       onClick={onClick}
-      className="rounded-xl border border-aeras-border bg-white px-3 py-2.5 text-sm font-medium text-aeras-900 transition-colors hover:border-aeras-border-strong hover:bg-aeras-surface"
+      className="rounded-xl border border-white/15 bg-white/10 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/15"
     >
       {children}
     </button>
@@ -204,29 +213,34 @@ function BalanceRow({
   amount,
   decimals,
   usd,
+  icon,
 }: {
   label: string;
   sublabel: string;
   amount: number;
   decimals: number;
   usd: number | null;
+  icon?: ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between border-b border-aeras-border px-3.5 py-2.5 last:border-b-0">
-      <div>
-        <div className="text-sm font-medium tracking-tight text-aeras-900">
-          {label}
+    <div className="flex items-center justify-between border-b border-white/10 px-3.5 py-2.5 last:border-b-0">
+      <div className="flex items-center gap-2.5">
+        {icon}
+        <div>
+          <div className="text-sm font-medium tracking-tight text-white">
+            {label}
+          </div>
+          <div className="text-xs text-white/50">{sublabel}</div>
         </div>
-        <div className="text-xs text-aeras-300">{sublabel}</div>
       </div>
       <div className="text-right">
-        <div className="font-mono text-sm tabular-nums text-aeras-900">
+        <div className="font-mono text-sm tabular-nums text-white">
           {amount.toLocaleString(undefined, {
             maximumFractionDigits: decimals,
           })}
         </div>
         {usd != null && (
-          <div className="font-mono text-xs text-aeras-300">
+          <div className="font-mono text-xs text-white/50">
             ${usd.toFixed(2)}
           </div>
         )}
@@ -251,6 +265,7 @@ function XStockRow({
       amount={amount}
       decimals={6}
       usd={price != null ? amount * price : null}
+      icon={<AssetLogo xstock={xstock} size={30} />}
     />
   );
 }

@@ -169,15 +169,15 @@ export function SwapForm({
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-aeras-300">
+          <div className="text-xs font-medium uppercase tracking-wide text-white/50">
             {isBuy ? "Buying" : "Selling"}
           </div>
-          <div className="mt-1 text-base font-medium text-aeras-900">
+          <div className="mt-1 text-base font-medium text-white">
             {ticker.symbol}{" "}
-            <span className="text-aeras-300">· {ticker.name}</span>
+            <span className="text-white/50">· {ticker.name}</span>
           </div>
         </div>
-        <div className="inline-flex rounded-lg border border-aeras-border p-0.5 text-xs">
+        <div className="inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
           {(["buy", "sell"] as Direction[]).map((d) => (
             <button
               key={d}
@@ -185,8 +185,8 @@ export function SwapForm({
               onClick={() => setDirection(d)}
               className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
                 direction === d
-                  ? "bg-aeras-900 text-white"
-                  : "text-aeras-500 hover:text-aeras-900"
+                  ? "bg-aeras-blue text-white"
+                  : "text-white/60 hover:text-white"
               }`}
             >
               {d === "buy" ? "Buy" : "Sell"}
@@ -199,11 +199,11 @@ export function SwapForm({
         <div className="mb-1 flex items-baseline justify-between">
           <label
             htmlFor="amount"
-            className="text-xs font-medium uppercase tracking-wide text-aeras-300"
+            className="text-xs font-medium uppercase tracking-wide text-white/50"
           >
             {isBuy ? "Pay with" : "Receive in"}
           </label>
-          <span className="text-xs text-aeras-300">
+          <span className="text-xs text-white/50">
             {isBuy ? "Balance: " : "Sending: "}
             {inputBalance == null
               ? "..."
@@ -215,14 +215,14 @@ export function SwapForm({
                   setAmountInput(inputBalance.toFixed(inputAmountFmtDigits));
                   reset();
                 }}
-                className="ml-1 text-aeras-500 underline-offset-2 hover:underline"
+                className="ml-1 text-white/60 underline-offset-2 hover:underline"
               >
                 Max
               </button>
             )}
           </span>
         </div>
-        <div className="mb-2 inline-flex rounded-lg border border-aeras-border p-0.5 text-xs">
+        <div className="mb-2 inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
           {(["USDC", "SOL"] as QuoteAsset[]).map((a) => (
             <button
               key={a}
@@ -230,8 +230,8 @@ export function SwapForm({
               onClick={() => setQuoteAsset(a)}
               className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
                 quoteAsset === a
-                  ? "bg-aeras-900 text-white"
-                  : "text-aeras-500 hover:text-aeras-900"
+                  ? "bg-aeras-blue text-white"
+                  : "text-white/60 hover:text-white"
               }`}
             >
               {a}
@@ -250,16 +250,16 @@ export function SwapForm({
               setAmountInput(e.target.value);
               reset();
             }}
-            className="block w-full rounded-lg border border-aeras-border bg-white px-3 py-2 pr-16 text-sm text-aeras-900 focus:border-aeras-blue focus:outline-none"
+            className="block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 pr-16 text-sm text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
           />
-          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-aeras-300">
+          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-white/50">
             {inputSymbol}
           </span>
         </div>
-        <p className="mt-1 text-xs text-aeras-300">
+        <p className="mt-1 text-xs text-white/50">
           {insufficient
             ? `Insufficient ${inputSymbol}. Need ${inputAmount}, have ${inputBalance?.toFixed(inputAmountFmtDigits)}.`
-            : `Minimum ~${minInputAmount.toFixed(inputAmountFmtDigits)} ${inputSymbol} ($${ULTRA_MIN_USD} Jupiter Ultra gasless threshold).`}
+            : `Minimum ~${minInputAmount.toFixed(inputAmountFmtDigits)} ${inputSymbol} ($${ULTRA_MIN_USD} gasless minimum).`}
         </p>
       </div>
 
@@ -276,7 +276,7 @@ export function SwapForm({
       )}
       {status.kind === "done" && <SuccessCard signature={status.signature} />}
       {status.kind === "error" && (
-        <p className="rounded-lg bg-aeras-surface px-3 py-2 text-sm text-aeras-negative">
+        <p className="rounded-lg bg-white/5 px-3 py-2 text-sm text-aeras-negative">
           {status.message}
         </p>
       )}
@@ -301,7 +301,7 @@ export function SwapForm({
           <button
             type="button"
             onClick={reset}
-            className="flex-1 rounded-lg border border-aeras-border px-4 py-3 text-sm font-medium text-aeras-500 transition-colors hover:bg-aeras-surface"
+            className="flex-1 rounded-lg border border-white/10 px-4 py-3 text-sm font-medium text-white/60 transition-colors hover:bg-white/5"
           >
             Cancel
           </button>
@@ -316,7 +316,7 @@ export function SwapForm({
       )}
 
       {status.kind === "buying" && (
-        <p className="text-center text-sm text-aeras-300">
+        <p className="text-center text-sm text-white/50">
           Signing and submitting...
         </p>
       )}
@@ -325,7 +325,7 @@ export function SwapForm({
         <button
           type="button"
           onClick={reset}
-          className="w-full rounded-lg border border-aeras-border px-4 py-3 text-sm font-medium text-aeras-500 transition-colors hover:bg-aeras-surface"
+          className="w-full rounded-lg border border-white/10 px-4 py-3 text-sm font-medium text-white/60 transition-colors hover:bg-white/5"
         >
           New order
         </button>
@@ -380,20 +380,20 @@ function QuoteCard({
   const totalUsd = solPrice ? totalSol * solPrice : null;
 
   return (
-    <div className="space-y-3 rounded-lg border border-aeras-border bg-aeras-surface p-3 text-sm">
+    <div className="space-y-3 rounded-lg border border-white/10 bg-white/5 p-3 text-sm">
       <div>
         <div className="flex justify-between">
-          <span className="text-aeras-300">You pay</span>
-          <span className="text-aeras-900 tabular-nums">
+          <span className="text-white/50">You pay</span>
+          <span className="text-white tabular-nums">
             {inAmount.toFixed(inputSymbol === "USDC" ? 2 : 6)} {inputSymbol} ·{" "}
-            <span className="text-aeras-300">${quote.inUsdValue.toFixed(2)}</span>
+            <span className="text-white/50">${quote.inUsdValue.toFixed(2)}</span>
           </span>
         </div>
         <div className="mt-1 flex justify-between">
-          <span className="text-aeras-300">You receive</span>
-          <span className="font-medium text-aeras-900 tabular-nums">
+          <span className="text-white/50">You receive</span>
+          <span className="font-medium text-white tabular-nums">
             {outAmount.toFixed(outputSymbol === "USDC" ? 2 : 6)} {outputSymbol} ·{" "}
-            <span className="text-aeras-300">
+            <span className="text-white/50">
               ${quote.outUsdValue.toFixed(2)}
             </span>
           </span>
@@ -435,17 +435,17 @@ function QuoteCard({
 
       <div>
         <div className="flex justify-between">
-          <span className="text-aeras-300">
+          <span className="text-white/50">
             Network costs{quote.gasless ? " (Jupiter pays)" : ""}
           </span>
-          <span className="tabular-nums text-aeras-900">
+          <span className="tabular-nums text-white">
             {totalSol.toFixed(6)} SOL
             {totalUsd != null && (
-              <span className="text-aeras-300"> · ${totalUsd.toFixed(2)}</span>
+              <span className="text-white/50"> · ${totalUsd.toFixed(2)}</span>
             )}
           </span>
         </div>
-        <div className="mt-1 space-y-0.5 pl-2 text-xs text-aeras-300">
+        <div className="mt-1 space-y-0.5 pl-2 text-xs text-white/50">
           <FeeLine label="Priority" lamports={priority} />
           <FeeLine label="Signature" lamports={signature} />
           <FeeLine label="Rent" lamports={rent} />
@@ -455,7 +455,7 @@ function QuoteCard({
       <Divider />
 
       <Row label="Route">
-        <span className="text-aeras-500">
+        <span className="text-white/60">
           {quote.router}
           {quote.swapType ? ` · ${quote.swapType}` : ""}
         </span>
@@ -478,25 +478,25 @@ function FeeLine({ label, lamports }: { label: string; lamports: number }) {
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex justify-between">
-      <span className="text-aeras-300">{label}</span>
+      <span className="text-white/50">{label}</span>
       {children}
     </div>
   );
 }
 
 function Divider() {
-  return <div className="border-t border-aeras-border" />;
+  return <div className="border-t border-white/10" />;
 }
 
 function SuccessCard({ signature }: { signature: string }) {
   return (
-    <div className="rounded-lg border border-aeras-border bg-aeras-surface p-3 text-sm">
+    <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-sm">
       <div className="font-medium text-aeras-positive">Filled</div>
       <a
         href={`${SOLSCAN_TX_BASE}${signature}`}
         target="_blank"
         rel="noopener noreferrer"
-        className="mt-1 block break-all font-mono text-xs text-aeras-positive underline decoration-aeras-border"
+        className="mt-1 block break-all font-mono text-xs text-aeras-positive underline decoration-white/10"
       >
         {signature}
       </a>

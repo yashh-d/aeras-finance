@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { fetchSparklines, type SparklinesResponse } from "@/lib/jupiter/charts";
 import { XSTOCKS, type XStock } from "@/lib/jupiter/xstocks";
+import { AssetLogo } from "@/components/AssetLogo";
 
 const SPARKLINE_REFRESH_MS = 60_000;
 
@@ -45,7 +46,7 @@ export function AssetGrid({
   return (
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Assets
         </div>
         {error ? (
@@ -54,7 +55,7 @@ export function AssetGrid({
             Price feed offline
           </span>
         ) : (
-          <span className="inline-flex items-center gap-1 text-xs text-aeras-300">
+          <span className="inline-flex items-center gap-1 text-xs text-white/50">
             <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
             Live · 10s
           </span>
@@ -94,7 +95,7 @@ function AssetTile({
   const positive = change == null ? null : change >= 0;
   const changeColor =
     positive == null
-      ? "text-aeras-100"
+      ? "text-white/40"
       : positive
         ? "text-aeras-positive"
         : "text-aeras-negative";
@@ -113,21 +114,22 @@ function AssetTile({
       aria-pressed={selected}
       className={`group text-left rounded-xl border px-3.5 py-3 transition-colors ${
         selected
-          ? "border-[1.5px] border-aeras-blue bg-aeras-blue-wash"
-          : "border-aeras-border bg-white hover:border-aeras-border-strong"
+          ? "border-[1.5px] border-aeras-blue bg-aeras-blue/15"
+          : "border-white/10 bg-white/5 hover:border-white/25"
       }`}
     >
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="text-sm font-medium tracking-tight text-aeras-900">
+      <div className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2 text-sm font-medium tracking-tight text-white">
+          <AssetLogo xstock={xstock} size={22} />
           {xstock.symbol}
         </span>
         <span className={`font-mono text-xs tabular-nums ${changeColor}`}>
           {change == null ? "—" : `${changeSign}${change.toFixed(2)}%`}
         </span>
       </div>
-      <div className="truncate text-xs text-aeras-300">{xstock.name}</div>
+      <div className="mt-1 truncate text-xs text-white/50">{xstock.name}</div>
       <div className="mt-1.5 flex items-end justify-between gap-2">
-        <div className="font-mono text-sm tabular-nums text-aeras-900">
+        <div className="font-mono text-sm tabular-nums text-white">
           {price == null ? "—" : `$${formatPrice(price)}`}
         </div>
         <Sparkline values={sparkline} strokeClassName={sparkStroke} />

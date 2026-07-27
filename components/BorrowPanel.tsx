@@ -78,13 +78,13 @@ export function BorrowPanel({
   return (
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Borrow
         </div>
-        <span className="text-xs text-aeras-300">Jupiter Lend · USDC</span>
+        <span className="text-xs text-white/50">USDC</span>
       </div>
       {eligibleVaults.length === 0 ? (
-        <p className="rounded-xl border border-aeras-blue-soft bg-aeras-blue-wash px-4 py-3 text-sm text-aeras-500">
+        <p className="rounded-xl border border-aeras-blue/30 bg-aeras-blue/15 px-4 py-3 text-sm text-white/60">
           Buy <span className="font-medium text-aeras-blue">TSLAx</span>,{" "}
           <span className="font-medium text-aeras-blue">SPYx</span>,{" "}
           <span className="font-medium text-aeras-blue">QQQx</span>, or{" "}
@@ -360,17 +360,17 @@ function VaultCard({
   }
 
   return (
-    <div className="space-y-4 rounded-xl border border-aeras-border bg-white p-4">
+    <div className="space-y-4 rounded-xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-4 shadow-lg shadow-black/10">
       <div className="space-y-1">
         <div className="flex items-baseline justify-between gap-3">
-          <div className="text-sm font-medium tracking-tight text-aeras-900">
+          <div className="text-sm font-medium tracking-tight text-white">
             {vault.collateralSymbol} → {vault.borrowSymbol}
           </div>
-          <div className="font-mono text-xs text-aeras-300">
+          <div className="font-mono text-xs text-white/40">
             #{vault.vaultId}
           </div>
         </div>
-        <div className="font-mono text-[11px] text-aeras-300">
+        <div className="font-mono text-[11px] text-white/50">
           CF {cfPct.toFixed(0)}% · LT {ltPct.toFixed(0)}%
           {borrowRatePct != null && ` · ${borrowRatePct.toFixed(2)}% APR`}
         </div>
@@ -378,26 +378,28 @@ function VaultCard({
 
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Stat
+          dark
           label="Your collateral"
           value={`${collateralBalance.toFixed(4)} ${vault.collateralSymbol}`}
           sub={collateralUsd != null ? `$${collateralUsd.toFixed(2)}` : undefined}
         />
         <Stat
+          dark
           label="Oracle price"
           value={oraclePrice != null ? `$${oraclePrice.toFixed(2)}` : "…"}
         />
       </div>
 
       {positionLoading ? (
-        <p className="text-xs text-aeras-300">Loading position…</p>
+        <p className="text-xs text-white/50">Loading position…</p>
       ) : positionError ? (
-        <div className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs text-aeras-500">
-          <div className="font-medium text-aeras-900">
+        <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60">
+          <div className="font-medium text-white">
             Couldn&apos;t load position
           </div>
-          <div className="mt-1 break-all text-aeras-300">{positionError}</div>
+          <div className="mt-1 break-all text-white/50">{positionError}</div>
           {storedNftId != null && (
-            <div className="mt-1 font-mono text-[10px] text-aeras-300">
+            <div className="mt-1 font-mono text-[10px] text-white/50">
               Stored nftId: {storedNftId} · clear devtools localStorage if stale
             </div>
           )}
@@ -413,11 +415,6 @@ function VaultCard({
             onReset={() => setClosingState({ kind: "idle" })}
           />
         </>
-      ) : position ? (
-        <div className="rounded-lg border border-aeras-blue-soft bg-aeras-blue-wash px-3 py-2 text-xs text-aeras-500">
-          <span className="font-medium text-aeras-blue">Position #{position.nftId}</span>{" "}
-          · empty. Reused on your next borrow in this vault (no extra rent).
-        </div>
       ) : null}
 
       <OperateForm
@@ -461,23 +458,23 @@ function PositionCard({
   const warning = !healthy && ltvPct < liquidationPct;
   const liquidatable = ltvPct >= liquidationPct;
 
-  let badgeBg = "bg-aeras-blue-wash text-aeras-blue";
+  let badgeBg = "bg-aeras-blue/20 text-aeras-blue-medium";
   let badgeText = "Healthy";
-  let cardBg = "bg-aeras-blue-wash border-aeras-blue-soft";
+  let cardBg = "bg-aeras-blue/15 border-aeras-blue/30";
   if (liquidatable) {
-    badgeBg = "bg-aeras-surface text-aeras-negative";
+    badgeBg = "bg-white/10 text-aeras-negative";
     badgeText = "At risk";
-    cardBg = "bg-aeras-surface border-aeras-border";
+    cardBg = "bg-white/5 border-white/10";
   } else if (warning) {
-    badgeBg = "bg-aeras-surface text-aeras-warning";
+    badgeBg = "bg-white/10 text-aeras-warning";
     badgeText = "Watch";
-    cardBg = "bg-aeras-surface border-aeras-border";
+    cardBg = "bg-white/5 border-white/10";
   }
 
   return (
     <div className={`space-y-3 rounded-xl border p-3.5 ${cardBg}`}>
       <div className="flex items-baseline justify-between">
-        <span className="font-mono text-[11px] text-aeras-300">
+        <span className="font-mono text-[11px] text-white/50">
           Position #{position.nftId}
         </span>
         <span
@@ -488,33 +485,37 @@ function PositionCard({
       </div>
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Stat
+          dark
           label="Collateral"
           value={`${colUi.toFixed(4)} ${vault.collateralSymbol}`}
           sub={colUsd != null ? `$${colUsd.toFixed(2)}` : undefined}
         />
         <Stat
+          dark
           label="Debt"
           value={`${debtUi.toFixed(4)} ${vault.borrowSymbol}`}
         />
         <Stat
+          dark
           label="Projected LTV"
           value={`${ltvPct.toFixed(1)}% / LT ${liquidationPct.toFixed(0)}%`}
         />
         <Stat
+          dark
           label="Health"
           value={health === Infinity ? "—" : `${health.toFixed(2)}×`}
         />
       </div>
       {liquidationPrice != null && (
-        <div className="border-t border-aeras-border pt-3 text-xs">
+        <div className="border-t border-white/10 pt-3 text-xs">
           <div className="flex items-baseline justify-between">
-            <span className="text-aeras-300">Liquidation price</span>
-            <span className="font-mono tabular-nums text-aeras-900">
+            <span className="text-white/50">Liquidation price</span>
+            <span className="font-mono tabular-nums text-white">
               ${liquidationPrice.toFixed(2)} / {vault.collateralSymbol}
             </span>
           </div>
           {oraclePrice != null && (
-            <div className="mt-1 text-[11px] text-aeras-300">
+            <div className="mt-1 text-[11px] text-white/50">
               {oraclePrice > liquidationPrice
                 ? `${vault.collateralSymbol} would need to drop ${(((oraclePrice - liquidationPrice) / oraclePrice) * 100).toFixed(1)}% from $${oraclePrice.toFixed(2)} to liquidate.`
                 : "Position is at the liquidation threshold."}
@@ -646,12 +647,12 @@ function OperateForm({
       </div>
 
       {(collateralUi > 0 || borrowUi > 0) && (
-        <div className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs">
+        <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs">
           <div className="flex justify-between">
-            <span className="text-aeras-300">Projected LTV</span>
+            <span className="text-white/50">Projected LTV</span>
             <span
               className={`font-mono tabular-nums ${
-                tooClose ? "text-aeras-negative" : "text-aeras-900"
+                tooClose ? "text-aeras-negative" : "text-white"
               }`}
             >
               {projectedLtv.toFixed(1)}% / LT {ltPct.toFixed(0)}%
@@ -667,7 +668,7 @@ function OperateForm({
       )}
 
       {formState.kind === "error" && (
-        <p className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs text-aeras-negative">
+        <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-aeras-negative">
           {formState.message}
         </p>
       )}
@@ -676,10 +677,10 @@ function OperateForm({
           href={`${SOLSCAN_TX_BASE}${formState.signature}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="block rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs"
+          className="block rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs"
         >
           <div className="font-medium text-aeras-positive">Submitted</div>
-          <div className="mt-0.5 break-all font-mono text-[10px] text-aeras-300">
+          <div className="mt-0.5 break-all font-mono text-[10px] text-white/50">
             {formState.signature}
           </div>
         </a>
@@ -726,23 +727,23 @@ function ClosePositionControl({
         type="button"
         onClick={onClose}
         disabled={submitting}
-        className="w-full rounded-xl border border-aeras-border bg-white px-4 py-2.5 text-sm font-medium text-aeras-900 transition-colors hover:border-aeras-border-strong hover:bg-aeras-surface disabled:cursor-not-allowed disabled:opacity-50"
+        className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {submitting
           ? "Closing position…"
           : `Close · repay ${debtUi.toFixed(4)} ${vault.borrowSymbol} + withdraw ${colUi.toFixed(4)} ${vault.collateralSymbol}`}
       </button>
-      <p className="text-[11px] text-aeras-300">
+      <p className="text-[11px] text-white/50">
         Needs ≥ {debtUi.toFixed(4)} {vault.borrowSymbol} in your wallet to repay
         the loan plus accrued interest.
       </p>
       {state.kind === "error" && (
-        <div className="rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs text-aeras-negative">
+        <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-aeras-negative">
           {state.message}
           <button
             type="button"
             onClick={onReset}
-            className="ml-2 text-aeras-300 underline-offset-2 hover:text-aeras-900 hover:underline"
+            className="ml-2 text-white/50 underline-offset-2 hover:text-white hover:underline"
           >
             Dismiss
           </button>
@@ -753,10 +754,10 @@ function ClosePositionControl({
           href={`${SOLSCAN_TX_BASE}${state.signature}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="block rounded-lg border border-aeras-border bg-aeras-surface px-3 py-2 text-xs"
+          className="block rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs"
         >
           <div className="font-medium text-aeras-positive">Position closed</div>
-          <div className="mt-0.5 break-all font-mono text-[10px] text-aeras-300">
+          <div className="mt-0.5 break-all font-mono text-[10px] text-white/50">
             {state.signature}
           </div>
         </a>
@@ -783,17 +784,17 @@ function NumberField({
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
-        <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           {label}
         </label>
         {balanceLabel && (
-          <span className="font-mono text-[11px] text-aeras-300">
+          <span className="font-mono text-[11px] text-white/50">
             {balanceLabel}
             {onMax && (
               <button
                 type="button"
                 onClick={onMax}
-                className="ml-1 text-aeras-500 underline-offset-2 hover:text-aeras-900 hover:underline"
+                className="ml-1 text-white/70 underline-offset-2 hover:text-white hover:underline"
               >
                 Max
               </button>
@@ -809,9 +810,9 @@ function NumberField({
           min={0}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="block w-full rounded-lg border border-aeras-border bg-white px-3 py-2.5 pr-16 font-mono text-sm tabular-nums text-aeras-900 focus:border-aeras-blue focus:outline-none focus:ring-2 focus:ring-aeras-blue-soft"
+          className="block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 pr-16 font-mono text-sm tabular-nums text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none focus:ring-2 focus:ring-aeras-blue-soft"
         />
-        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-medium text-aeras-300">
+        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-medium text-white/50">
           {right}
         </span>
       </div>
@@ -823,17 +824,30 @@ function Stat({
   label,
   value,
   sub,
+  dark,
 }: {
   label: string;
   value: string;
   sub?: string;
+  dark?: boolean;
 }) {
   return (
     <div>
-      <div className="text-[11px] text-aeras-300">{label}</div>
-      <div className="mt-0.5 font-mono text-sm tabular-nums text-aeras-900">
+      <div className={`text-[11px] ${dark ? "text-white/50" : "text-aeras-300"}`}>
+        {label}
+      </div>
+      <div
+        className={`mt-0.5 font-mono text-sm tabular-nums ${
+          dark ? "text-white" : "text-aeras-900"
+        }`}
+      >
         {value}
-        {sub && <span className="text-aeras-300"> · {sub}</span>}
+        {sub && (
+          <span className={dark ? "text-white/50" : "text-aeras-300"}>
+            {" "}
+            · {sub}
+          </span>
+        )}
       </div>
     </div>
   );
