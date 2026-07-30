@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   Area,
   AreaChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -24,7 +25,21 @@ const clientChartCache = new Map<string, OhlcCandle[]>();
 // How often a chart with nothing to show retries on its own.
 const AUTO_RETRY_MS = 15_000;
 
-export function PriceChart({ ticker }: { ticker: XStock }) {
+// An optional horizontal marker drawn across the chart. Used by the borrow
+// preview to show the price at which a position would be closed, without the
+// axis being cropped so tightly that the line falls off-screen.
+export interface PriceChartMarker {
+  price: number;
+  label: string;
+}
+
+export function PriceChart({
+  ticker,
+  marker,
+}: {
+  ticker: XStock;
+  marker?: PriceChartMarker;
+}) {
   const [range, setRange] = useState<Range>("1D");
   const [candles, setCandles] = useState<OhlcCandle[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -164,7 +179,20 @@ export function PriceChart({ ticker }: { ticker: XStock }) {
                 </linearGradient>
               </defs>
               <XAxis dataKey="t" hide />
-              <YAxis dataKey="c" domain={["dataMin", "dataMax"]} hide />
+              <YAxis
+                dataKey="c"
+                domain={
+                  marker
+                    ? [
+                        (dataMin: number) =>
+                          Math.min(dataMin, marker.price) * 0.995,
+                        (dataMax: number) =>
+                          Math.max(dataMax, marker.price) * 1.005,
+                      ]
+                    : ["dataMin", "dataMax"]
+                }
+                hide
+              />
               <Tooltip content={<ChartTooltip />} />
               <Area
                 type="monotone"
@@ -174,6 +202,21 @@ export function PriceChart({ ticker }: { ticker: XStock }) {
                 fill={`url(#${fillId})`}
                 isAnimationActive={false}
               />
+              {marker && (
+                <ReferenceLine
+                  y={marker.price}
+                  stroke="#c47b00"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                  label={{
+                    value: `${marker.label} $${formatPrice(marker.price)}`,
+                    position: "insideBottomLeft",
+                    fill: "#e0a53d",
+                    fontSize: 10,
+                    offset: 6,
+                  }}
+                />
+              )}
             </AreaChart>
           </ResponsiveContainer>
         )}

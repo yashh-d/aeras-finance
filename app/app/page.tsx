@@ -312,7 +312,12 @@ function SignedIn({
       <main className="flex-1 px-6 py-8 lg:px-10 lg:py-10">
         <div className="mx-auto max-w-6xl space-y-6">
           {activeSection === "earn" ? (
-            <EarnPanel prices={prices} />
+            <EarnPanel
+              walletAddress={walletAddress}
+              balances={balances}
+              prices={prices}
+              onRefresh={settleBalances}
+            />
           ) : activeSection === "positions" ? (
             walletAddress ? (
               <PositionsPanel

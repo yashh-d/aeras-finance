@@ -43,7 +43,10 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
         },
         embeddedWallets: {
           solana: { createOnLogin: "users-without-wallets" },
-          ethereum: { createOnLogin: "off" },
+          // EVM embedded wallet holds/signs the source-chain asset for the
+          // Trustware cross-chain conversion. It is not a login method; Solana
+          // stays the primary wallet (walletChainType above is unchanged).
+          ethereum: { createOnLogin: "users-without-wallets" },
         },
         solana: { rpcs: solanaRpcs },
       }}

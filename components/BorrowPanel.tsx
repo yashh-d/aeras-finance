@@ -8,8 +8,11 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 
+import { PriceChart } from "@/components/PriceChart";
+import { KaminoBorrowCard } from "@/components/KaminoBorrowCard";
 import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
+import { xstockByMint } from "@/lib/jupiter/xstocks";
 import {
   buildOperateTx,
   fetchLiveVaultStateViaProxy,
@@ -23,6 +26,12 @@ import {
   type UserPositionState,
   type XStockBorrowVault,
 } from "@/lib/jupiter/borrow";
+import { buildUnwindTx } from "@/lib/jupiter/multiply";
+import { KAMINO_XSTOCK_COLLATERALS } from "@/lib/kamino/reserves";
+import {
+  fetchKaminoPosition,
+  type KaminoPosition,
+} from "@/lib/kamino/positions";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
 import {
   atomicToUiString,
@@ -30,6 +39,9 @@ import {
   type AccountBalances,
 } from "@/lib/solana/balances";
 import BN from "bn.js";
+
+// Matches the loop surface so a borrow-side unwind sizes its swap identically.
+const UNWIND_SLIPPAGE_BPS = 150;
 
 interface Props {
   walletAddress: string;
@@ -75,6 +87,50 @@ export function BorrowPanel({
     );
   }, [balances, vaultsWithPosition]);
 
+  // Kamino covers xStocks that have no Jupiter Lend vault. Surface those here so
+  // the borrow section reads as one list regardless of which venue settles it.
+  const kaminoOnlyCollaterals = useMemo(() => {
+    const jupiterMints = new Set(
+      XSTOCK_BORROW_VAULTS.map((v) => v.collateralMint),
+    );
+    return KAMINO_XSTOCK_COLLATERALS.filter(
+      (c) => !jupiterMints.has(c.collateralMint),
+    );
+  }, []);
+
+  // The user's single Kamino obligation in this market, if any. Fetched once so
+  // a card stays visible after a full-balance deposit moves collateral on-chain
+  // (mirrors the localStorage position tracking on the Jupiter side).
+  const [kaminoPosition, setKaminoPosition] = useState<KaminoPosition | null>(
+    null,
+  );
+  const [kaminoRefreshTick, setKaminoRefreshTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const p = await fetchKaminoPosition(walletAddress);
+        if (!cancelled) setKaminoPosition(p);
+      } catch (err) {
+        console.error("[kamino obligation]", err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [walletAddress, kaminoRefreshTick]);
+
+  const eligibleKamino = useMemo(() => {
+    if (!balances) return [];
+    return kaminoOnlyCollaterals.filter(
+      (c) =>
+        (balances.xstocks[c.collateralMint] ?? 0) > 0 ||
+        kaminoPosition?.collateral.collateralMint === c.collateralMint,
+    );
+  }, [balances, kaminoOnlyCollaterals, kaminoPosition]);
+
+  const hasAny = eligibleVaults.length > 0 || eligibleKamino.length > 0;
+
   return (
     <div className="space-y-3">
       <div className="flex items-baseline justify-between">
@@ -83,7 +139,7 @@ export function BorrowPanel({
         </div>
         <span className="text-xs text-white/50">USDC</span>
       </div>
-      {eligibleVaults.length === 0 ? (
+      {!hasAny ? (
         <p className="rounded-xl border border-aeras-blue/30 bg-aeras-blue/15 px-4 py-3 text-sm text-white/60">
           Buy <span className="font-medium text-aeras-blue">TSLAx</span>,{" "}
           <span className="font-medium text-aeras-blue">SPYx</span>,{" "}
@@ -92,19 +148,38 @@ export function BorrowPanel({
           deposit it as collateral and borrow USDC.
         </p>
       ) : (
-        eligibleVaults.map((vault) => (
-          <VaultCard
-            key={vault.vaultId}
-            vault={vault}
-            walletAddress={walletAddress}
-            collateralBalance={balances?.xstocks[vault.collateralMint] ?? 0}
-            collateralBalanceAtomic={
-              balances?.xstocksAtomic[vault.collateralMint] ?? "0"
-            }
-            prices={prices}
-            onRefresh={onRefresh}
-          />
-        ))
+        <>
+          {eligibleVaults.map((vault) => (
+            <VaultCard
+              key={vault.vaultId}
+              vault={vault}
+              walletAddress={walletAddress}
+              collateralBalance={balances?.xstocks[vault.collateralMint] ?? 0}
+              collateralBalanceAtomic={
+                balances?.xstocksAtomic[vault.collateralMint] ?? "0"
+              }
+              prices={prices}
+              onRefresh={onRefresh}
+            />
+          ))}
+          {eligibleKamino.map((collateral) => (
+            <KaminoBorrowCard
+              key={collateral.reserve}
+              collateral={collateral}
+              walletAddress={walletAddress}
+              collateralBalance={
+                balances?.xstocks[collateral.collateralMint] ?? 0
+              }
+              collateralBalanceAtomic={
+                balances?.xstocksAtomic[collateral.collateralMint] ?? "0"
+              }
+              prices={prices}
+              initialPosition={kaminoPosition}
+              onRefresh={onRefresh}
+              onPositionChange={() => setKaminoRefreshTick((n) => n + 1)}
+            />
+          ))}
+        </>
       )}
     </div>
   );
@@ -143,6 +218,12 @@ function VaultCard({
   const [closingState, setClosingState] = useState<FormState>({ kind: "idle" });
 
   const signTxBase64 = useSignSolanaTxBase64();
+
+  // Whether this vault's position is leverage-managed (tagged by the loop
+  // surface). Loop positions can't be closed by a plain repay — the borrowed
+  // USDC is tied up as collateral — so we unwind (sell collateral to repay).
+  const loopKey = `aeras:loop:${walletAddress}:${vault.vaultId}`;
+  const [isLoop, setIsLoop] = useState(false);
 
   // Tracked nftId — mirrors localStorage but mutable via state so React re-renders
   // when auto-recovery rebinds an existing on-chain position NFT.
@@ -240,6 +321,13 @@ function VaultCard({
     refreshPosition();
   }, [refreshPosition]);
 
+  // Re-read the loop tag whenever the position changes (the loop surface may
+  // have set it in another section this session, or on a prior visit).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setIsLoop(localStorage.getItem(loopKey) === "1");
+  }, [loopKey, position]);
+
   const oraclePrice = live?.oraclePriceUsd ?? prices?.[vault.collateralMint]?.usdPrice ?? null;
   const collateralUsd = oraclePrice != null ? collateralBalance * oraclePrice : null;
   const cfPct = vault.collateralFactor / 10;
@@ -326,16 +414,36 @@ function VaultCard({
     if (!position) return;
     setClosingState({ kind: "submitting" });
     try {
-      const { maxRepay, maxWithdraw } = await getMaxSentinels();
       const conn = getConnection();
-      const { base64Tx } = await buildOperateTx({
-        vaultId: vault.vaultId,
-        positionId: position.nftId,
-        collateralDeltaAtomic: maxWithdraw,
-        debtDeltaAtomic: maxRepay,
-        signerAddress: walletAddress,
-        connection: conn,
-      });
+      let base64Tx: string;
+      if (isLoop) {
+        // Leverage-managed: the borrowed USDC is held as collateral, so a direct
+        // repay would need wallet USDC the user doesn't have. Unwind instead —
+        // sell enough collateral to clear the debt, return the rest.
+        if (oraclePrice == null) {
+          throw new Error("Oracle price unavailable — can't size the unwind.");
+        }
+        ({ base64Tx } = await buildUnwindTx({
+          vault,
+          positionId: position.nftId,
+          collateralAtomic: position.collateralAtomic,
+          debtAtomic: position.debtAtomic,
+          oraclePriceUsd: oraclePrice,
+          signerAddress: walletAddress,
+          connection: conn,
+          slippageBps: UNWIND_SLIPPAGE_BPS,
+        }));
+      } else {
+        const { maxRepay, maxWithdraw } = await getMaxSentinels();
+        ({ base64Tx } = await buildOperateTx({
+          vaultId: vault.vaultId,
+          positionId: position.nftId,
+          collateralDeltaAtomic: maxWithdraw,
+          debtDeltaAtomic: maxRepay,
+          signerAddress: walletAddress,
+          connection: conn,
+        }));
+      }
       const signed = await signTxBase64(base64Tx);
       const signedBytes = base64ToBytes(signed);
       const sig = await conn.sendRawTransaction(signedBytes, {
@@ -346,7 +454,13 @@ function VaultCard({
       // Position is zeroed but the on-chain position-NFT account stays alive
       // (Jupiter Lend has no close-position instruction). Keep the nftId in
       // localStorage so future borrows in this vault reuse it instead of
-      // paying ~0.015 SOL rent for a new NFT.
+      // paying ~0.015 SOL rent for a new NFT. Clear the loop tag so a later
+      // plain borrow in this vault isn't treated as leverage-managed.
+      if (isLoop) {
+        try {
+          localStorage.removeItem(loopKey);
+        } catch {}
+      }
       setClosingState({ kind: "done", signature: sig });
       await onRefresh();
       await refreshPosition();
@@ -406,11 +520,17 @@ function VaultCard({
         </div>
       ) : position && (position.collateralAtomic.gtn(0) || position.debtAtomic.gtn(0)) ? (
         <>
-          <PositionCard vault={vault} position={position} oraclePrice={oraclePrice} />
+          <PositionCard
+            vault={vault}
+            position={position}
+            oraclePrice={oraclePrice}
+            isLoop={isLoop}
+          />
           <ClosePositionControl
             vault={vault}
             position={position}
             state={closingState}
+            isLoop={isLoop}
             onClose={handleClose}
             onReset={() => setClosingState({ kind: "idle" })}
           />
@@ -436,10 +556,12 @@ function PositionCard({
   vault,
   position,
   oraclePrice,
+  isLoop,
 }: {
   vault: XStockBorrowVault;
   position: UserPositionState;
   oraclePrice: number | null;
+  isLoop?: boolean;
 }) {
   const colUi = fromAtomicBN(position.collateralAtomic, vault.collateralDecimals);
   const debtUi = fromAtomicBN(position.debtAtomic, vault.borrowDecimals);
@@ -461,14 +583,17 @@ function PositionCard({
   let badgeBg = "bg-aeras-blue/20 text-aeras-blue-medium";
   let badgeText = "Healthy";
   let cardBg = "bg-aeras-blue/15 border-aeras-blue/30";
+  let statusDot = "bg-aeras-blue";
   if (liquidatable) {
     badgeBg = "bg-white/10 text-aeras-negative";
     badgeText = "At risk";
     cardBg = "bg-white/5 border-white/10";
+    statusDot = "bg-aeras-negative";
   } else if (warning) {
     badgeBg = "bg-white/10 text-aeras-warning";
     badgeText = "Watch";
     cardBg = "bg-white/5 border-white/10";
+    statusDot = "bg-aeras-warning";
   }
 
   return (
@@ -477,31 +602,42 @@ function PositionCard({
         <span className="font-mono text-[11px] text-white/50">
           Position #{position.nftId}
         </span>
-        <span
-          className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${badgeBg}`}
-        >
-          {badgeText}
+        <span className="flex items-center gap-1.5">
+          {isLoop && (
+            <span className="rounded-md bg-aeras-blue/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-aeras-blue-medium">
+              Loop
+            </span>
+          )}
+          <span
+            className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${badgeBg}`}
+          >
+            {badgeText}
+          </span>
         </span>
       </div>
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Stat
           dark
+          dot="bg-aeras-positive"
           label="Collateral"
           value={`${colUi.toFixed(4)} ${vault.collateralSymbol}`}
           sub={colUsd != null ? `$${colUsd.toFixed(2)}` : undefined}
         />
         <Stat
           dark
+          dot="bg-aeras-warning"
           label="Debt"
           value={`${debtUi.toFixed(4)} ${vault.borrowSymbol}`}
         />
         <Stat
           dark
+          dot={statusDot}
           label="Projected LTV"
           value={`${ltvPct.toFixed(1)}% / LT ${liquidationPct.toFixed(0)}%`}
         />
         <Stat
           dark
+          dot={statusDot}
           label="Health"
           value={health === Infinity ? "—" : `${health.toFixed(2)}×`}
         />
@@ -509,7 +645,10 @@ function PositionCard({
       {liquidationPrice != null && (
         <div className="border-t border-white/10 pt-3 text-xs">
           <div className="flex items-baseline justify-between">
-            <span className="text-white/50">Liquidation price</span>
+            <span className="flex items-center gap-1.5 text-white/50">
+              <span className="inline-block h-1.5 w-1.5 rounded-full bg-aeras-negative" />
+              Liquidation price
+            </span>
             <span className="font-mono tabular-nums text-white">
               ${liquidationPrice.toFixed(2)} / {vault.collateralSymbol}
             </span>
@@ -589,6 +728,27 @@ function OperateForm({
   const ltPct = vault.liquidationThreshold / 10;
   const cfPct = vault.collateralFactor / 10;
   const tooClose = projectedLtv >= cfPct;
+  // Price at which the projected position would reach LT and be closed. LTV
+  // scales inversely with collateral price, so priceLiq / priceNow = LTV / LT.
+  const liquidationPrice =
+    oraclePrice != null && projectedLtv > 0
+      ? oraclePrice * (projectedLtv / ltPct)
+      : null;
+  const drawdownPct =
+    liquidationPrice != null && oraclePrice != null && oraclePrice > 0
+      ? ((oraclePrice - liquidationPrice) / oraclePrice) * 100
+      : null;
+  const ticker = xstockByMint(vault.collateralMint);
+  const existingDebtUi = existingPosition
+    ? fromAtomicBN(existingPosition.debtAtomic, vault.borrowDecimals)
+    : 0;
+  // Upper bound for the borrow slider: the additional borrow that brings the
+  // position to the collateral factor, minus a 1% buffer so interest accrued
+  // between preview and settlement can't push it over CF and fail the tx.
+  const maxNewBorrow =
+    totalCollateralUsd != null
+      ? Math.max(0, totalCollateralUsd * ((cfPct - 1) / 100) - existingDebtUi)
+      : 0;
   const submitting = formState.kind === "submitting";
   const disabled =
     !colDeltaValid ||
@@ -646,8 +806,58 @@ function OperateForm({
         />
       </div>
 
+      {maxNewBorrow > 0 && (
+        <div>
+          <div className="mb-2 flex items-baseline justify-between text-xs">
+            <span className="text-white/50">Borrow amount</span>
+            <span className="font-mono tabular-nums text-white">
+              {(borrowUi || 0).toFixed(2)} {vault.borrowSymbol} ·{" "}
+              <span className={tooClose ? "text-aeras-negative" : undefined}>
+                {projectedLtv.toFixed(1)}% LTV
+              </span>
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={maxNewBorrow}
+            step={Math.max(maxNewBorrow / 100, 0.01)}
+            value={Math.min(Math.max(borrowUi || 0, 0), maxNewBorrow)}
+            onChange={(e) => {
+              setBorrowInput(Number(e.target.value).toFixed(2));
+              resetForm();
+            }}
+            className="w-full accent-aeras-blue"
+          />
+          <div className="mt-1 flex justify-between text-[10px] uppercase tracking-wider text-white/50">
+            <span>0</span>
+            <span>
+              Max {maxNewBorrow.toFixed(2)} {vault.borrowSymbol}
+            </span>
+          </div>
+        </div>
+      )}
+
       {(collateralUi > 0 || borrowUi > 0) && (
-        <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs">
+        <div className="space-y-3 rounded-lg border border-white/10 bg-white/5 px-3 py-3 text-xs">
+          {ticker && oraclePrice != null && liquidationPrice != null && (
+            <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
+              <PriceChart
+                ticker={ticker}
+                marker={{ price: liquidationPrice, label: "Safety floor" }}
+              />
+            </div>
+          )}
+
+          {borrowUi > 0 && (
+            <div className="flex justify-between">
+              <span className="text-white/50">You receive</span>
+              <span className="font-mono tabular-nums text-white">
+                {borrowUi.toFixed(2)} {vault.borrowSymbol}
+              </span>
+            </div>
+          )}
+
           <div className="flex justify-between">
             <span className="text-white/50">Projected LTV</span>
             <span
@@ -658,8 +868,28 @@ function OperateForm({
               {projectedLtv.toFixed(1)}% / LT {ltPct.toFixed(0)}%
             </span>
           </div>
+
+          {liquidationPrice != null &&
+            drawdownPct != null &&
+            drawdownPct > 0 && (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-white/50">Safety floor</span>
+                  <span className="font-mono tabular-nums text-white">
+                    ${liquidationPrice.toFixed(2)} · {drawdownPct.toFixed(1)}%
+                    below
+                  </span>
+                </div>
+                <p className="text-[11px] text-white/50">
+                  {vault.collateralSymbol} would need to fall{" "}
+                  {drawdownPct.toFixed(1)}% to ${liquidationPrice.toFixed(2)}{" "}
+                  before your position is closed to repay the loan.
+                </p>
+              </>
+            )}
+
           {tooClose && (
-            <p className="mt-1 text-aeras-negative">
+            <p className="text-aeras-negative">
               Borrow exceeds the collateral factor ({cfPct.toFixed(0)}%). Reduce
               the borrow amount or add more collateral.
             </p>
@@ -696,9 +926,13 @@ function OperateForm({
           ? "Checking for an existing position…"
           : submitting
             ? "Signing and submitting…"
-            : existingPosition
-              ? "Update position"
-              : "Open position"}
+            : borrowUi > 0
+              ? `Borrow $${borrowUi.toFixed(2)} against ${vault.collateralSymbol}`
+              : collateralUi > 0
+                ? `Deposit ${collateralUi.toFixed(4)} ${vault.collateralSymbol}`
+                : existingPosition
+                  ? "Update position"
+                  : "Open position"}
       </button>
     </div>
   );
@@ -708,12 +942,14 @@ function ClosePositionControl({
   vault,
   position,
   state,
+  isLoop,
   onClose,
   onReset,
 }: {
   vault: XStockBorrowVault;
   position: UserPositionState;
   state: FormState;
+  isLoop?: boolean;
   onClose: () => void;
   onReset: () => void;
 }) {
@@ -729,13 +965,18 @@ function ClosePositionControl({
         disabled={submitting}
         className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {submitting
-          ? "Closing position…"
-          : `Close · repay ${debtUi.toFixed(4)} ${vault.borrowSymbol} + withdraw ${colUi.toFixed(4)} ${vault.collateralSymbol}`}
+        {isLoop
+          ? submitting
+            ? "Unwinding loop…"
+            : `Unwind loop · sell ${vault.collateralSymbol} to repay ${debtUi.toFixed(4)} ${vault.borrowSymbol}`
+          : submitting
+            ? "Closing position…"
+            : `Close · repay ${debtUi.toFixed(4)} ${vault.borrowSymbol} + withdraw ${colUi.toFixed(4)} ${vault.collateralSymbol}`}
       </button>
       <p className="text-[11px] text-white/50">
-        Needs ≥ {debtUi.toFixed(4)} {vault.borrowSymbol} in your wallet to repay
-        the loan plus accrued interest.
+        {isLoop
+          ? `Sells enough ${vault.collateralSymbol} collateral to repay the loan plus accrued interest; the rest is returned to your wallet. No wallet ${vault.borrowSymbol} needed.`
+          : `Needs ≥ ${debtUi.toFixed(4)} ${vault.borrowSymbol} in your wallet to repay the loan plus accrued interest.`}
       </p>
       {state.kind === "error" && (
         <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-aeras-negative">
@@ -825,15 +1066,23 @@ function Stat({
   value,
   sub,
   dark,
+  dot,
 }: {
   label: string;
   value: string;
   sub?: string;
   dark?: boolean;
+  // Tailwind bg-* class for a small color dot before the label.
+  dot?: string;
 }) {
   return (
     <div>
-      <div className={`text-[11px] ${dark ? "text-white/50" : "text-aeras-300"}`}>
+      <div
+        className={`flex items-center gap-1.5 text-[11px] ${dark ? "text-white/50" : "text-aeras-300"}`}
+      >
+        {dot && (
+          <span className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} />
+        )}
         {label}
       </div>
       <div
