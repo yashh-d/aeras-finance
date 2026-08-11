@@ -3,7 +3,8 @@ import {
   KAMINO_XSTOCK_COLLATERALS,
   type KaminoCollateralReserve,
 } from "./reserves";
-import { KaminoKtxError, toAtomicString } from "./borrow";
+import { KaminoKtxError } from "./borrow";
+import { atomicToUiString } from "@/lib/solana/balances";
 import type { KaminoObligationSummary } from "@/app/api/kamino/obligations/route";
 
 export function kaminoCollateralByReserve(
@@ -120,8 +121,13 @@ export async function buildKaminoRepayTx(
   debtUsdc: number,
 ): Promise<string> {
   const padded = debtUsdc * REPAY_BUFFER;
-  const atomic = toAtomicString(padded, KAMINO_USDC_BORROW.decimals);
-  return buildViaKtx("repay", walletAddress, KAMINO_USDC_BORROW.reserve, atomic);
+  // Decimal amount, not atomic: KTX applies the reserve's decimals itself.
+  return buildViaKtx(
+    "repay",
+    walletAddress,
+    KAMINO_USDC_BORROW.reserve,
+    String(padded),
+  );
 }
 
 export async function buildKaminoWithdrawTx(
@@ -132,6 +138,7 @@ export async function buildKaminoWithdrawTx(
     "withdraw",
     walletAddress,
     position.collateral.reserve,
-    position.collateralAtomic,
+    // The position carries atomic units; KTX wants the decimal amount.
+    atomicToUiString(position.collateralAtomic, position.collateral.decimals),
   );
 }

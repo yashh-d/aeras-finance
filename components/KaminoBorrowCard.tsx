@@ -5,7 +5,8 @@ import { useCallback, useEffect, useState } from "react";
 import { PriceChart } from "@/components/PriceChart";
 import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
-import { xstockByMint } from "@/lib/jupiter/xstocks";
+import { assetIdentity, xstockByMint } from "@/lib/jupiter/xstocks";
+import { AssetLogo } from "@/components/AssetLogo";
 import {
   buildKaminoBorrowTx,
   buildKaminoDepositTx,
@@ -91,9 +92,22 @@ export function KaminoBorrowCard({
     }
   }, [walletAddress, collateral.collateralMint]);
 
+  // Derive this card's position from the parent's single obligation fetch rather
+  // than every card round-tripping on mount. With the full market catalog
+  // rendered, self-fetching would fire one identical request per card (and could
+  // paint several "couldn't load position" boxes if the API hiccups). Only the
+  // one card matching the user's actual collateral shows a live position; the
+  // rest stay inert. After an open/close, the acting card still calls
+  // refreshPosition directly for an immediate update.
   useEffect(() => {
-    refreshPosition();
-  }, [refreshPosition]);
+    setPosition(
+      initialPosition &&
+        initialPosition.collateral.collateralMint === collateral.collateralMint
+        ? initialPosition
+        : null,
+    );
+    setPositionError(null);
+  }, [initialPosition, collateral.collateralMint]);
 
   const oraclePrice =
     position?.oraclePriceUsd ??
@@ -224,14 +238,18 @@ export function KaminoBorrowCard({
 
   return (
     <div className="space-y-4 rounded-xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-4 shadow-lg shadow-black/10">
-      <div className="space-y-1">
-        <div className="flex items-baseline justify-between gap-3">
+      <div className="flex items-center gap-3">
+        <AssetLogo
+          xstock={assetIdentity(collateral.collateralMint, collateral.symbol)}
+          size={32}
+        />
+        <div className="min-w-0 space-y-1">
           <div className="text-sm font-medium tracking-tight text-white">
             {collateral.symbol} → {BORROW_SYMBOL}
           </div>
-        </div>
-        <div className="font-mono text-[11px] text-white/50">
-          Max LTV {cfPct.toFixed(0)}% · LT {ltPct.toFixed(0)}%
+          <div className="font-mono text-[11px] text-white/50">
+            Max LTV {cfPct.toFixed(0)}% · LT {ltPct.toFixed(0)}%
+          </div>
         </div>
       </div>
 

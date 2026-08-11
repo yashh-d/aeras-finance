@@ -66,8 +66,13 @@ export async function buildKaminoDepositTx({
   collateral: KaminoCollateralReserve;
   collateralUi: number;
 }): Promise<string> {
-  const atomic = toAtomicString(collateralUi, collateral.decimals);
-  return buildViaKtx("deposit", walletAddress, collateral.reserve, atomic);
+  // KTX takes a decimal token amount and applies the reserve's decimals itself.
+  return buildViaKtx(
+    "deposit",
+    walletAddress,
+    collateral.reserve,
+    String(collateralUi),
+  );
 }
 
 // Build an unsigned base64 transaction that borrows `borrowUi` USDC against an
@@ -80,12 +85,11 @@ export async function buildKaminoBorrowTx({
   walletAddress: string;
   borrowUi: number;
 }): Promise<string> {
-  const atomic = toAtomicString(borrowUi, KAMINO_USDC_BORROW.decimals);
   return buildViaKtx(
     "borrow",
     walletAddress,
     KAMINO_USDC_BORROW.reserve,
-    atomic,
+    String(borrowUi),
   );
 }
 

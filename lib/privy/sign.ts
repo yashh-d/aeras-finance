@@ -1,6 +1,10 @@
 "use client";
 
+import { useCallback } from "react";
+
 import { useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+
+import { getConnection } from "@/lib/solana/balances";
 
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
@@ -21,13 +25,51 @@ export function useSignSolanaTxBase64() {
   const { signTransaction } = useSignTransaction();
   const { wallets } = useWallets();
 
-  return async function signTxBase64(b64Tx: string): Promise<string> {
-    const wallet = wallets[0];
-    if (!wallet) {
-      throw new Error("No Solana wallet available to sign.");
-    }
-    const transaction = base64ToBytes(b64Tx);
-    const { signedTransaction } = await signTransaction({ transaction, wallet });
-    return bytesToBase64(signedTransaction);
-  };
+  return useCallback(
+    async function signTxBase64(b64Tx: string): Promise<string> {
+      const wallet = wallets[0];
+      if (!wallet) {
+        throw new Error("No Solana wallet available to sign.");
+      }
+      const transaction = base64ToBytes(b64Tx);
+      const { signedTransaction } = await signTransaction({
+        transaction,
+        wallet,
+      });
+      return bytesToBase64(signedTransaction);
+    },
+    [signTransaction, wallets],
+  );
+}
+
+// Sign, broadcast, and confirm in one call, resolving with the signature.
+//
+// The signing hook above stops at a signed blob, which is what Jupiter's execute
+// endpoint wants. Trustware is the opposite: it needs us to broadcast the
+// transaction ourselves and then hand it the resulting hash, so the caller needs
+// a signature that is already on chain.
+//
+// Confirmation is not optional here. Reporting a hash to Trustware that never
+// landed would leave it tracking a transaction that does not exist.
+export function useSendSolanaTxBase64() {
+  const signTxBase64 = useSignSolanaTxBase64();
+
+  return useCallback(
+    async function sendTxBase64(b64Tx: string): Promise<string> {
+      const signed = await signTxBase64(b64Tx);
+      const conn = getConnection();
+      const signature = await conn.sendRawTransaction(base64ToBytes(signed), {
+        skipPreflight: false,
+        maxRetries: 3,
+      });
+      const { value } = await conn.confirmTransaction(signature, "confirmed");
+      if (value.err) {
+        throw new Error(
+          `The conversion transaction failed on Solana (${signature}).`,
+        );
+      }
+      return signature;
+    },
+    [signTxBase64],
+  );
 }

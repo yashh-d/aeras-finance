@@ -267,18 +267,10 @@ function LoopController({
     try {
       const state = await fetchPositionState(vault, nftId, getConnection());
       setPosition(state);
-      // Backfill / maintain the loop tag from whatever the loop surface is
-      // actively managing, so an existing loop opened before this tag existed
-      // still routes the borrow-side close through an unwind.
-      if (state && (state.collateralAtomic.gtn(0) || state.debtAtomic.gtn(0))) {
-        markLoopManaged();
-      } else if (state) {
-        clearLoopManaged();
-      }
     } catch (err) {
       console.error("[loop position]", err);
     }
-  }, [nftId, vault, markLoopManaged, clearLoopManaged]);
+  }, [nftId, vault]);
 
   useEffect(() => {
     refreshLive();
@@ -419,6 +411,9 @@ function LoopController({
         maxRetries: 3,
       });
       await conn.confirmTransaction(sig, "confirmed");
+      // This vault is no longer leverage-managed; drop the tag so a later plain
+      // borrow in the same vault closes via repay+withdraw, not an unwind.
+      clearLoopManaged();
       setCloseState({ kind: "done", signature: sig });
       await onRefresh();
       await Promise.all([refreshLive(), refreshPosition()]);

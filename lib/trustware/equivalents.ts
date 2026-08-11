@@ -1,5 +1,10 @@
-// Equivalence registry: which same-underlying tokenized-stock representations on
-// other chains map to a canonical Solana xStock that Jupiter Lend accepts.
+// Equivalence registry: which same-underlying tokenized-stock representations
+// map to a canonical Solana xStock that Jupiter Lend accepts.
+//
+// Sources are not all cross-chain. Ondo issues the same equities natively on
+// Solana, so a Solana-to-Solana conversion is a real case: the user holds
+// TSLAon on Solana but the vault only takes TSLAx. Trustware routes that too
+// (via Jupiter), which is why it is handled here rather than as a special case.
 //
 // Scope is deliberately narrow: only 1:1 equivalents from the Ondo and Backed
 // xStock issuers, for the four underlyings that have Jupiter Lend borrow vaults
@@ -16,15 +21,26 @@
 // quote time via /api/trustware/quote.
 
 import { XSTOCK_BORROW_VAULTS, type XStockBorrowVault } from "@/lib/jupiter/borrow";
+import { TRUSTWARE_SOLANA_CHAIN } from "./constants";
 
 export type EquivalentIssuer = "ondo" | "xstock";
 
+// Which signer executes the source leg. EVM sources are signed with the Privy
+// embedded EVM wallet through an EIP-1193 provider; Solana sources are signed
+// with the existing Privy Solana wallet. Trustware returns a different execution
+// payload for each (an EVM tx object vs a serialized Solana transaction), so
+// this has to be known before execution, not guessed from the address format.
+export type SourceChainKind = "evm" | "solana";
+
 export interface EquivalentSource {
   issuer: EquivalentIssuer;
-  // Trustware chainId. Numeric string for EVM chains.
+  kind: SourceChainKind;
+  // Trustware chainId. Numeric string for EVM chains, "solana-mainnet-beta"
+  // for Solana.
   chain: string;
   chainLabel: string;
-  // Contract address, lowercased for case-insensitive matching.
+  // Contract address or mint. Lowercased for EVM (case-insensitive matching);
+  // Solana mints are base58 and case-sensitive, so they are left as-is.
   token: string;
   decimals: number;
   symbol: string;
@@ -49,6 +65,7 @@ export interface EquivalenceEntry {
 const CHAIN_LABELS: Record<string, string> = {
   "1": "Ethereum",
   "56": "BNB Chain",
+  [TRUSTWARE_SOLANA_CHAIN]: "Solana",
 };
 
 // Held out until Trustware has live routes. These tokens exist in the registry
@@ -61,10 +78,18 @@ const CHAIN_LABELS: Record<string, string> = {
 //                    NVDAon 0xb989ad9b91886b1aaed8daadb26f028b29b40945
 //                    xStocks TSLAx/SPYx/QQQx/NVDAx share the mainnet addresses below.
 //   Arbitrum (42161): TSLAon 0xb298bc2fac7aeda17fe0812323a98e6278a91557
+//   Solana: QQQon HrYNm6jTQ71LoFphjVKBTdAE4uja7WsmLG8VxB8ondo (9 decimals).
+//     Verified unroutable 2026-08-05: /quote returns "fromAmountUSD is required
+//     for Solana routes", and supplying it then returns "Solana under
+//     maintenance". TSLAon/SPYon/NVDAon route on the identical Solana-to-Solana
+//     pair in the same run, so this is specific to the QQQon route, not Solana.
 
-// Every EVM Ondo/xStock token observed is 18 decimals.
+// Every EVM Ondo/xStock token observed is 18 decimals. Ondo's Solana mints are
+// 9, and Backed's Solana xStocks are 8, so decimals cannot be assumed globally.
 const EVM_DECIMALS = 18;
+const SOLANA_ONDO_DECIMALS = 9;
 
+// An EVM source. Addresses are lowercased so lookups are case-insensitive.
 function s(
   issuer: EquivalentIssuer,
   chain: string,
@@ -73,10 +98,27 @@ function s(
 ): EquivalentSource {
   return {
     issuer,
+    kind: "evm",
     chain,
     chainLabel: CHAIN_LABELS[chain] ?? chain,
     token: token.toLowerCase(),
     decimals: EVM_DECIMALS,
+    symbol,
+  };
+}
+
+// A Solana source. Base58 mints are case-sensitive, so the address is kept
+// verbatim. Only Ondo mints appear here: the Backed xStock on Solana is the
+// conversion destination itself, so holding it is the direct-deposit case
+// rather than something to convert.
+function sol(symbol: string, token: string): EquivalentSource {
+  return {
+    issuer: "ondo",
+    kind: "solana",
+    chain: TRUSTWARE_SOLANA_CHAIN,
+    chainLabel: CHAIN_LABELS[TRUSTWARE_SOLANA_CHAIN],
+    token,
+    decimals: SOLANA_ONDO_DECIMALS,
     symbol,
   };
 }
@@ -95,6 +137,7 @@ export const EQUIVALENCE: readonly EquivalenceEntry[] = [
     underlying: "TSLA",
     vault: vaultFor("TSLA"),
     sources: [
+      sol("TSLAon", "KeGv7bsfR4MheC1CkmnAVceoApjrkvBhHYjWb67ondo"),
       s("ondo", "1", "TSLAon", "0xf6b1117ec07684d3958cad8beb1b302bfd21103f"),
       s("xstock", "1", "TSLAx", "0x8ad3c73f833d3f9a523ab01476625f269aeb7cf0"),
       s("ondo", "56", "TSLAon", "0x2494b603319d4d9f9715c9f4496d9e0364b59d93"),
@@ -105,6 +148,7 @@ export const EQUIVALENCE: readonly EquivalenceEntry[] = [
     underlying: "SPY",
     vault: vaultFor("SPY"),
     sources: [
+      sol("SPYon", "k18WJUULWheRkSpSquYGdNNmtuE2Vbw1hpuUi92ondo"),
       s("ondo", "1", "SPYon", "0xfedc5f4a6c38211c1338aa411018dfaf26612c08"),
       s("xstock", "1", "SPYx", "0x90a2a4c76b5d8c0bc892a69ea28aa775a8f2dd48"),
       s("ondo", "56", "SPYon", "0x6a708ead771238919d85930b5a0f10454e1c331a"),
@@ -125,6 +169,7 @@ export const EQUIVALENCE: readonly EquivalenceEntry[] = [
     underlying: "NVDA",
     vault: vaultFor("NVDA"),
     sources: [
+      sol("NVDAon", "gEGtLTPNQ7jcg25zTetkbmF7teoDLcrfTnQfmn2ondo"),
       s("ondo", "1", "NVDAon", "0x2d1f7226bd1f780af6b9a49dcc0ae00e8df4bdee"),
       s("xstock", "1", "NVDAx", "0xc845b2894dbddd03858fd2d643b4ef725fe0849d"),
       s("ondo", "56", "NVDAon", "0xa9ee28c80f960b889dfbd1902055218cba016f75"),
@@ -139,6 +184,19 @@ export function equivalenceByUnderlying(
   return EQUIVALENCE.find((e) => e.underlying === underlying);
 }
 
+// Reverse lookup from the Jupiter Lend vault the user is depositing into. This
+// is the planner's entry point: given a vault, which off-Solana tokens could be
+// converted into its collateral mint.
+export function equivalenceByVaultId(
+  vaultId: number,
+): EquivalenceEntry | undefined {
+  return EQUIVALENCE.find((e) => e.vault.vaultId === vaultId);
+}
+
+export function sourcesForVaultId(vaultId: number): EquivalentSource[] {
+  return equivalenceByVaultId(vaultId)?.sources ?? [];
+}
+
 // Look up a (chain, token) pair. Returns the matched source and the entry whose
 // destination it converts into, or undefined if the pair is not a known
 // convertible equivalent.
@@ -146,11 +204,16 @@ export function findEquivalentSource(
   chain: string,
   token: string,
 ): { entry: EquivalenceEntry; source: EquivalentSource } | undefined {
-  const needle = token.toLowerCase();
   for (const entry of EQUIVALENCE) {
-    const source = entry.sources.find(
-      (src) => src.chain === chain && src.token === needle,
-    );
+    const source = entry.sources.find((src) => {
+      if (src.chain !== chain) return false;
+      // EVM addresses are hex and compared case-insensitively. Solana mints are
+      // base58, where case is significant: lowercasing them would both fail to
+      // match the stored mint and risk colliding two distinct mints.
+      return src.kind === "evm"
+        ? src.token === token.toLowerCase()
+        : src.token === token;
+    });
     if (source) return { entry, source };
   }
   return undefined;

@@ -111,6 +111,9 @@ export interface LiveVaultState {
   borrowRateAnnual: number;
   // How much can still be borrowed from this vault, in atomic units of the borrow token.
   borrowableAtomic: string;
+  // Total collateral supplied to this vault, in USD — the market's size. Null if
+  // the upstream payload lacks the price/supply fields to compute it.
+  totalSuppliedUsd: number | null;
 }
 
 interface RawVault {
@@ -118,6 +121,10 @@ interface RawVault {
   oraclePrice: string;
   borrowRate: string;
   borrowable: string;
+  // Total collateral (supply token) deposited, in atomic units.
+  totalSupply?: string;
+  // Supply (collateral) token metadata. `price` is USD per whole token.
+  supplyToken?: { decimals?: number; price?: string };
 }
 
 export async function fetchLiveVaultStateViaProxy(
@@ -139,11 +146,21 @@ export function parseLiveVault(raw: RawVault): LiveVaultState {
   const oraclePriceUsd = Number(raw.oraclePrice) / 1e15;
   // borrowRate is in tenths of a percent (e.g. "781" = 7.81%).
   const borrowRateAnnual = Number(raw.borrowRate) / 10_000;
+  // Market size: total collateral supplied, valued at the supply token's price.
+  const supplyDecimals = raw.supplyToken?.decimals ?? 8;
+  const supplyPrice = raw.supplyToken?.price
+    ? Number(raw.supplyToken.price)
+    : null;
+  const totalSuppliedUsd =
+    supplyPrice != null && raw.totalSupply != null
+      ? (Number(raw.totalSupply) / 10 ** supplyDecimals) * supplyPrice
+      : null;
   return {
     vaultId: raw.id,
     oraclePriceUsd,
     borrowRateAnnual,
     borrowableAtomic: raw.borrowable,
+    totalSuppliedUsd,
   };
 }
 

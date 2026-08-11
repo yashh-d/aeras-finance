@@ -56,11 +56,14 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  // Amount is atomic units as a decimal string. Reject anything non-numeric so
-  // we never forward junk upstream.
-  if (!amount || !/^\d+$/.test(amount) || amount === "0") {
+  // Amount is a DECIMAL token amount, not atomic units. Kamino's KTX API scales
+  // by the reserve's decimals itself: sending "1" for an 8-decimal xStock made
+  // the program see 100000000, and sending atomic units made it see the amount
+  // multiplied by 10^8 again, which failed as DepositLimitExceeded. Verified
+  // against the live API on 2026-08-06.
+  if (!amount || !/^\d+(\.\d+)?$/.test(amount) || Number(amount) <= 0) {
     return NextResponse.json(
-      { error: "A positive integer amount (atomic units) is required" },
+      { error: "A positive decimal token amount is required" },
       { status: 400 },
     );
   }

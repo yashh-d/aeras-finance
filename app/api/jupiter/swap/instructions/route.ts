@@ -1,17 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { USDC_MINT } from "@/lib/jupiter/constants";
-import { xstockByMint } from "@/lib/jupiter/xstocks";
+import { isAllowedSwapPair } from "@/lib/jupiter/swap-pairs";
 
 export const dynamic = "force-dynamic";
 
 const LITE_SWAP_BASE = "https://lite-api.jup.ag/swap/v1";
-
-function isAllowedPair(inputMint: string, outputMint: string): boolean {
-  const usdcToXstock = inputMint === USDC_MINT && Boolean(xstockByMint(outputMint));
-  const xstockToUsdc = Boolean(xstockByMint(inputMint)) && outputMint === USDC_MINT;
-  return usdcToXstock || xstockToUsdc;
-}
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
@@ -25,7 +18,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (!isAllowedPair(quoteResponse.inputMint, quoteResponse.outputMint)) {
+  if (!isAllowedSwapPair(quoteResponse.inputMint, quoteResponse.outputMint)) {
     return NextResponse.json(
       { error: "Unsupported mint pair for looping" },
       { status: 400 },

@@ -1,19 +1,10 @@
 import { NextResponse } from "next/server";
 
-import { USDC_MINT } from "@/lib/jupiter/constants";
-import { xstockByMint } from "@/lib/jupiter/xstocks";
+import { isAllowedSwapPair } from "@/lib/jupiter/swap-pairs";
 
 export const dynamic = "force-dynamic";
 
 const LITE_SWAP_BASE = "https://lite-api.jup.ag/swap/v1";
-
-// Multiply/unwind only ever swap between USDC and a borrowable xStock. Reject
-// anything else so this proxy can't be used as an open swap relay.
-function isAllowedPair(inputMint: string, outputMint: string): boolean {
-  const usdcToXstock = inputMint === USDC_MINT && Boolean(xstockByMint(outputMint));
-  const xstockToUsdc = Boolean(xstockByMint(inputMint)) && outputMint === USDC_MINT;
-  return usdcToXstock || xstockToUsdc;
-}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -29,7 +20,7 @@ export async function GET(request: Request) {
     );
   }
 
-  if (!isAllowedPair(inputMint, outputMint)) {
+  if (!isAllowedSwapPair(inputMint, outputMint)) {
     return NextResponse.json(
       { error: "Unsupported mint pair for looping" },
       { status: 400 },

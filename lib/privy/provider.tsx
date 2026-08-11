@@ -2,6 +2,7 @@
 
 import { PrivyProvider } from "@privy-io/react-auth";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
+import { bsc, mainnet } from "viem/chains";
 import { useMemo, type ReactNode } from "react";
 
 export function PrivyAuthProvider({ children }: { children: ReactNode }) {
@@ -48,6 +49,13 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
           // stays the primary wallet (walletChainType above is unchanged).
           ethereum: { createOnLogin: "users-without-wallets" },
         },
+        // Chains the embedded EVM wallet is allowed to sign on. Privy defaults
+        // an embedded wallet to `defaultChain` or the first supported chain, so
+        // without declaring BNB Chain here the BSC half of the Trustware
+        // equivalence registry could not be signed for. Ethereum stays default
+        // because it carries the deeper tokenized-stock liquidity.
+        supportedChains: [mainnet, bsc],
+        defaultChain: mainnet,
         solana: { rpcs: solanaRpcs },
       }}
     >

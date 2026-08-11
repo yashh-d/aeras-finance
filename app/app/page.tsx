@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePrivy, type WalletWithMetadata } from "@privy-io/react-auth";
 import { ChevronDown } from "lucide-react";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AssetGrid } from "@/components/AssetGrid";
+import { AssetLogo } from "@/components/AssetLogo";
 import { BorrowPanel } from "@/components/BorrowPanel";
 import { EarnPanel } from "@/components/EarnPanel";
 import { OpenLimitOrders } from "@/components/OpenLimitOrders";
@@ -16,6 +17,7 @@ import { TriggerForm } from "@/components/TriggerForm";
 import { WalletPanel } from "@/components/WalletPanel";
 import { WaitlistPending, type UserView } from "@/components/WaitlistPending";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
+import { SpendPanel } from "@/spend/SpendPanel";
 import {
   Sheet,
   SheetContent,
@@ -30,10 +32,11 @@ import {
 import { fetchSparklines, type SparklinesResponse } from "@/lib/jupiter/charts";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useJupiterPrices } from "@/lib/jupiter/use-prices";
+import { totalPortfolioUsd } from "@/lib/solana/holdings";
+import { useWalletScan } from "@/lib/trustware/use-wallet-scan";
 import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
 import { XSTOCKS, type XStock } from "@/lib/jupiter/xstocks";
 import {
-  totalAccountUsd,
   useBalances,
   type AccountBalances,
 } from "@/lib/solana/balances";
@@ -205,7 +208,28 @@ function SignedIn({
   } = useBalances(walletAddress);
 
   const tickerPrice = prices?.[ticker.mint]?.usdPrice;
-  const totalUsd = totalAccountUsd(balances, prices);
+  // Scanned once here rather than inside the wallet card, so the header total
+  // and the balance rows can never disagree about what the account holds.
+  const walletScan = useWalletScan(walletAddress ?? undefined);
+  // A deposit can spend a holding on another chain, so anything that refreshes
+  // the Solana balances has to re-scan the others too. Without this the panel
+  // kept showing an EVM balance the conversion had already consumed.
+  const refreshScan = walletScan.refresh;
+  const refreshAll = useCallback(async () => {
+    refreshScan();
+    await refreshBalances();
+  }, [refreshScan, refreshBalances]);
+  const settleAll = useCallback(async () => {
+    refreshScan();
+    await settleBalances();
+  }, [refreshScan, settleBalances]);
+  const totalUsd = totalPortfolioUsd(
+    balances,
+    prices,
+    walletScan.held,
+    walletScan.native,
+    walletScan.nativePrices,
+  );
 
   function handleAssetSelect(x: XStock) {
     setTicker(x);
@@ -241,7 +265,7 @@ function SignedIn({
           </div>
           <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-white/50">
             <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
-            Solana Mainnet · Live · 10s
+            Live · 10s
           </div>
         </div>
 
@@ -271,6 +295,11 @@ function SignedIn({
             label="Withdraw"
             active={activeSection === "withdraw"}
             onClick={() => setActiveSection("withdraw")}
+          />
+          <SidebarNavItem
+            label="Spend"
+            active={activeSection === "spend"}
+            onClick={() => setActiveSection("spend")}
           />
           <SidebarNavItem
             label="Portfolio"
@@ -316,7 +345,7 @@ function SignedIn({
               walletAddress={walletAddress}
               balances={balances}
               prices={prices}
-              onRefresh={settleBalances}
+              onRefresh={settleAll}
             />
           ) : activeSection === "positions" ? (
             walletAddress ? (
@@ -336,20 +365,22 @@ function SignedIn({
                 walletAddress={walletAddress}
                 balances={balances}
                 prices={prices}
-                onRefresh={settleBalances}
+                onRefresh={settleAll}
               />
             ) : (
               <p className="text-sm text-white/50">
                 Waiting for embedded Solana wallet to provision...
               </p>
             )
+          ) : activeSection === "spend" ? (
+            <SpendPanel />
           ) : activeSection === "borrow" ? (
             walletAddress ? (
               <BorrowSection
                 walletAddress={walletAddress}
                 balances={balances}
                 prices={prices}
-                onRefresh={settleBalances}
+                onRefresh={settleAll}
               />
             ) : (
               <p className="text-sm text-white/50">
@@ -362,7 +393,7 @@ function SignedIn({
               pricesError={pricesError}
               balances={balances}
               walletAddress={walletAddress ?? null}
-              onRefresh={settleBalances}
+              onRefresh={settleAll}
             />
           ) : activeSection === "activity" ? (
             walletAddress ? (
@@ -395,8 +426,9 @@ function SignedIn({
                     balancesError={balancesError}
                     balancesRefreshing={balancesRefreshing}
                     prices={prices}
-                    onSent={settleBalances}
-                    onRefresh={refreshBalances}
+                    scan={walletScan}
+                    onSent={settleAll}
+                    onRefresh={refreshAll}
                   />
                 </Card>
 
@@ -421,7 +453,7 @@ function SignedIn({
                     walletAddress={walletAddress}
                     balances={balances}
                     prices={prices}
-                    onRefresh={settleBalances}
+                    onRefresh={settleAll}
                   />
                 </Card>
               </div>
@@ -650,18 +682,23 @@ function MarketsRow({
         expanded ? "bg-aeras-blue/15/40" : ""
       }`}
     >
-      <div className="col-span-4">
-        <div className="flex items-center gap-2">
-          <span className="font-medium tracking-tight text-white">
-            {xstock.symbol}
-          </span>
-          {borrowable && (
-            <span className="rounded-md bg-aeras-blue/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-blue">
-              Collateral
+      <div className="col-span-4 flex items-center gap-2.5">
+        <AssetLogo xstock={xstock} size={28} />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-medium tracking-tight text-white">
+              {xstock.symbol}
             </span>
-          )}
+            {borrowable && (
+              <span className="rounded-md bg-aeras-blue/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-blue">
+                Collateral
+              </span>
+            )}
+          </div>
+          <div className="truncate text-[11px] text-white/50">
+            {xstock.name}
+          </div>
         </div>
-        <div className="truncate text-[11px] text-white/50">{xstock.name}</div>
       </div>
       <div className="col-span-2 text-right font-mono tabular-nums text-white">
         {price == null ? "—" : `$${formatPrice(price)}`}
@@ -869,94 +906,23 @@ function BorrowSection({
         </p>
       </div>
 
-      <VaultCatalog balances={balances} prices={prices} />
+      <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
+        <BorrowPanel
+          walletAddress={walletAddress}
+          balances={balances}
+          prices={prices}
+          onRefresh={onRefresh}
+        />
+      </div>
 
-      <BorrowPanel
-        walletAddress={walletAddress}
-        balances={balances}
-        prices={prices}
-        onRefresh={onRefresh}
-      />
+      <p className="text-[11px] text-white/40">
+        Borrow APR and market size update from the live venue. Max LTV /
+        liquidation threshold shown per market.
+      </p>
     </div>
   );
 }
 
-function VaultCatalog({
-  balances,
-  prices,
-}: {
-  balances: AccountBalances | null;
-  prices: JupiterPriceMap | null;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
-      <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-            Markets
-          </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-white">
-            Available vaults
-          </div>
-        </div>
-      </div>
-
-      <div className="mt-5 divide-y divide-white/10">
-        <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          <div className="col-span-4">Collateral → Borrow</div>
-          <div className="col-span-2 text-right">CF</div>
-          <div className="col-span-2 text-right">LT</div>
-          <div className="col-span-4 text-right">Your collateral</div>
-        </div>
-        {XSTOCK_BORROW_VAULTS.map((v) => {
-          const held = balances?.xstocks[v.collateralMint] ?? 0;
-          const price = prices?.[v.collateralMint]?.usdPrice;
-          const usd = price != null ? held * price : null;
-          const eligible = held > 0;
-          return (
-            <div
-              key={v.vaultId}
-              className="grid grid-cols-12 items-center gap-2 py-2.5 text-sm"
-            >
-              <div className="col-span-4">
-                <div className="font-medium tracking-tight text-white">
-                  {v.collateralSymbol} → {v.borrowSymbol}
-                </div>
-                <div className="font-mono text-[11px] text-white/50">
-                  #{v.vaultId}
-                </div>
-              </div>
-              <div className="col-span-2 text-right font-mono tabular-nums text-xs text-white/60">
-                {(v.collateralFactor / 10).toFixed(0)}%
-              </div>
-              <div className="col-span-2 text-right font-mono tabular-nums text-xs text-white/60">
-                {(v.liquidationThreshold / 10).toFixed(0)}%
-              </div>
-              <div className="col-span-4 text-right">
-                {eligible ? (
-                  <>
-                    <div className="font-mono tabular-nums text-sm text-white">
-                      {held.toFixed(4)} {v.collateralSymbol}
-                    </div>
-                    {usd != null && (
-                      <div className="font-mono text-[11px] text-white/50">
-                        ${usd.toFixed(2)}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <span className="rounded-md bg-aeras-blue/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-blue">
-                    Buy {v.collateralSymbol} to use
-                  </span>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 type Section =
   | "portfolio"
@@ -964,6 +930,7 @@ type Section =
   | "earn"
   | "borrow"
   | "withdraw"
+  | "spend"
   | "positions"
   | "activity";
 

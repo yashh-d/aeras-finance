@@ -14,11 +14,16 @@ import {
 } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { XSTOCKS } from "@/lib/jupiter/xstocks";
+import { SOLANA_EQUIVALENT_TOKENS } from "./equivalent-tokens";
 
 export interface AccountBalances {
   sol: number;
   usdc: number;
   xstocks: Record<string, number>;
+  // Same-underlying tokens that are not tradable here (Ondo's Solana mints),
+  // keyed by mint. Display only: they exist so a received transfer is visible
+  // instead of silently missing from the panel.
+  equivalents: Record<string, number>;
   // Exact base-unit amounts as decimal strings. `uiAmount` from
   // getParsedTokenAccountsByOwner is a JS float and can round up for high-decimal
   // mints (xStocks are 8 decimals), causing on-chain transfers to fail with
@@ -26,6 +31,7 @@ export interface AccountBalances {
   // balance. Use these whenever you need to convert to an instruction amount.
   usdcAtomic: string;
   xstocksAtomic: Record<string, string>;
+  equivalentsAtomic: Record<string, string>;
 }
 
 export function totalAccountUsd(
@@ -38,6 +44,13 @@ export function totalAccountUsd(
   if (solPrice) total += balances.sol * solPrice;
   total += balances.usdc;
   for (const [mint, amount] of Object.entries(balances.xstocks)) {
+    const p = prices?.[mint]?.usdPrice;
+    if (p) total += amount * p;
+  }
+  // Counted in the total even though they can't be traded here. The value is in
+  // the wallet either way, and omitting it makes the total disagree with what
+  // the rows below it add up to.
+  for (const [mint, amount] of Object.entries(balances.equivalents)) {
     const p = prices?.[mint]?.usdPrice;
     if (p) total += amount * p;
   }
@@ -92,6 +105,21 @@ export async function fetchAllBalances(
     ).toBase58();
     xstockAtaToMint.set(ata, x.mint);
   }
+  // Ondo does not use one token program across its Solana mints the way Backed
+  // does, and guessing wrong would hide the balance entirely. Derive the ATA
+  // under both programs and accept whichever one exists.
+  const equivalentAtaToMint = new Map<string, string>();
+  for (const t of SOLANA_EQUIVALENT_TOKENS) {
+    for (const programId of [TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID]) {
+      const ata = getAssociatedTokenAddressSync(
+        new PublicKey(t.mint),
+        owner,
+        false,
+        programId,
+      ).toBase58();
+      equivalentAtaToMint.set(ata, t.mint);
+    }
+  }
 
   const [solLamports, legacy, token2022] = await Promise.all([
     conn.getBalance(owner),
@@ -116,14 +144,23 @@ export async function fetchAllBalances(
 
   const xstocks: Record<string, number> = {};
   const xstocksAtomic: Record<string, string> = {};
-  for (const acc of token2022.value) {
-    const mint = xstockAtaToMint.get(acc.pubkey.toBase58());
-    if (!mint) continue;
+  const equivalents: Record<string, number> = {};
+  const equivalentsAtomic: Record<string, string> = {};
+  for (const acc of [...token2022.value, ...legacy.value]) {
+    const ata = acc.pubkey.toBase58();
     const info = acc.account.data.parsed.info;
-    // Defensive: parsed.info.mint should always match the ATA-derived mint.
-    if (info.mint !== mint) continue;
-    xstocks[mint] = info.tokenAmount.uiAmount ?? 0;
-    xstocksAtomic[mint] = info.tokenAmount.amount ?? "0";
+    const mint = xstockAtaToMint.get(ata);
+    if (mint) {
+      // Defensive: parsed.info.mint should always match the ATA-derived mint.
+      if (info.mint !== mint) continue;
+      xstocks[mint] = info.tokenAmount.uiAmount ?? 0;
+      xstocksAtomic[mint] = info.tokenAmount.amount ?? "0";
+      continue;
+    }
+    const equivalentMint = equivalentAtaToMint.get(ata);
+    if (!equivalentMint || info.mint !== equivalentMint) continue;
+    equivalents[equivalentMint] = info.tokenAmount.uiAmount ?? 0;
+    equivalentsAtomic[equivalentMint] = info.tokenAmount.amount ?? "0";
   }
 
   return {
@@ -132,6 +169,8 @@ export async function fetchAllBalances(
     usdcAtomic,
     xstocks,
     xstocksAtomic,
+    equivalents,
+    equivalentsAtomic,
   };
 }
 

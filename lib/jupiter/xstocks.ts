@@ -106,3 +106,13 @@ export function xstockByMint(mint: string): XStock | undefined {
 export function xstockBySymbol(symbol: string): XStock | undefined {
   return XSTOCKS.find((x) => x.symbol === symbol);
 }
+
+// What <AssetLogo /> needs for a mint that may not be in the curated catalog.
+// Kamino lists a few xStocks we do not trade yet, so a borrow row can reference
+// a mint with no catalog entry. Those fall back to a symbol monogram.
+export function assetIdentity(
+  mint: string,
+  symbol: string,
+): Pick<XStock, "symbol" | "name" | "logo"> {
+  return xstockByMint(mint) ?? { symbol, name: symbol };
+}
