@@ -83,6 +83,10 @@
   font-weight: 600;
   font-size: 22px;
   letter-spacing: -0.02em;
+  /* Never let the nav's space-between squeeze the logo. Once the nav-links
+     hide on mobile, the buttons would otherwise shrink this flex item below
+     the wordmark's natural width. */
+  flex-shrink: 0;
 }
 .aeras-landing .logo .mark {
   width: 30px;
@@ -95,6 +99,10 @@
 .aeras-landing .logo-img {
   height: 104px;
   width: auto;
+  /* Override the Tailwind preflight `img { max-width: 100% }`, which otherwise
+     caps the width against the shrunk flex container while height stays fixed,
+     deforming the wordmark on narrow screens. */
+  max-width: none;
   display: block;
   /* Pull leftward to compensate for the transparent padding baked into the PNG
      so the wordmark visually anchors to the wrap's left gutter. */
@@ -154,6 +162,13 @@
 @media (max-width: 820px) {
   .aeras-landing .nav-links {
     display: none;
+  }
+}
+@media (max-width: 720px) {
+  .aeras-landing .logo-img {
+    height: 80px;
+    /* Padding-compensation margin scales with the smaller height. */
+    margin-left: -12px;
   }
 }
 
