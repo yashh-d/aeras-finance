@@ -37,10 +37,12 @@ import {
   type MarketStat,
 } from "@/lib/borrow/use-market-stats";
 import { KAMINO_XSTOCK_COLLATERALS } from "@/lib/kamino/reserves";
+import { useBorrowSummary } from "@/lib/borrow/use-borrow-summary";
 import {
-  fetchKaminoPosition,
-  type KaminoPosition,
-} from "@/lib/kamino/positions";
+  MarketDetailHeader,
+  MarketStatGrid,
+  type BorrowMode,
+} from "@/components/BorrowMarketDetail";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
 import {
   atomicToUiString,
@@ -81,6 +83,13 @@ interface Props {
   balances: AccountBalances | null;
   prices: JupiterPriceMap | null;
   onRefresh: () => Promise<void> | void;
+  // Sends the user somewhere they can acquire collateral. Omitted where the
+  // panel is embedded without anywhere to send them.
+  onAddFunds?: () => void;
+  // Rendered on a dark surface (inside Home's card) rather than on the light
+  // page canvas. Flips the summary to light-on-dark and drops the panel's own
+  // card chrome so cards don't nest.
+  dark?: boolean;
 }
 
 export function BorrowPanel({
@@ -88,6 +97,8 @@ export function BorrowPanel({
   balances,
   prices,
   onRefresh,
+  onAddFunds,
+  dark,
 }: Props) {
   // Same-underlying holdings on other chains (and Ondo's native Solana mints),
   // scanned once for the whole section rather than per card.
@@ -101,26 +112,22 @@ export function BorrowPanel({
     [equivalents.held],
   );
 
-  // The user's single Kamino obligation in this market, if any. Fetched once so
-  // an expanded Kamino card shows an existing position immediately.
-  const [kaminoPosition, setKaminoPosition] = useState<KaminoPosition | null>(
-    null,
-  );
-  const [kaminoRefreshTick, setKaminoRefreshTick] = useState(0);
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const p = await fetchKaminoPosition(walletAddress);
-        if (!cancelled) setKaminoPosition(p);
-      } catch (err) {
-        console.error("[kamino obligation]", err);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [walletAddress, kaminoRefreshTick]);
+  // Account-wide debt and headroom, read across both venues. Also carries the
+  // user's Kamino obligation, so an expanded Kamino card shows an existing
+  // position immediately without fetching it a second time.
+  const summary = useBorrowSummary({
+    walletAddress,
+    prices,
+    balances,
+    equivalents: equivalents.held,
+  });
+
+  // A settled borrow or repay changes both the wallet and the headline figures.
+  const summaryRefresh = summary.refresh;
+  const refreshAll = useCallback(async () => {
+    await onRefresh();
+    summaryRefresh();
+  }, [onRefresh, summaryRefresh]);
 
   // Live borrow APR and market size for every row. Lightweight — one call per
   // Jupiter vault plus one Kamino metrics call — so it can drive the collapsed
@@ -132,116 +139,227 @@ export function BorrowPanel({
   // lazily on expand rather than once per market up front.
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
-  return (
-    <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          Borrow
-        </div>
-        <span className="text-xs text-white/50">USDC</span>
-      </div>
+  // On a dark surface the panel is already inside a card, so its sections drop
+  // their own chrome rather than nesting one card inside another.
+  const sectionClass = dark
+    ? ""
+    : "rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6";
 
-      <div className="divide-y divide-white/10">
-        {XSTOCK_BORROW_VAULTS.map((vault) => {
-          const key = jupiterMarketKey(vault.vaultId);
-          const expanded = expandedKey === key;
-          return (
-            <div key={key}>
-              <BorrowMarketRow
-                symbol={vault.collateralSymbol}
-                mint={vault.collateralMint}
-                borrowSymbol={vault.borrowSymbol}
-                venue="Jupiter Lend"
-                cfPct={vault.collateralFactor / 10}
-                ltPct={vault.liquidationThreshold / 10}
-                stat={stats.get(key)}
-                statsLoading={statsLoading}
-                held={balances?.xstocks[vault.collateralMint] ?? 0}
-                price={prices?.[vault.collateralMint]?.usdPrice ?? null}
-                expanded={expanded}
-                onToggle={() => setExpandedKey(expanded ? null : key)}
-              />
-              {expanded && (
-                <div className="pb-3 pt-1">
-                  <VaultCard
-                    vault={vault}
-                    walletAddress={walletAddress}
-                    walletUsdc={balances?.usdc ?? 0}
-                    collateralBalance={
-                      balances?.xstocks[vault.collateralMint] ?? 0
-                    }
-                    collateralBalanceAtomic={
-                      balances?.xstocksAtomic[vault.collateralMint] ?? "0"
-                    }
-                    heldEquivalents={
-                      equivalentsByVault.get(vault.vaultId) ?? []
-                    }
-                    evmAddress={equivalents.evmAddress}
-                    onEquivalentsChanged={equivalents.refresh}
-                    prices={prices}
-                    onRefresh={onRefresh}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
-        {KAMINO_XSTOCK_COLLATERALS.map((collateral) => {
-          const key = kaminoMarketKey(collateral.reserve);
-          const expanded = expandedKey === key;
-          return (
-            <div key={key}>
-              <BorrowMarketRow
-                symbol={collateral.symbol}
-                mint={collateral.collateralMint}
-                borrowSymbol="USDC"
-                venue="Kamino"
-                cfPct={collateral.maxLtvSnapshot * 100}
-                ltPct={collateral.liquidationThreshold}
-                stat={stats.get(key)}
-                statsLoading={statsLoading}
-                held={balances?.xstocks[collateral.collateralMint] ?? 0}
-                price={prices?.[collateral.collateralMint]?.usdPrice ?? null}
-                expanded={expanded}
-                onToggle={() => setExpandedKey(expanded ? null : key)}
-              />
-              {expanded && (
-                <div className="pb-3 pt-1">
-                  <KaminoBorrowCard
-                    collateral={collateral}
-                    walletAddress={walletAddress}
-                    collateralBalance={
-                      balances?.xstocks[collateral.collateralMint] ?? 0
-                    }
-                    collateralBalanceAtomic={
-                      balances?.xstocksAtomic[collateral.collateralMint] ?? "0"
-                    }
-                    prices={prices}
-                    initialPosition={kaminoPosition}
-                    onRefresh={onRefresh}
-                    onPositionChange={() => setKaminoRefreshTick((n) => n + 1)}
-                  />
-                </div>
-              )}
-            </div>
-          );
-        })}
+  return (
+    <div className="space-y-6">
+      <BorrowSummaryHero
+        debtUsd={summary.debtUsd}
+        capacityUsd={summary.capacityUsd}
+        availableUsd={summary.availableUsd}
+        loading={summary.loading}
+        onAddFunds={onAddFunds}
+        dark={dark}
+      />
+
+      <div className={sectionClass}>
+        <div className="space-y-1.5">
+          <h3 className="font-light text-lg tracking-tight text-white">
+            Loan options
+          </h3>
+          <p className="text-sm text-white/50">
+            Borrow USDC against your tokenized stocks. Collateral keeps its
+            market exposure while it backs the loan.
+          </p>
+        </div>
+
+        <div className="mt-5 divide-y divide-white/10 border-t border-white/10">
+          <MarketRowHeader />
+          {XSTOCK_BORROW_VAULTS.map((vault) => {
+            const key = jupiterMarketKey(vault.vaultId);
+            const expanded = expandedKey === key;
+            return (
+              <div key={key}>
+                <BorrowMarketRow
+                  symbol={vault.collateralSymbol}
+                  mint={vault.collateralMint}
+                  venue="Jupiter Lend"
+                  stat={stats.get(key)}
+                  statsLoading={statsLoading}
+                  held={balances?.xstocks[vault.collateralMint] ?? 0}
+                  price={prices?.[vault.collateralMint]?.usdPrice ?? null}
+                  expanded={expanded}
+                  onToggle={() => setExpandedKey(expanded ? null : key)}
+                />
+                {expanded && (
+                  <div className="pb-4">
+                    <VaultCard
+                      vault={vault}
+                      walletAddress={walletAddress}
+                      walletUsdc={balances?.usdc ?? 0}
+                      collateralBalance={
+                        balances?.xstocks[vault.collateralMint] ?? 0
+                      }
+                      collateralBalanceAtomic={
+                        balances?.xstocksAtomic[vault.collateralMint] ?? "0"
+                      }
+                      heldEquivalents={
+                        equivalentsByVault.get(vault.vaultId) ?? []
+                      }
+                      evmAddress={equivalents.evmAddress}
+                      onEquivalentsChanged={equivalents.refresh}
+                      prices={prices}
+                      stat={stats.get(key)}
+                      onRefresh={refreshAll}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {KAMINO_XSTOCK_COLLATERALS.map((collateral) => {
+            const key = kaminoMarketKey(collateral.reserve);
+            const expanded = expandedKey === key;
+            return (
+              <div key={key}>
+                <BorrowMarketRow
+                  symbol={collateral.symbol}
+                  mint={collateral.collateralMint}
+                  venue="Kamino"
+                  stat={stats.get(key)}
+                  statsLoading={statsLoading}
+                  held={balances?.xstocks[collateral.collateralMint] ?? 0}
+                  price={prices?.[collateral.collateralMint]?.usdPrice ?? null}
+                  expanded={expanded}
+                  onToggle={() => setExpandedKey(expanded ? null : key)}
+                />
+                {expanded && (
+                  <div className="pb-4">
+                    <KaminoBorrowCard
+                      collateral={collateral}
+                      walletAddress={walletAddress}
+                      collateralBalance={
+                        balances?.xstocks[collateral.collateralMint] ?? 0
+                      }
+                      collateralBalanceAtomic={
+                        balances?.xstocksAtomic[collateral.collateralMint] ?? "0"
+                      }
+                      prices={prices}
+                      stat={stats.get(key)}
+                      initialPosition={summary.kaminoPosition}
+                      onRefresh={refreshAll}
+                      onPositionChange={summaryRefresh}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
 }
 
-// Collapsed catalog row: symbol, live borrow APR + market size, the user's
-// holding, and a chevron. Clicking anywhere on the row expands the full borrow
-// card below it. Kept deliberately light so the whole list renders without
-// mounting a single card.
+// Account-wide headline: what is owed, how much of the available headroom that
+// consumes, and what is left. Sits on the page rather than in a card so it reads
+// as the state of the account, not as one more market panel.
+function BorrowSummaryHero({
+  debtUsd,
+  capacityUsd,
+  availableUsd,
+  loading,
+  onAddFunds,
+  dark,
+}: {
+  debtUsd: number;
+  capacityUsd: number;
+  availableUsd: number;
+  loading: boolean;
+  onAddFunds?: () => void;
+  dark?: boolean;
+}) {
+  const utilisationPct =
+    capacityUsd > 0 ? Math.min(100, (debtUsd / capacityUsd) * 100) : 0;
+  const muted = dark ? "text-white/50" : "text-aeras-300";
+  const strong = dark ? "text-white" : "text-aeras-900";
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-1">
+        <div
+          className={`text-[10px] font-medium uppercase tracking-[0.12em] ${muted}`}
+        >
+          Borrowed
+        </div>
+        <div
+          className={`font-mono text-[2.75rem] font-light leading-none tracking-tight tabular-nums ${strong}`}
+        >
+          {loading ? "—" : `$${debtUsd.toFixed(2)}`}
+        </div>
+      </div>
+
+      <div className="max-w-xl">
+        <div
+          className={`h-1.5 w-full overflow-hidden rounded-full ${
+            dark ? "bg-white/10" : "bg-aeras-border"
+          }`}
+        >
+          <div
+            className="h-full rounded-full bg-aeras-blue transition-all"
+            style={{ width: `${utilisationPct}%` }}
+          />
+        </div>
+        <div className="mt-2 flex items-baseline justify-between text-sm">
+          <span className={muted}>Available to borrow</span>
+          <span className={`font-mono tabular-nums ${strong}`}>
+            {loading ? "—" : `$${availableUsd.toFixed(2)}`}
+          </span>
+        </div>
+      </div>
+
+      {onAddFunds && (
+        <button
+          type="button"
+          onClick={onAddFunds}
+          className="rounded-full bg-aeras-blue px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium"
+        >
+          Add funds
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Column geometry for the catalog, shared by the header and every row so the
+// figures line up. Each numeric column is a fixed width and is always rendered,
+// including the balance column: sizing it to its content would let the two rows
+// the user holds shift every column left and break the alignment down the list.
+const COL_SIZE = "hidden w-24 shrink-0 text-right sm:block";
+const COL_LIQUIDITY = "hidden w-24 shrink-0 text-right md:block";
+const COL_BALANCE = "hidden w-24 shrink-0 text-right lg:block";
+const COL_APY = "w-20 shrink-0 text-right";
+
+// Labels the rows would otherwise repeat under every figure. One header keeps
+// the list scannable as a table instead of fourteen stacked label/value pairs.
+function MarketRowHeader() {
+  return (
+    <div className="flex items-center gap-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+      {/* Gutters matching the row's logo and chevron. */}
+      <div className="size-8 shrink-0" />
+      <div className="min-w-0 flex-1">Market</div>
+      <div className={COL_SIZE}>Market size</div>
+      <div className={COL_LIQUIDITY}>Liquidity</div>
+      <div className={COL_BALANCE}>Balance</div>
+      <div className={COL_APY}>APY</div>
+      <div className="size-4 shrink-0" />
+    </div>
+  );
+}
+
+// Collapsed catalog row: the asset, which venue settles it, how deep the market
+// is, how much USDC it can still lend, what the user holds, and the live borrow
+// rate. Risk parameters stay in the risk section, so scanning the list compares
+// rate against liquidity — the two things that decide where a loan should go.
+// Clicking anywhere expands the full card below.
 function BorrowMarketRow({
   symbol,
   mint,
-  borrowSymbol,
   venue,
-  cfPct,
-  ltPct,
   stat,
   statsLoading,
   held,
@@ -252,12 +370,9 @@ function BorrowMarketRow({
   symbol: string;
   // Collateral mint, used only to resolve the asset logo.
   mint: string;
-  borrowSymbol: string;
-  // Which protocol settles this market. Shown as a badge so a stock listed on
+  // Which protocol settles this market. Shown as a subtitle so a stock listed on
   // both venues reads as two distinct, comparable rows.
   venue: "Jupiter Lend" | "Kamino";
-  cfPct: number;
-  ltPct: number;
   stat: MarketStat | undefined;
   statsLoading: boolean;
   held: number;
@@ -266,15 +381,13 @@ function BorrowMarketRow({
   onToggle: () => void;
 }) {
   const heldUsd = price != null ? held * price : null;
+  // A market with no data yet reads "…" rather than "—", so a slow venue is not
+  // mistaken for an empty one.
+  const show = (n: number | null | undefined) =>
+    n != null ? formatUsdCompact(n) : statsLoading ? "…" : "—";
   const apr =
     stat?.borrowAprPct != null
       ? `${stat.borrowAprPct.toFixed(2)}%`
-      : statsLoading
-        ? "…"
-        : "—";
-  const size =
-    stat?.sizeUsd != null
-      ? formatUsdCompact(stat.sizeUsd)
       : statsLoading
         ? "…"
         : "—";
@@ -283,49 +396,43 @@ function BorrowMarketRow({
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      className="flex w-full items-center gap-3 py-3 text-left transition-colors hover:bg-white/5"
+      className="flex w-full items-center gap-3 py-4 text-left transition-colors hover:bg-white/5"
     >
-      <AssetLogo xstock={assetIdentity(mint, symbol)} size={28} />
+      <AssetLogo xstock={assetIdentity(mint, symbol)} size={32} />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium tracking-tight text-white">
-            {symbol} → {borrowSymbol}
-          </span>
-          <span
-            className={`rounded-md px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider ${
-              venue === "Jupiter Lend"
-                ? "bg-aeras-blue/15 text-aeras-blue"
-                : "bg-white/10 text-white/60"
-            }`}
-          >
-            {venue}
-          </span>
+        <div className="text-sm font-medium tracking-tight text-white">
+          {symbol}
         </div>
-        <div className="mt-0.5 font-mono text-[11px] text-white/50">
-          Max LTV {cfPct.toFixed(0)}% · LT {ltPct.toFixed(0)}%
-        </div>
+        <div className="mt-0.5 text-[11px] text-white/50">{venue}</div>
       </div>
-      <div className="text-right">
-        <div className="font-mono text-sm tabular-nums text-white">{apr}</div>
-        <div className="font-mono text-[11px] text-white/50">{size} size</div>
+      {/* Depth of the collateral side, then what is actually drawable. Dropped
+          first on narrow screens, where the rate has to win the space. */}
+      <div className={`${COL_SIZE} font-mono text-sm tabular-nums text-white/90`}>
+        {show(stat?.sizeUsd)}
       </div>
-      <div className="hidden w-20 text-right sm:block">
+      <div
+        className={`${COL_LIQUIDITY} font-mono text-sm tabular-nums text-white/90`}
+      >
+        {show(stat?.liquidityUsd)}
+      </div>
+      <div className={COL_BALANCE}>
         {held > 0 ? (
           <>
             <div className="font-mono text-sm tabular-nums text-white">
               {held.toFixed(4)}
             </div>
             {heldUsd != null && (
-              <div className="font-mono text-[11px] text-white/50">
+              <div className="font-mono text-[11px] tabular-nums text-white/50">
                 ${heldUsd.toFixed(2)}
               </div>
             )}
           </>
         ) : (
-          <span className="rounded-md bg-aeras-blue/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-blue">
-            Buy
-          </span>
+          <span className="font-mono text-sm tabular-nums text-white/30">—</span>
         )}
+      </div>
+      <div className={`${COL_APY} font-mono text-sm tabular-nums text-white`}>
+        {apr}
       </div>
       <ChevronDown
         className={`size-4 shrink-0 text-white/50 transition-transform ${
@@ -355,6 +462,10 @@ interface VaultCardProps {
   // Re-scan cross-chain holdings after a conversion spends one.
   onEquivalentsChanged: () => void;
   prices: JupiterPriceMap | null;
+  // Rate and size for this market, already fetched for the collapsed row. Passed
+  // down so the detail's stat grid renders with the list's figures instead of
+  // waiting on this card's own vault read.
+  stat: MarketStat | undefined;
   onRefresh: () => Promise<void> | void;
 }
 
@@ -377,6 +488,7 @@ function VaultCard({
   evmAddress,
   onEquivalentsChanged,
   prices,
+  stat,
   onRefresh,
 }: VaultCardProps) {
   const [live, setLive] = useState<LiveVaultState | null>(null);
@@ -486,10 +598,10 @@ function VaultCard({
   }, [refreshPosition]);
 
   const oraclePrice = live?.oraclePriceUsd ?? prices?.[vault.collateralMint]?.usdPrice ?? null;
-  const collateralUsd = oraclePrice != null ? collateralBalance * oraclePrice : null;
-  const cfPct = vault.collateralFactor / 10;
-  const ltPct = vault.liquidationThreshold / 10;
-  const borrowRatePct = live ? live.borrowRateAnnual * 100 : null;
+
+  // Which of the two actions is on screen. Borrow first: a user opening a market
+  // they have no position in is here to draw, not to repay.
+  const [mode, setMode] = useState<BorrowMode>("borrow");
 
   // Everything convertible into this vault's collateral, summed as a 1:1
   // notional before fees. The deposit runs one conversion per source in
@@ -499,6 +611,41 @@ function VaultCard({
     () => totalConvertibleUi(heldEquivalents, vault.collateralDecimals),
     [heldEquivalents, vault.collateralDecimals],
   );
+
+  const debtUi = position
+    ? fromAtomicBN(position.debtAtomic, vault.borrowDecimals)
+    : 0;
+  const positionCollateralUi = position
+    ? fromAtomicBN(position.collateralAtomic, vault.collateralDecimals)
+    : 0;
+  const hasPosition =
+    position != null &&
+    (position.collateralAtomic.gtn(0) || position.debtAtomic.gtn(0));
+
+  // What this market will lend against everything the user can put behind it:
+  // collateral already deposited, the same stock sitting in the wallet, and what
+  // converts into it from another chain. Wallet stock counts because the form
+  // below deposits it as part of the borrow. Capped by the vault's own
+  // liquidity, since headroom is not drawable from an empty vault.
+  const availableUsd = useMemo(() => {
+    if (oraclePrice == null || live == null) return null;
+    const collateralUi =
+      positionCollateralUi + collateralBalance + convertibleUi;
+    const capacityUsd =
+      collateralUi * oraclePrice * (vault.collateralFactor / 1000);
+    const liquidityUsd = Number(
+      atomicToUiString(live.borrowableAtomic, vault.borrowDecimals),
+    );
+    return Math.max(0, Math.min(capacityUsd - debtUi, liquidityUsd));
+  }, [
+    oraclePrice,
+    live,
+    positionCollateralUi,
+    collateralBalance,
+    convertibleUi,
+    debtUi,
+    vault,
+  ]);
 
   // Exact on-chain collateral balance. The prop is the parent's last refresh,
   // which can be stale if the user just topped up a position (NFT 463 case) or
@@ -749,36 +896,17 @@ function VaultCard({
   }
 
   return (
-    <div className="space-y-4 rounded-xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-4 shadow-lg shadow-black/10">
-      <div className="flex items-center gap-3">
-        <AssetLogo
-          xstock={assetIdentity(vault.collateralMint, vault.collateralSymbol)}
-          size={32}
-        />
-        <div className="min-w-0 space-y-1">
-          <div className="text-sm font-medium tracking-tight text-white">
-            {vault.collateralSymbol} → {vault.borrowSymbol}
-          </div>
-          <div className="font-mono text-[11px] text-white/50">
-            Max LTV {cfPct.toFixed(0)}% · LT {ltPct.toFixed(0)}%
-            {borrowRatePct != null && ` · ${borrowRatePct.toFixed(2)}% APR`}
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 text-xs">
-        <Stat
-          dark
-          label="Your collateral"
-          value={`${collateralBalance.toFixed(4)} ${vault.collateralSymbol}`}
-          sub={collateralUsd != null ? `$${collateralUsd.toFixed(2)}` : undefined}
-        />
-        <Stat
-          dark
-          label="Oracle price"
-          value={oraclePrice != null ? `$${oraclePrice.toFixed(2)}` : "…"}
-        />
-      </div>
+    <div className="space-y-5 rounded-xl border border-white/10 bg-white/5 p-5">
+      <MarketDetailHeader
+        mint={vault.collateralMint}
+        symbol={vault.collateralSymbol}
+        borrowSymbol={vault.borrowSymbol}
+        availableUsd={availableUsd}
+        owedUsd={debtUi}
+        mode={mode}
+        onModeChange={setMode}
+        canRepay={hasPosition}
+      />
 
       {positionLoading ? (
         <p className="text-xs text-white/50">Loading position…</p>
@@ -794,38 +922,49 @@ function VaultCard({
             </div>
           )}
         </div>
-      ) : position && (position.collateralAtomic.gtn(0) || position.debtAtomic.gtn(0)) ? (
-        <>
-          <PositionCard
-            vault={vault}
-            position={position}
-            oraclePrice={oraclePrice}
-          />
-          <ClosePositionControl
-            vault={vault}
-            position={position}
-            walletUsdc={walletUsdc}
-            state={closingState}
-            onClose={handleClose}
-            onReset={() => setClosingState({ kind: "idle" })}
-          />
-        </>
+      ) : hasPosition && position ? (
+        <PositionCard
+          vault={vault}
+          position={position}
+          oraclePrice={oraclePrice}
+        />
       ) : null}
 
-      <OperateForm
-        vault={vault}
-        existingPosition={position}
-        walletAddress={walletAddress}
-        evmAddress={evmAddress}
-        collateralBalance={collateralBalance}
-        collateralBalanceAtomic={collateralBalanceAtomic}
-        convertibleUi={convertibleUi}
-        heldEquivalents={heldEquivalents}
-        oraclePrice={oraclePrice}
-        onSubmit={handleSubmit}
-        formState={formState}
-        resetForm={() => setFormState({ kind: "idle" })}
-        recovering={recovering}
+      {mode === "repay" && hasPosition && position ? (
+        <ClosePositionControl
+          vault={vault}
+          position={position}
+          walletUsdc={walletUsdc}
+          state={closingState}
+          onClose={handleClose}
+          onReset={() => setClosingState({ kind: "idle" })}
+        />
+      ) : mode === "borrow" ? (
+        <OperateForm
+          vault={vault}
+          existingPosition={position}
+          walletAddress={walletAddress}
+          evmAddress={evmAddress}
+          collateralBalance={collateralBalance}
+          collateralBalanceAtomic={collateralBalanceAtomic}
+          convertibleUi={convertibleUi}
+          heldEquivalents={heldEquivalents}
+          oraclePrice={oraclePrice}
+          onSubmit={handleSubmit}
+          formState={formState}
+          resetForm={() => setFormState({ kind: "idle" })}
+          recovering={recovering}
+        />
+      ) : null}
+
+      <MarketStatGrid
+        aprPct={stat?.borrowAprPct ?? (live ? live.borrowRateAnnual * 100 : null)}
+        priceUsd={oraclePrice}
+        suppliedUsd={stat?.sizeUsd ?? live?.totalSuppliedUsd ?? null}
+        borrowedUsd={stat?.borrowedUsd ?? live?.totalBorrowedUsd ?? null}
+        liquidityUsd={live?.borrowableUsd ?? stat?.liquidityUsd ?? null}
+        maxLtvPct={vault.collateralFactor / 10}
+        borrowSymbol={vault.borrowSymbol}
       />
     </div>
   );

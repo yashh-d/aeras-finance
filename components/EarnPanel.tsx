@@ -60,6 +60,7 @@ import {
 } from "@/lib/solana/balances";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { LoopingCard } from "@/components/LoopingPanel";
+import { RyskOptionsCard } from "@/components/RyskOptionsPanel";
 
 interface Props {
   walletAddress: string | undefined;
@@ -98,6 +99,7 @@ export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props)
         prices={prices}
         onRefresh={handleSettled}
       />
+      <RyskOptionsCard />
     </div>
   );
 }
@@ -112,8 +114,8 @@ function PageHeader() {
         Put idle capital to work
       </h2>
       <p className="text-sm text-aeras-300">
-        Two ways to earn yield on assets you already hold: vault deposits and
-        leveraged looping.
+        Three ways to earn yield on assets you already hold: vault deposits,
+        leveraged looping, and selling options.
       </p>
     </div>
   );

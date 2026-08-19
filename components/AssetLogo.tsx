@@ -5,9 +5,9 @@ import { useState } from "react";
 import type { XStock } from "@/lib/jupiter/xstocks";
 
 // Renders a company logo for an asset, falling back to a symbol monogram when
-// no logo is set or the image fails to load. Logos vary in shape (square marks
-// and horizontal wordmarks), so the image is centered with object-contain and
-// never distorted.
+// no logo is set or the image fails to load. The logos are full-bleed circular
+// badges, so the image fills the circle edge-to-edge (object-cover) and the
+// square corners are clipped by the rounded container.
 export function AssetLogo({
   xstock,
   size = 32,
@@ -33,14 +33,14 @@ export function AssetLogo({
 
   return (
     <div
-      className="flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-aeras-border bg-white"
-      style={{ width: size, height: size, padding: Math.round(size * 0.18) }}
+      className="flex shrink-0 items-center justify-center overflow-hidden rounded-full border border-aeras-border"
+      style={{ width: size, height: size }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={xstock.logo}
         alt={`${xstock.name} logo`}
-        className="h-full w-full object-contain"
+        className="h-full w-full object-cover"
         onError={() => setErrored(true)}
       />
     </div>

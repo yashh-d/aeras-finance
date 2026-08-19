@@ -1,12 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { PriceChart } from "@/components/PriceChart";
 import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
-import { assetIdentity, xstockByMint } from "@/lib/jupiter/xstocks";
-import { AssetLogo } from "@/components/AssetLogo";
+import { xstockByMint } from "@/lib/jupiter/xstocks";
 import {
   buildKaminoBorrowTx,
   buildKaminoDepositTx,
@@ -20,6 +19,12 @@ import {
   type KaminoPosition,
 } from "@/lib/kamino/positions";
 import type { KaminoCollateralReserve } from "@/lib/kamino/reserves";
+import type { MarketStat } from "@/lib/borrow/use-market-stats";
+import {
+  MarketDetailHeader,
+  MarketStatGrid,
+  type BorrowMode,
+} from "@/components/BorrowMarketDetail";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
 import {
   atomicToUiString,
@@ -37,6 +42,10 @@ interface Props {
   // when depositing the full wallet balance.
   collateralBalanceAtomic: string;
   prices: JupiterPriceMap | null;
+  // Rate and size for this market, already fetched for the collapsed row. Passed
+  // down so the detail's stat grid renders with the list's figures rather than
+  // reading the reserve a second time.
+  stat: MarketStat | undefined;
   // Position pre-fetched by the parent (single obligation per market). Passed so
   // the card renders an existing position without an extra round-trip on mount.
   initialPosition: KaminoPosition | null;
@@ -61,6 +70,7 @@ export function KaminoBorrowCard({
   collateralBalance,
   collateralBalanceAtomic,
   prices,
+  stat,
   initialPosition,
   onRefresh,
   onPositionChange,
@@ -76,6 +86,10 @@ export function KaminoBorrowCard({
   const [positionError, setPositionError] = useState<string | null>(null);
   const [formState, setFormState] = useState<FormState>({ kind: "idle" });
   const [closingState, setClosingState] = useState<FormState>({ kind: "idle" });
+
+  // Which of the two actions is on screen. Borrow first: a user opening a market
+  // they have no position in is here to draw, not to repay.
+  const [mode, setMode] = useState<BorrowMode>("borrow");
 
   const refreshPosition = useCallback(async () => {
     try {
@@ -113,10 +127,30 @@ export function KaminoBorrowCard({
     position?.oraclePriceUsd ??
     prices?.[collateral.collateralMint]?.usdPrice ??
     null;
-  const collateralUsd =
-    oraclePrice != null ? collateralBalance * oraclePrice : null;
-  const cfPct = collateral.maxLtvSnapshot * 100;
-  const ltPct = collateral.liquidationThreshold;
+
+  // What this market will lend against collateral deposited here plus the same
+  // stock sitting in the wallet, less what is already drawn. Wallet stock counts
+  // because the form below deposits it as part of the borrow.
+  //
+  // Capped by undrawn USDC in the reserve: earned headroom is not drawable from
+  // a reserve that has already lent everything out, and quoting it would let the
+  // user submit a borrow that fails on chain.
+  const availableUsd = useMemo(() => {
+    if (oraclePrice == null) return null;
+    const collateralUi = (position?.collateralUi ?? 0) + collateralBalance;
+    const headroomUsd =
+      collateralUi * oraclePrice * collateral.maxLtvSnapshot -
+      (position?.debtUsdc ?? 0);
+    const liquidityUsd = stat?.liquidityUsd ?? Infinity;
+    return Math.max(0, Math.min(headroomUsd, liquidityUsd));
+  }, [
+    oraclePrice,
+    position?.collateralUi,
+    position?.debtUsdc,
+    collateralBalance,
+    collateral.maxLtvSnapshot,
+    stat?.liquidityUsd,
+  ]);
 
   // Sign, submit, and confirm one base64 transaction. Shared by both legs of the
   // open and close flows.
@@ -237,33 +271,17 @@ export function KaminoBorrowCard({
     position != null && (position.collateralUi > 0 || position.debtUsdc > 0);
 
   return (
-    <div className="space-y-4 rounded-xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-4 shadow-lg shadow-black/10">
-      <div className="flex items-center gap-3">
-        <AssetLogo
-          xstock={assetIdentity(collateral.collateralMint, collateral.symbol)}
-          size={32}
-        />
-        <div className="min-w-0 space-y-1">
-          <div className="text-sm font-medium tracking-tight text-white">
-            {collateral.symbol} → {BORROW_SYMBOL}
-          </div>
-          <div className="font-mono text-[11px] text-white/50">
-            Max LTV {cfPct.toFixed(0)}% · LT {ltPct.toFixed(0)}%
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 text-xs">
-        <Stat
-          label="Your collateral"
-          value={`${collateralBalance.toFixed(4)} ${collateral.symbol}`}
-          sub={collateralUsd != null ? `$${collateralUsd.toFixed(2)}` : undefined}
-        />
-        <Stat
-          label="Oracle price"
-          value={oraclePrice != null ? `$${oraclePrice.toFixed(2)}` : "…"}
-        />
-      </div>
+    <div className="space-y-5 rounded-xl border border-white/10 bg-white/5 p-5">
+      <MarketDetailHeader
+        mint={collateral.collateralMint}
+        symbol={collateral.symbol}
+        borrowSymbol={BORROW_SYMBOL}
+        availableUsd={availableUsd}
+        owedUsd={position?.debtUsdc ?? 0}
+        mode={mode}
+        onModeChange={setMode}
+        canRepay={hasPosition}
+      />
 
       {positionError ? (
         <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60">
@@ -272,32 +290,43 @@ export function KaminoBorrowCard({
           </div>
           <div className="mt-1 break-all text-white/50">{positionError}</div>
         </div>
-      ) : hasPosition ? (
-        <>
-          <KaminoPositionCard
-            collateral={collateral}
-            position={position!}
-            oraclePrice={oraclePrice}
-          />
-          <KaminoCloseControl
-            collateral={collateral}
-            position={position!}
-            state={closingState}
-            onClose={handleClose}
-            onReset={() => setClosingState({ kind: "idle" })}
-          />
-        </>
+      ) : hasPosition && position ? (
+        <KaminoPositionCard
+          collateral={collateral}
+          position={position}
+          oraclePrice={oraclePrice}
+        />
       ) : null}
 
-      <KaminoOperateForm
-        collateral={collateral}
-        existingPosition={hasPosition ? position : null}
-        collateralBalance={collateralBalance}
-        collateralBalanceAtomic={collateralBalanceAtomic}
-        oraclePrice={oraclePrice}
-        onSubmit={handleSubmit}
-        formState={formState}
-        resetForm={() => setFormState({ kind: "idle" })}
+      {mode === "repay" && hasPosition && position ? (
+        <KaminoCloseControl
+          collateral={collateral}
+          position={position}
+          state={closingState}
+          onClose={handleClose}
+          onReset={() => setClosingState({ kind: "idle" })}
+        />
+      ) : mode === "borrow" ? (
+        <KaminoOperateForm
+          collateral={collateral}
+          existingPosition={hasPosition ? position : null}
+          collateralBalance={collateralBalance}
+          collateralBalanceAtomic={collateralBalanceAtomic}
+          oraclePrice={oraclePrice}
+          onSubmit={handleSubmit}
+          formState={formState}
+          resetForm={() => setFormState({ kind: "idle" })}
+        />
+      ) : null}
+
+      <MarketStatGrid
+        aprPct={stat?.borrowAprPct ?? null}
+        priceUsd={oraclePrice}
+        suppliedUsd={stat?.sizeUsd ?? null}
+        borrowedUsd={stat?.borrowedUsd ?? null}
+        liquidityUsd={stat?.liquidityUsd ?? null}
+        maxLtvPct={collateral.maxLtvSnapshot * 100}
+        borrowSymbol={BORROW_SYMBOL}
       />
     </div>
   );

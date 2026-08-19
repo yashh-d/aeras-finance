@@ -34,6 +34,14 @@ import {
 // UI, not a fixed charge.
 const USDC_FUNDING_PREFILL = "25";
 
+// Badges for native gas tokens, keyed by symbol. Symbols without an entry
+// fall back to the AssetLogo monogram.
+const NATIVE_LOGOS: Record<string, string> = {
+  ETH: "/logos/eth.png",
+  SOL: "/logos/solana.png",
+  BNB: "/logos/bnb.png",
+};
+
 export function WalletPanel({
   walletAddress,
   balances,
@@ -193,7 +201,7 @@ export function WalletPanel({
               }
               icon={
                 <AssetLogo
-                  xstock={{ symbol: "SOL", name: "Solana", logo: "/logos/solana.jpg" }}
+                  xstock={{ symbol: "SOL", name: "Solana", logo: "/logos/solana.png" }}
                   size={30}
                 />
               }
@@ -234,7 +242,11 @@ export function WalletPanel({
                   usd={price ? amount * price : null}
                   icon={
                     <AssetLogo
-                      xstock={{ symbol: n.symbol, name: n.chainLabel }}
+                      xstock={{
+                        symbol: n.symbol,
+                        name: n.chainLabel,
+                        logo: NATIVE_LOGOS[n.symbol],
+                      }}
                       size={30}
                     />
                   }

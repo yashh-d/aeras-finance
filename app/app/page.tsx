@@ -1,30 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePrivy, type WalletWithMetadata } from "@privy-io/react-auth";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ChevronLeft, Search, ShieldCheck } from "lucide-react";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AssetGrid } from "@/components/AssetGrid";
 import { AssetLogo } from "@/components/AssetLogo";
+import { AssetTradePanel } from "@/components/AssetTradePanel";
 import { BorrowPanel } from "@/components/BorrowPanel";
 import { EarnPanel } from "@/components/EarnPanel";
-import { OpenLimitOrders } from "@/components/OpenLimitOrders";
+import { HedgePanel } from "@/components/HedgePanel";
 import { PositionsPanel } from "@/components/PositionsPanel";
 import { PriceChart } from "@/components/PriceChart";
-import { SwapForm } from "@/components/SwapForm";
-import { TriggerForm } from "@/components/TriggerForm";
 import { WalletPanel } from "@/components/WalletPanel";
 import { WaitlistPending, type UserView } from "@/components/WaitlistPending";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
-import { SpendPanel } from "@/spend/SpendPanel";
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
 import {
   vaultByCollateralMint,
   XSTOCK_BORROW_VAULTS,
@@ -35,7 +26,12 @@ import { useJupiterPrices } from "@/lib/jupiter/use-prices";
 import { totalPortfolioUsd } from "@/lib/solana/holdings";
 import { useWalletScan } from "@/lib/trustware/use-wallet-scan";
 import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
-import { XSTOCKS, type XStock } from "@/lib/jupiter/xstocks";
+import {
+  XSTOCK_CATEGORIES,
+  XSTOCKS,
+  type XStock,
+  type XStockCategory,
+} from "@/lib/jupiter/xstocks";
 import {
   useBalances,
   type AccountBalances,
@@ -196,7 +192,8 @@ function SignedIn({
   onLogout: () => void;
 }) {
   const [ticker, setTicker] = useState<XStock>(XSTOCKS[0]);
-  const [tradeOpen, setTradeOpen] = useState(false);
+  // Which asset Home's grid has drilled into. Null shows the full grid.
+  const [openAsset, setOpenAsset] = useState<XStock | null>(null);
   const [activeSection, setActiveSection] = useState<Section>("portfolio");
   const { prices, error: pricesError } = useJupiterPrices();
   const {
@@ -207,7 +204,6 @@ function SignedIn({
     refreshSettled: settleBalances,
   } = useBalances(walletAddress);
 
-  const tickerPrice = prices?.[ticker.mint]?.usdPrice;
   // Scanned once here rather than inside the wallet card, so the header total
   // and the balance rows can never disagree about what the account holds.
   const walletScan = useWalletScan(walletAddress ?? undefined);
@@ -231,9 +227,13 @@ function SignedIn({
     walletScan.nativePrices,
   );
 
+  // Jupiter Trigger auth for the Home asset detail's limit tab. Cheap to hold:
+  // it signs nothing until an order is actually placed.
+  const auth = useTriggerAuth(walletAddress ?? null);
+
   function handleAssetSelect(x: XStock) {
     setTicker(x);
-    setTradeOpen(true);
+    setOpenAsset(x);
   }
 
   return (
@@ -290,16 +290,15 @@ function SignedIn({
             active={activeSection === "earn"}
             onClick={() => setActiveSection("earn")}
           />
-          <SidebarNavItem label="Hedge" />
+          <SidebarNavItem
+            label="Hedge"
+            active={activeSection === "hedge"}
+            onClick={() => setActiveSection("hedge")}
+          />
           <SidebarNavItem
             label="Withdraw"
             active={activeSection === "withdraw"}
             onClick={() => setActiveSection("withdraw")}
-          />
-          <SidebarNavItem
-            label="Spend"
-            active={activeSection === "spend"}
-            onClick={() => setActiveSection("spend")}
           />
           <SidebarNavItem
             label="Portfolio"
@@ -372,8 +371,8 @@ function SignedIn({
                 Waiting for embedded Solana wallet to provision...
               </p>
             )
-          ) : activeSection === "spend" ? (
-            <SpendPanel />
+          ) : activeSection === "hedge" ? (
+            <HedgePanel balances={balances} prices={prices} scan={walletScan} />
           ) : activeSection === "borrow" ? (
             walletAddress ? (
               <BorrowSection
@@ -381,6 +380,7 @@ function SignedIn({
                 balances={balances}
                 prices={prices}
                 onRefresh={settleAll}
+                onAddFunds={() => setActiveSection("markets")}
               />
             ) : (
               <p className="text-sm text-white/50">
@@ -433,12 +433,24 @@ function SignedIn({
                 </Card>
 
                 <Card className="lg:col-span-2">
-                  <AssetGrid
-                    prices={prices}
-                    pricesError={pricesError}
-                    selectedMint={ticker.mint}
-                    onSelect={handleAssetSelect}
-                  />
+                  {openAsset ? (
+                    <HomeAssetDetail
+                      xstock={openAsset}
+                      prices={prices}
+                      balances={balances}
+                      walletAddress={walletAddress}
+                      auth={auth}
+                      onRefresh={settleAll}
+                      onBack={() => setOpenAsset(null)}
+                    />
+                  ) : (
+                    <AssetGrid
+                      prices={prices}
+                      pricesError={pricesError}
+                      selectedMint={ticker.mint}
+                      onSelect={handleAssetSelect}
+                    />
+                  )}
                 </Card>
               </div>
 
@@ -454,6 +466,8 @@ function SignedIn({
                     balances={balances}
                     prices={prices}
                     onRefresh={settleAll}
+                    onAddFunds={() => setActiveSection("markets")}
+                    dark
                   />
                 </Card>
               </div>
@@ -467,39 +481,6 @@ function SignedIn({
         </div>
       </main>
 
-      {walletAddress && (
-        <Sheet open={tradeOpen} onOpenChange={setTradeOpen}>
-          <SheetContent
-            side="right"
-            className="w-full border-l border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to text-white sm:max-w-md"
-          >
-            <SheetHeader className="border-b border-white/10">
-              <SheetTitle className="text-white">
-                Trade {ticker.symbol}{" "}
-                <span className="font-normal text-white/50">
-                  · {ticker.name}
-                </span>
-              </SheetTitle>
-              <SheetDescription className="font-mono text-xs">
-                {tickerPrice != null
-                  ? `$${tickerPrice.toFixed(2)}`
-                  : "Loading price..."}
-              </SheetDescription>
-            </SheetHeader>
-            <div className="overflow-y-auto px-4 pb-4">
-              {tradeOpen && (
-                <SwapForm
-                  ticker={ticker}
-                  walletAddress={walletAddress}
-                  prices={prices}
-                  balances={balances}
-                  onBalanceChange={settleBalances}
-                />
-              )}
-            </div>
-          </SheetContent>
-        </Sheet>
-      )}
     </div>
   );
 }
@@ -535,6 +516,12 @@ function MarketsSection({
 }) {
   const [sparks, setSparks] = useState<SparklinesResponse | null>(null);
   const [expandedMint, setExpandedMint] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<XStockCategory | "all">("all");
+  // Categories the user has clicked "See all" on. Only meaningful while the
+  // full catalog is showing; picking one category or typing a search reveals
+  // every match on its own.
+  const [openGroups, setOpenGroups] = useState<XStockCategory[]>([]);
   // One shared in-memory Trigger JWT for the whole table, so placing an order and
   // viewing it in the same expanded row don't each prompt a wallet signature.
   const auth = useTriggerAuth(walletAddress);
@@ -557,88 +544,219 @@ function MarketsSection({
     };
   }, []);
 
+  const trimmed = query.trim();
+  // Only the unfiltered catalog collapses. Once the user has narrowed to one
+  // category or typed a query, hiding matches behind "See all" would bury the
+  // thing they just asked for.
+  const collapsible = category === "all" && trimmed === "";
+
+  const groups = useMemo(() => {
+    const q = trimmed.toLowerCase();
+    return XSTOCK_CATEGORIES.filter(
+      (c) => category === "all" || category === c.id,
+    )
+      .map((c) => ({
+        ...c,
+        assets: XSTOCKS.filter(
+          (x) =>
+            x.category === c.id &&
+            (q === "" ||
+              x.symbol.toLowerCase().includes(q) ||
+              x.name.toLowerCase().includes(q)),
+        ),
+      }))
+      .filter((g) => g.assets.length > 0);
+  }, [category, trimmed]);
+
   return (
     <div className="space-y-6">
-      <div className="space-y-1.5">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
-          Markets
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+        <div className="space-y-1.5">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+            Markets
+          </div>
+          <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+            Buy, sell and use as collateral
+          </h2>
+          <p className="text-sm text-aeras-300">
+            xStocks are tokenized representations of the underlying asset;
+            holders do not have direct shareholder rights.
+          </p>
         </div>
-        <h2 className="font-light text-2xl tracking-tight text-aeras-900">
-          Tokenized stocks
-        </h2>
-        <p className="text-sm text-aeras-300">
-          Buy and sell tokenized stocks. They are tokenized representations of
-          equities; holders do not have direct shareholder rights.
-        </p>
+        {pricesError ? (
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-aeras-warning">
+            <span className="inline-block size-1.5 rounded-full bg-aeras-warning" />
+            Price feed offline
+          </span>
+        ) : (
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-aeras-300">
+            <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
+            Live · 10s
+          </span>
+        )}
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
-        <div className="flex items-baseline justify-between">
-          <div>
-            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-              Catalog
-            </div>
-            <div className="mt-1 text-sm font-medium tracking-tight text-white">
-              {XSTOCKS.length} assets
-            </div>
-          </div>
-          {pricesError ? (
-            <span className="inline-flex items-center gap-1 text-xs text-aeras-warning">
-              <span className="inline-block size-1.5 rounded-full bg-aeras-warning" />
-              Price feed offline
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 text-xs text-white/50">
-              <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
-              Live · 10s
-            </span>
-          )}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="relative sm:w-64">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-aeras-300" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search assets"
+            aria-label="Search assets"
+            className="w-full rounded-lg border border-aeras-border bg-white py-2 pl-9 pr-3 text-sm tracking-tight text-aeras-900 outline-none transition-colors placeholder:text-aeras-300 focus:border-aeras-blue"
+          />
         </div>
+        <div className="flex flex-wrap gap-1.5">
+          <CategoryPill
+            label="All"
+            active={category === "all"}
+            onClick={() => setCategory("all")}
+          />
+          {XSTOCK_CATEGORIES.map((c) => (
+            <CategoryPill
+              key={c.id}
+              label={c.label}
+              active={category === c.id}
+              onClick={() => setCategory(c.id)}
+            />
+          ))}
+        </div>
+      </div>
 
-        <div className="mt-5 divide-y divide-white/10">
-          <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-            <div className="col-span-4">Asset</div>
-            <div className="col-span-2 text-right">Price</div>
-            <div className="col-span-1 text-right">24h</div>
-            <div className="col-span-2 text-center">7d</div>
-            <div className="col-span-2 text-right">Holdings</div>
-            <div className="col-span-1 text-right" />
-          </div>
-          {XSTOCKS.map((x) => {
-            const expanded = expandedMint === x.mint;
-            return (
-              <div key={x.mint}>
-                <MarketsRow
-                  xstock={x}
-                  entry={prices?.[x.mint]}
-                  sparkline={sparks?.[x.mint]}
-                  held={balances?.xstocks[x.mint] ?? 0}
-                  expanded={expanded}
-                  borrowable={vaultByCollateralMint(x.mint) != null}
-                  onToggle={() => setExpandedMint(expanded ? null : x.mint)}
-                />
-                {expanded && (
-                  <MarketsRowExpanded
-                    xstock={x}
-                    prices={prices}
-                    balances={balances}
-                    walletAddress={walletAddress}
-                    auth={auth}
-                    onRefresh={onRefresh}
-                  />
+      {groups.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8 text-center text-sm text-white/50">
+          No assets match that search.
+        </div>
+      ) : (
+        groups.map((g) => {
+          const open = !collapsible || openGroups.includes(g.id);
+          const rows = open ? g.assets : g.assets.slice(0, GROUP_PREVIEW_ROWS);
+          const truncated = collapsible && g.assets.length > GROUP_PREVIEW_ROWS;
+          return (
+            <div
+              key={g.id}
+              className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6"
+            >
+              <div className="flex items-baseline justify-between gap-3">
+                <div className="flex items-baseline gap-2">
+                  <h3 className="text-sm font-medium tracking-tight text-white">
+                    {g.label}
+                  </h3>
+                  <span className="text-[11px] tabular-nums text-white/40">
+                    {g.assets.length}
+                  </span>
+                </div>
+                {truncated && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenGroups((prev) =>
+                        prev.includes(g.id)
+                          ? prev.filter((id) => id !== g.id)
+                          : [...prev, g.id],
+                      )
+                    }
+                    className="text-[11px] font-medium text-white/60 transition-colors hover:text-white"
+                  >
+                    {open ? "Show less" : `See all ${g.assets.length}`}
+                  </button>
                 )}
               </div>
-            );
-          })}
-        </div>
-      </div>
 
-      <p className="text-[11px] text-white/50">
+              <div className="mt-4 divide-y divide-white/10">
+                <MarketsRowHeader />
+                {rows.map((x) => {
+                  const expanded = expandedMint === x.mint;
+                  return (
+                    <div key={x.mint}>
+                      <MarketsRow
+                        xstock={x}
+                        entry={prices?.[x.mint]}
+                        sparkline={sparks?.[x.mint]}
+                        held={balances?.xstocks[x.mint] ?? 0}
+                        expanded={expanded}
+                        borrowable={vaultByCollateralMint(x.mint) != null}
+                        onToggle={() =>
+                          setExpandedMint(expanded ? null : x.mint)
+                        }
+                      />
+                      {expanded && (
+                        <MarketsRowExpanded
+                          xstock={x}
+                          prices={prices}
+                          balances={balances}
+                          walletAddress={walletAddress}
+                          auth={auth}
+                          onRefresh={onRefresh}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })
+      )}
+
+      <p className="text-[11px] text-aeras-300">
         Tokenized stocks are subject to KYC and geographic restrictions at the
         issuer level. {XSTOCK_BORROW_VAULTS.length} of {XSTOCKS.length} are
-        borrowable today; the rest can be held and sold but not used as
-        collateral yet.
+        borrowable today, marked with a shield; the rest can be held and sold
+        but not used as collateral yet.
       </p>
+    </div>
+  );
+}
+
+// Rows shown per category before "See all". Five keeps every group to roughly
+// one screen of the card while still showing enough to judge the group.
+const GROUP_PREVIEW_ROWS = 5;
+
+// Column geometry for the catalog, shared by the header and every row so the
+// figures line up. Each numeric column is a fixed width and always rendered,
+// including holdings: sizing it to its content would let the rows the user
+// holds shift every column left and break alignment down the list.
+const MK_HOLDINGS = "hidden w-24 shrink-0 text-right lg:block";
+const MK_PRICE = "w-24 shrink-0 text-right";
+const MK_SPARK = "hidden w-24 shrink-0 md:block";
+const MK_ACTION = "w-[74px] shrink-0 flex justify-end";
+
+function CategoryPill({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-lg border px-3 py-1.5 text-xs font-medium tracking-tight transition-colors ${
+        active
+          ? "border-aeras-900 bg-aeras-900 text-white"
+          : "border-aeras-border bg-white text-aeras-300 hover:border-aeras-border-strong hover:text-aeras-900"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function MarketsRowHeader() {
+  return (
+    <div className="flex items-center gap-3 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
+      <div className="min-w-0 flex-1">Asset</div>
+      <div className={MK_HOLDINGS}>Holdings</div>
+      <div className={MK_PRICE}>Price</div>
+      <div className={`${MK_SPARK} text-center`}>7d</div>
+      <div className={MK_ACTION} />
     </div>
   );
 }
@@ -678,58 +796,55 @@ function MarketsRow({
   const heldUsd = price != null ? held * price : null;
   return (
     <div
-      className={`grid w-full grid-cols-12 items-center gap-2 py-3 text-left text-sm transition-colors ${
-        expanded ? "bg-aeras-blue/15/40" : ""
+      className={`flex w-full items-center gap-3 py-3 text-left text-sm ${
+        expanded ? "bg-white/[0.03]" : ""
       }`}
     >
-      <div className="col-span-4 flex items-center gap-2.5">
-        <AssetLogo xstock={xstock} size={28} />
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <AssetLogo xstock={xstock} size={32} />
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-medium tracking-tight text-white">
-              {xstock.symbol}
-            </span>
-            {borrowable && (
-              <span className="rounded-md bg-aeras-blue/15 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-blue">
-                Collateral
-              </span>
-            )}
-          </div>
-          <div className="truncate text-[11px] text-white/50">
+          <div className="truncate font-medium tracking-tight text-white">
             {xstock.name}
+          </div>
+          <div className="mt-0.5 flex items-center gap-1.5">
+            <span className="text-[11px] text-white/45">{xstock.symbol}</span>
+            {borrowable && (
+              <ShieldCheck
+                className="size-3 shrink-0 text-aeras-blue-medium"
+                aria-label="Can be used as collateral"
+              />
+            )}
           </div>
         </div>
       </div>
-      <div className="col-span-2 text-right font-mono tabular-nums text-white">
-        {price == null ? "—" : `$${formatPrice(price)}`}
-      </div>
-      <div
-        className={`col-span-1 text-right font-mono tabular-nums text-xs ${changeColor}`}
-      >
-        {change == null
-          ? "—"
-          : `${positive ? "+" : ""}${change.toFixed(2)}%`}
-      </div>
-      <div className="col-span-2 flex justify-center">
-        <RowSparkline values={sparkline} strokeClassName={sparkStroke} />
-      </div>
-      <div className="col-span-2 text-right">
+      <div className={MK_HOLDINGS}>
         {held > 0 ? (
           <>
             <div className="font-mono tabular-nums text-white">
               {held.toFixed(4)}
             </div>
             {heldUsd != null && (
-              <div className="font-mono text-[11px] text-white/50">
+              <div className="font-mono text-[11px] text-white/45">
                 ${heldUsd.toFixed(2)}
               </div>
             )}
           </>
         ) : (
-          <span className="font-mono text-[11px] text-white/50">—</span>
+          <span className="font-mono text-[11px] text-white/35">—</span>
         )}
       </div>
-      <div className="col-span-1 flex justify-end">
+      <div className={MK_PRICE}>
+        <div className="font-mono tabular-nums text-white">
+          {price == null ? "—" : `$${formatPrice(price)}`}
+        </div>
+        <div className={`font-mono text-[11px] tabular-nums ${changeColor}`}>
+          {change == null ? "—" : `${positive ? "+" : ""}${change.toFixed(2)}%`}
+        </div>
+      </div>
+      <div className={MK_SPARK}>
+        <RowSparkline values={sparkline} strokeClassName={sparkStroke} />
+      </div>
+      <div className={MK_ACTION}>
         <button
           type="button"
           onClick={onToggle}
@@ -763,10 +878,6 @@ function MarketsRowExpanded({
   auth: ReturnType<typeof useTriggerAuth>;
   onRefresh: () => void;
 }) {
-  const [tab, setTab] = useState<"market" | "limit">("market");
-  // Bumped after a limit order is placed so the open-orders list refetches.
-  const [ordersRefresh, setOrdersRefresh] = useState(0);
-
   return (
     <div className="border-t border-white/10 px-1 py-5">
       <div className="grid gap-6 lg:grid-cols-2">
@@ -775,59 +886,91 @@ function MarketsRowExpanded({
         </div>
 
         <div className="space-y-4">
-          {walletAddress ? (
-            <>
-              <div className="inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
-                {(["market", "limit"] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setTab(t)}
-                    className={`rounded-md px-3 py-1 font-medium capitalize transition-colors ${
-                      tab === t
-                        ? "bg-aeras-blue text-white"
-                        : "text-white/60 hover:text-white"
-                    }`}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-
-              {tab === "market" ? (
-                <SwapForm
-                  ticker={xstock}
-                  walletAddress={walletAddress}
-                  prices={prices}
-                  balances={balances}
-                  onBalanceChange={onRefresh}
-                />
-              ) : (
-                <TriggerForm
-                  ticker={xstock}
-                  walletAddress={walletAddress}
-                  prices={prices}
-                  balances={balances}
-                  auth={auth}
-                  onBalanceChange={onRefresh}
-                  onOrderPlaced={() => setOrdersRefresh((n) => n + 1)}
-                />
-              )}
-
-              <OpenLimitOrders
-                ticker={xstock}
-                auth={auth}
-                refreshKey={ordersRefresh}
-                onChanged={onRefresh}
-              />
-            </>
-          ) : (
-            <p className="text-sm text-white/50">
-              Waiting for embedded Solana wallet to provision...
-            </p>
-          )}
+          <AssetTradePanel
+            xstock={xstock}
+            prices={prices}
+            balances={balances}
+            walletAddress={walletAddress}
+            auth={auth}
+            onRefresh={onRefresh}
+          />
         </div>
       </div>
+    </div>
+  );
+}
+
+// Home's drilled-in asset view. Replaces the grid in place rather than opening
+// a sheet, so the chart card below stays on screen and keeps tracking the asset
+// being traded. Back returns to the full grid.
+function HomeAssetDetail({
+  xstock,
+  prices,
+  balances,
+  walletAddress,
+  auth,
+  onRefresh,
+  onBack,
+}: {
+  xstock: XStock;
+  prices: JupiterPriceMap | null;
+  balances: AccountBalances | null;
+  walletAddress: string | undefined;
+  auth: ReturnType<typeof useTriggerAuth>;
+  onRefresh: () => void;
+  onBack: () => void;
+}) {
+  const entry = prices?.[xstock.mint];
+  const change = entry?.priceChange24h;
+  const positive = change == null ? null : change >= 0;
+  const changeColor =
+    positive == null
+      ? "text-white/40"
+      : positive
+        ? "text-aeras-positive"
+        : "text-aeras-negative";
+
+  return (
+    <div className="space-y-4">
+      <button
+        type="button"
+        onClick={onBack}
+        className="-ml-1 inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50 transition-colors hover:text-white"
+      >
+        <ChevronLeft className="size-3.5" />
+        Assets
+      </button>
+
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <AssetLogo xstock={xstock} size={32} />
+          <div>
+            <div className="text-sm font-medium tracking-tight text-white">
+              {xstock.symbol}
+            </div>
+            <div className="text-xs text-white/50">{xstock.name}</div>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="font-mono text-sm tabular-nums text-white">
+            {entry?.usdPrice == null ? "—" : `$${formatPrice(entry.usdPrice)}`}
+          </div>
+          <div className={`font-mono text-xs tabular-nums ${changeColor}`}>
+            {change == null
+              ? "—"
+              : `${positive ? "+" : ""}${change.toFixed(2)}%`}
+          </div>
+        </div>
+      </div>
+
+      <AssetTradePanel
+        xstock={xstock}
+        prices={prices}
+        balances={balances}
+        walletAddress={walletAddress ?? null}
+        auth={auth}
+        onRefresh={onRefresh}
+      />
     </div>
   );
 }
@@ -885,11 +1028,13 @@ function BorrowSection({
   balances,
   prices,
   onRefresh,
+  onAddFunds,
 }: {
   walletAddress: string;
   balances: AccountBalances | null;
   prices: JupiterPriceMap | null;
   onRefresh: () => Promise<void> | void;
+  onAddFunds: () => void;
 }) {
   return (
     <div className="space-y-6">
@@ -900,25 +1045,15 @@ function BorrowSection({
         <h2 className="font-light text-2xl tracking-tight text-aeras-900">
           Borrow USDC against your tokenized stocks
         </h2>
-        <p className="text-sm text-aeras-300">
-          Pledge tokenized stocks as collateral, draw USDC at a variable rate,
-          repay any time. Positions settle on Solana.
-        </p>
       </div>
 
-      <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
-        <BorrowPanel
-          walletAddress={walletAddress}
-          balances={balances}
-          prices={prices}
-          onRefresh={onRefresh}
-        />
-      </div>
-
-      <p className="text-[11px] text-white/40">
-        Borrow APR and market size update from the live venue. Max LTV /
-        liquidation threshold shown per market.
-      </p>
+      <BorrowPanel
+        walletAddress={walletAddress}
+        balances={balances}
+        prices={prices}
+        onRefresh={onRefresh}
+        onAddFunds={onAddFunds}
+      />
     </div>
   );
 }
@@ -929,8 +1064,8 @@ type Section =
   | "markets"
   | "earn"
   | "borrow"
+  | "hedge"
   | "withdraw"
-  | "spend"
   | "positions"
   | "activity";
 

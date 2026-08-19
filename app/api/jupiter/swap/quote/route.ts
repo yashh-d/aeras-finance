@@ -22,7 +22,7 @@ export async function GET(request: Request) {
 
   if (!isAllowedSwapPair(inputMint, outputMint)) {
     return NextResponse.json(
-      { error: "Unsupported mint pair for looping" },
+      { error: "Unsupported mint pair" },
       { status: 400 },
     );
   }

@@ -111,9 +111,16 @@ export interface LiveVaultState {
   borrowRateAnnual: number;
   // How much can still be borrowed from this vault, in atomic units of the borrow token.
   borrowableAtomic: string;
+  // The same figure in USD. This is the hard ceiling on any borrow from this
+  // vault regardless of how much collateral is posted, so it gates the form as
+  // well as the catalog's liquidity column.
+  borrowableUsd: number | null;
   // Total collateral supplied to this vault, in USD — the market's size. Null if
   // the upstream payload lacks the price/supply fields to compute it.
   totalSuppliedUsd: number | null;
+  // Total debt drawn from this vault, in USD. Null if the payload lacks the
+  // borrow-token price/total needed to compute it.
+  totalBorrowedUsd: number | null;
 }
 
 interface RawVault {
@@ -123,8 +130,12 @@ interface RawVault {
   borrowable: string;
   // Total collateral (supply token) deposited, in atomic units.
   totalSupply?: string;
+  // Total debt drawn, in atomic units of the borrow token.
+  totalBorrow?: string;
   // Supply (collateral) token metadata. `price` is USD per whole token.
   supplyToken?: { decimals?: number; price?: string };
+  // Borrow token metadata, same shape as supplyToken.
+  borrowToken?: { decimals?: number; price?: string };
 }
 
 export async function fetchLiveVaultStateViaProxy(
@@ -155,12 +166,29 @@ export function parseLiveVault(raw: RawVault): LiveVaultState {
     supplyPrice != null && raw.totalSupply != null
       ? (Number(raw.totalSupply) / 10 ** supplyDecimals) * supplyPrice
       : null;
+  const borrowDecimals = raw.borrowToken?.decimals ?? 6;
+  const borrowPrice = raw.borrowToken?.price
+    ? Number(raw.borrowToken.price)
+    : null;
+  const totalBorrowedUsd =
+    borrowPrice != null && raw.totalBorrow != null
+      ? (Number(raw.totalBorrow) / 10 ** borrowDecimals) * borrowPrice
+      : null;
+  // Drawable liquidity. Jupiter's `borrowable` is already the min of the vault's
+  // borrow-limit headroom and what the shared liquidity layer can actually pay
+  // out, so it can legitimately exceed this vault's own collateral.
+  const borrowableUsd =
+    borrowPrice != null && raw.borrowable != null
+      ? (Number(raw.borrowable) / 10 ** borrowDecimals) * borrowPrice
+      : null;
   return {
     vaultId: raw.id,
     oraclePriceUsd,
     borrowRateAnnual,
     borrowableAtomic: raw.borrowable,
+    borrowableUsd,
     totalSuppliedUsd,
+    totalBorrowedUsd,
   };
 }
 
@@ -308,6 +336,27 @@ export async function fetchVaultExchangePrices(
     supplyExPrice: readU64LE(data, VAULT_SUPPLY_EX_PRICE_OFFSET),
     borrowExPrice: readU64LE(data, VAULT_BORROW_EX_PRICE_OFFSET),
   };
+}
+
+// Where a bound position-NFT id is remembered per (wallet, vault). Shared so the
+// borrow card and the account-wide summary read the same binding instead of each
+// paying for a full on-chain NFT scan.
+export function positionNftStorageKey(
+  walletAddress: string,
+  vaultId: number,
+): string {
+  return `aeras:borrow:${walletAddress}:${vaultId}`;
+}
+
+export function readStoredNftId(
+  walletAddress: string,
+  vaultId: number,
+): number | null {
+  if (typeof window === "undefined") return null;
+  const raw = localStorage.getItem(positionNftStorageKey(walletAddress, vaultId));
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 // Scan the wallet's NFTs for an existing Jupiter Lend position-NFT in this

@@ -20,7 +20,7 @@ export async function POST(request: Request) {
 
   if (!isAllowedSwapPair(quoteResponse.inputMint, quoteResponse.outputMint)) {
     return NextResponse.json(
-      { error: "Unsupported mint pair for looping" },
+      { error: "Unsupported mint pair" },
       { status: 400 },
     );
   }

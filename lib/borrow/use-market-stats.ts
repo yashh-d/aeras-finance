@@ -22,6 +22,12 @@ export interface MarketStat {
   borrowAprPct: number | null;
   // Market size in USD (total collateral supplied). Null while loading.
   sizeUsd: number | null;
+  // Total USDC drawn from the market. Null while loading or unavailable.
+  borrowedUsd: number | null;
+  // USDC still drawable from the venue, in USD. This is the ceiling on any
+  // borrow no matter how much collateral is posted, so the forms clamp their
+  // max against it instead of letting the user submit a doomed transaction.
+  liquidityUsd: number | null;
 }
 
 // Stable per-venue keys, shared with the borrow list so a row can look up its
@@ -57,11 +63,15 @@ export function useBorrowMarketStats(): {
             next.set(jupiterMarketKey(v.vaultId), {
               borrowAprPct: live.borrowRateAnnual * 100,
               sizeUsd: live.totalSuppliedUsd,
+              borrowedUsd: live.totalBorrowedUsd,
+              liquidityUsd: live.borrowableUsd,
             });
           } catch {
             next.set(jupiterMarketKey(v.vaultId), {
               borrowAprPct: null,
               sizeUsd: null,
+              borrowedUsd: null,
+              liquidityUsd: null,
             });
           }
         }),
@@ -84,11 +94,22 @@ export function useBorrowMarketStats(): {
           const byReserve = new Map(reserves.map((r) => [r.reserve, r]));
           const usdc = byReserve.get(KAMINO_USDC_BORROW.reserve);
           const usdcAprPct = usdc ? usdc.borrowApy * 100 : null;
+          // Undrawn USDC in the reserve every Kamino market borrows from. Shared
+          // across the market, so all Kamino rows report the same liquidity
+          // while their collateral sizes differ — that is the real constraint,
+          // not a per-collateral one.
+          const usdcLiquidityUsd = usdc
+            ? Math.max(0, usdc.totalSupplyUsd - usdc.totalBorrowUsd)
+            : null;
           for (const c of KAMINO_XSTOCK_COLLATERALS) {
             const m = byReserve.get(c.reserve);
             next.set(kaminoMarketKey(c.reserve), {
               borrowAprPct: usdcAprPct,
               sizeUsd: m ? m.totalSupplyUsd : null,
+              // The USDC reserve is what a borrower actually draws from, so its
+              // total borrow is the comparable figure to Jupiter's vault debt.
+              borrowedUsd: usdc ? usdc.totalBorrowUsd : null,
+              liquidityUsd: usdcLiquidityUsd,
             });
           }
         }

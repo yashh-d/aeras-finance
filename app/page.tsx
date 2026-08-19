@@ -20,14 +20,14 @@ const PROTOCOLS: readonly Logo[] = [
 // Stocks shown in the marquee. xStocks supports more than this, but these
 // are the eight we currently have brand art for.
 const STOCKS: readonly Logo[] = [
-  { src: "/logos/apple.svg", alt: "Apple" },
-  { src: "/logos/nvidia.svg", alt: "NVIDIA" },
-  { src: "/logos/tesla.svg", alt: "Tesla" },
-  { src: "/logos/google.svg", alt: "Google" },
-  { src: "/logos/meta.svg", alt: "Meta" },
-  { src: "/logos/microsoft.svg", alt: "Microsoft" },
-  { src: "/logos/amazon.svg", alt: "Amazon" },
-  { src: "/logos/amd.svg", alt: "AMD" },
+  { src: "/logos/apple.png", alt: "Apple" },
+  { src: "/logos/nvidia.png", alt: "NVIDIA" },
+  { src: "/logos/tesla.png", alt: "Tesla" },
+  { src: "/logos/google.png", alt: "Google" },
+  { src: "/logos/meta.png", alt: "Meta" },
+  { src: "/logos/microsoft.png", alt: "Microsoft" },
+  { src: "/logos/amazon.png", alt: "Amazon" },
+  { src: "/logos/amd.png", alt: "AMD" },
 ];
 
 // Marquee shows the stocks only. Protocols have their own showcase in the
@@ -127,7 +127,7 @@ type Holding = {
 
 const HOLDINGS: readonly Holding[] = [
   {
-    logo: "/logos/apple.svg",
+    logo: "/logos/apple.png",
     name: "Apple",
     ticker: "AAPLx · xStocks",
     amount: "$18,420",
@@ -135,7 +135,7 @@ const HOLDINGS: readonly Holding[] = [
     ltv: 60,
   },
   {
-    logo: "/logos/nvidia-eye.svg",
+    logo: "/logos/nvidia-eye.png",
     name: "NVIDIA",
     ticker: "NVDAx · xStocks",
     amount: "$12,960",
