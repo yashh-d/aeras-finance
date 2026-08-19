@@ -12,6 +12,7 @@ import {
   TRUSTWARE_INTENT_BASE_URL,
   TRUSTWARE_SOLANA_CHAIN,
 } from "./constants";
+import { findSwapToken, isSamePair } from "./swap-tokens";
 import type {
   TrustwareAllowanceResponse,
   TrustwareBalancesResponse,
@@ -21,16 +22,37 @@ import type {
   TrustwareStatusResponse,
 } from "./types";
 
-// The only destinations we let the proxy route to: the canonical Solana xStock
-// mints that Jupiter Lend borrow vaults accept as collateral. This keeps the
-// key-bearing proxy from being used as an open cross-chain swap for arbitrary
-// tokens.
+// Deposit destinations: the canonical Solana xStock mints that Jupiter Lend
+// borrow vaults accept as collateral.
 const ALLOWED_DEST_MINTS = new Set(
   XSTOCK_BORROW_VAULTS.map((v) => v.collateralMint),
 );
 
-// Validate an incoming quote/route request against the allowlist. Returns an
-// error string for the caller to surface as a 400, or null when valid.
+// Atomic amounts cross the wire as decimal strings. Anything else is rejected
+// rather than forwarded, so a caller cannot smuggle scientific notation or a
+// negative through to the upstream.
+const ATOMIC_AMOUNT = /^\d+$/;
+
+// Validate an incoming quote/route request. Returns an error string for the
+// caller to surface as a 400, or null when valid.
+//
+// This is the control that keeps the key-bearing proxy from being used as an
+// open cross-chain swap for arbitrary tokens. There are exactly two shapes it
+// accepts, and both are allowlists resolved server-side from hardcoded
+// registries. Neither takes the caller's word for what is permissible:
+//
+//   deposit  anything -> a Jupiter Lend vault's collateral mint on Solana.
+//            The destination set is XSTOCK_BORROW_VAULTS. The source is
+//            unconstrained here because the planner has already matched it
+//            against the equivalence registry, and a wrong source can only
+//            waste the caller's own funds.
+//
+//   swap     a curated token -> a curated token, either direction, including
+//            EVM destinations. BOTH sides must be in SWAP_TOKENS. Widening this
+//            to "either side" would turn the proxy back into an open relay.
+//
+// Adding a token to lib/trustware/swap-tokens.ts widens this boundary, so that
+// file is the thing to review, not this function.
 export function validateTrustwareRequest(
   req: Partial<TrustwareQuoteRequest>,
 ): string | null {
@@ -44,11 +66,31 @@ export function validateTrustwareRequest(
   for (const field of required) {
     if (!req[field]) return `${field} is required`;
   }
-  if (req.toChain !== TRUSTWARE_SOLANA_CHAIN) {
-    return `toChain must be ${TRUSTWARE_SOLANA_CHAIN}`;
+  if (!ATOMIC_AMOUNT.test(req.fromAmount!)) {
+    return "fromAmount must be an atomic decimal string";
   }
-  if (!req.toToken || !ALLOWED_DEST_MINTS.has(req.toToken)) {
-    return "toToken is not a supported xStock destination";
+  // Both addresses are echoed to the upstream and one of them is a payout
+  // destination, so neither is taken on trust.
+  if (!isSupportedAddress(req.fromAddress!)) {
+    return "fromAddress is not a supported address";
+  }
+  if (!isSupportedAddress(req.toAddress!)) {
+    return "toAddress is not a supported address";
+  }
+  if (!req.toChain) return "toChain is required";
+  if (!req.toToken) return "toToken is required";
+
+  const isDeposit =
+    req.toChain === TRUSTWARE_SOLANA_CHAIN && ALLOWED_DEST_MINTS.has(req.toToken);
+  if (isDeposit) return null;
+
+  const from = findSwapToken(req.fromChain!, req.fromToken!);
+  const to = findSwapToken(req.toChain, req.toToken);
+  if (!from || !to) {
+    return "that pair is not available to swap";
+  }
+  if (isSamePair(from, to)) {
+    return "the source and destination are the same token";
   }
   return null;
 }

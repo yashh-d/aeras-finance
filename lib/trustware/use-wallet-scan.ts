@@ -15,9 +15,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import type { EquivalentBalances } from "./balances";
 import type { NativeHolding } from "./native";
+import type { StableHolding } from "./stables";
 
 export interface WalletScan extends EquivalentBalances {
   native: NativeHolding[];
+  // USDC held off Solana. Lighter margin is USDC only, so the hedge surface
+  // reads this to tell "you have no money" apart from "your money is elsewhere".
+  stables: StableHolding[];
   nativePrices: Record<string, number>;
   loading: boolean;
   error: string | null;
@@ -25,7 +29,7 @@ export interface WalletScan extends EquivalentBalances {
   refresh: () => void;
 }
 
-const EMPTY = { held: [], unreadableChains: [], native: [] };
+const EMPTY = { held: [], unreadableChains: [], native: [], stables: [] };
 
 // Slower than the Solana balance poll. One scan sweeps every chain Trustware
 // can see, so it is a far heavier call than reading a few token accounts, and
@@ -37,7 +41,7 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
   const { address: evmAddress } = useEmbeddedEvmWallet();
   const [data, setData] = useState<{
     key: string;
-    scan: EquivalentBalances & { native: NativeHolding[] };
+    scan: EquivalentBalances & { native: NativeHolding[]; stables: StableHolding[] };
     prices: Record<string, number>;
     error: string | null;
   } | null>(null);
@@ -74,7 +78,10 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
         fetch("/api/prices/native", { cache: "no-store" }),
       ]);
 
-      let scan = EMPTY as EquivalentBalances & { native: NativeHolding[] };
+      let scan = EMPTY as EquivalentBalances & {
+        native: NativeHolding[];
+        stables: StableHolding[];
+      };
       let error: string | null = null;
       if (scanRes.status === "fulfilled") {
         const body = await scanRes.value.json();
@@ -111,6 +118,7 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
     held: current?.scan.held ?? [],
     unreadableChains: current?.scan.unreadableChains ?? [],
     native: current?.scan.native ?? [],
+    stables: current?.scan.stables ?? [],
     nativePrices: current?.prices ?? {},
     loading: Boolean(addressKey) && current === null,
     error: current?.error ?? null,

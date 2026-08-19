@@ -7,6 +7,7 @@ import {
 } from "@/lib/trustware/balances";
 import { isSupportedAddress, trustwareBalances } from "@/lib/trustware/server";
 import { selectNativeHoldings, type NativeHolding } from "@/lib/trustware/native";
+import { selectStableHoldings, type StableHolding } from "@/lib/trustware/stables";
 
 export const dynamic = "force-dynamic";
 
@@ -15,9 +16,14 @@ const EMPTY: EquivalentBalances = { held: [], unreadableChains: [] };
 // The scan already covers every chain, so the native balances come back in the
 // same response the equivalents are selected from. Returning them here avoids a
 // second round trip for the wallet panel.
+//
+// Stables ride along for the same reason. Lighter margin is USDC only, so the
+// hedge surface has to know where the user's USDC already sits before it can
+// offer to move any of it.
 interface ScanResult {
   equivalents: EquivalentBalances;
   native: NativeHolding[];
+  stables: StableHolding[];
 }
 
 // Which registry equivalents the user actually holds, across every chain
@@ -66,6 +72,7 @@ export async function GET(request: Request) {
   return NextResponse.json({
     ...merged,
     native: [...solanaPart.native, ...evmPart.native],
+    stables: [...solanaPart.stables, ...evmPart.stables],
   });
 }
 
@@ -73,12 +80,13 @@ async function scan(
   address: string | undefined,
   label: string,
 ): Promise<ScanResult> {
-  if (!address) return { equivalents: EMPTY, native: [] };
+  if (!address) return { equivalents: EMPTY, native: [], stables: [] };
   try {
     const raw = await trustwareBalances(address);
     return {
       equivalents: selectHeldEquivalents(raw),
       native: selectNativeHoldings(raw),
+      stables: selectStableHoldings(raw),
     };
   } catch (err) {
     return {
@@ -89,6 +97,7 @@ async function scan(
         ],
       },
       native: [],
+      stables: [],
     };
   }
 }
