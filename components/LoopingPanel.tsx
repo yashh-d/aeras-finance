@@ -435,7 +435,7 @@ function LoopController({
           value={oraclePrice != null ? `$${oraclePrice.toFixed(2)}` : "…"}
         />
         <Stat
-          label="Borrow APR"
+          label="Borrow APY"
           value={borrowRatePct != null ? `${borrowRatePct.toFixed(2)}%` : "…"}
         />
       </div>
@@ -565,7 +565,7 @@ function LoopController({
           {carryPct != null && (
             <PreviewRow
               label="Borrow carry"
-              value={`-${carryPct.toFixed(2)}% APR`}
+              value={`-${carryPct.toFixed(2)}% APY`}
             />
           )}
           {priceImpactPct != null && (

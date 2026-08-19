@@ -107,7 +107,8 @@ export interface LiveVaultState {
   vaultId: number;
   // Oracle price in USD, decimal. Same conversion for operate vs liquidate is fine for display.
   oraclePriceUsd: number;
-  // Annualised borrow rate, decimal (0.05 = 5%).
+  // Annualised borrow APY, decimal (0.05 = 5%). This is the compounded rate,
+  // matching what Jupiter's own UI shows — not the nominal APR the API returns.
   borrowRateAnnual: number;
   // How much can still be borrowed from this vault, in atomic units of the borrow token.
   borrowableAtomic: string;
@@ -155,8 +156,12 @@ export function parseLiveVault(raw: RawVault): LiveVaultState {
   // Jupiter returns oraclePrice scaled 1e15 for xStock vaults. Divide and trust the
   // float for display purposes only — never use this for tx math.
   const oraclePriceUsd = Number(raw.oraclePrice) / 1e15;
-  // borrowRate is in tenths of a percent (e.g. "781" = 7.81%).
-  const borrowRateAnnual = Number(raw.borrowRate) / 10_000;
+  // borrowRate is the nominal annual rate in basis points (e.g. "418" = 4.18%).
+  // Jupiter's UI displays the *compounded* APY, so convert with e^r - 1 to match
+  // it. Verified against their app: supplyRate 3.00% renders as 3.05%
+  // (e^0.03 - 1) and 2.00% as 2.02% (e^0.02 - 1). Per-second compounding in
+  // Fluid is numerically identical to the continuous limit at these rates.
+  const borrowRateAnnual = Math.expm1(Number(raw.borrowRate) / 10_000);
   // Market size: total collateral supplied, valued at the supply token's price.
   const supplyDecimals = raw.supplyToken?.decimals ?? 8;
   const supplyPrice = raw.supplyToken?.price
