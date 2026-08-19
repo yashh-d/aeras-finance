@@ -14,7 +14,7 @@ The first version ships one flow end to end:
 4. User deposits the xStock into a lending venue (Kamino or Jupiter Lend) and sees their position with live APY. Venue selection is a Stage 3 design decision; both are in scope for v1.
 5. User can withdraw at any time.
 
-Anything beyond this (multi-asset positions, leveraged loops, fiat on-ramp, mobile, EVM chains) is out of scope for v1.
+Anything beyond this (multi-asset positions, fiat on-ramp, mobile) is out of scope for v1. Work built on top of this flow since it shipped is listed under Built Since v1.
 
 ## Stack
 
@@ -30,34 +30,67 @@ Pin all SDK versions in package.json. Do not use caret ranges for Privy, Jupiter
 
 ## Chain Assumptions
 
-Solana mainnet only for v1. All xStocks live on Solana via Backed Finance. Kamino is Solana-native. There is no EVM code in this repo.
+Solana mainnet holds every position. All xStocks live on Solana via Backed Finance, and Kamino and Jupiter Lend are both Solana-native. Deposits, borrows, and withdrawals settle on Solana.
 
-Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do not use the public mainnet-beta endpoint for anything beyond local prototyping.
+EVM chains appear only as a source of funds **for anything that becomes a position**. The Trustware layer in `lib/trustware` lets a user who already holds a tokenized-stock equivalent on Ethereum (chain `1`) or BNB Chain (chain `56`) convert it into the canonical Solana xStock and deposit that. The destination is always the user's Solana address. The supported source tokens are a hardcoded registry in `lib/trustware/equivalents.ts`, not anything the user can pass in.
+
+The swap surface is the one exception, and it is deliberate. A swap may end on an EVM chain: Solana USDC to Ethereum USDT is a supported pair. That is wallet plumbing, not lending, and it does not weaken the rule that a *position* never settles off Solana. Its tokens are a separate hardcoded registry in `lib/trustware/swap-tokens.ts`, and both sides of a pair must be in it.
+
+EVM code is confined to three files. `lib/privy/evm.ts` resolves the embedded EVM wallet and hands back its EIP-1193 provider. `lib/trustware/evm-tx.ts` translates a Trustware route payload into `eth_sendTransaction` params. `lib/trustware/execute.ts` grants ERC-20 allowances, calls `wallet_switchEthereumChain`, broadcasts the source leg, and tracks the route to settlement. Nothing outside those files should reach for an EVM provider.
+
+Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do not use the public mainnet-beta endpoint for anything beyond local prototyping. There is no EVM RPC of our own. Trustware proxies allowance reads and cross-chain balance scans, which is what the `/sdk/rpc/evm` and `/data` endpoints in `lib/trustware/constants.ts` are for.
 
 ## Repo Layout
 
 ```
 /app                 Next.js App Router routes
-  /api               Server routes (Jupiter quote proxy, Kamino reads)
-  /(auth)            Privy-gated routes
+  page.tsx           Landing page
+  /app               The authenticated product surface
+  /api               Server routes. Third-party keys stay on this side.
+    /admin/approve   Waitlist approval, guarded by ADMIN_SECRET
+    /auth/sync       Verifies the Privy token, upserts the Supabase user row
+    /jupiter         Ultra orders, swap quote/build, Lend earn and borrow,
+                     prices, charts, sparklines, trigger orders
+    /kamino          KTX transaction proxy, reserve and kvault metrics,
+                     kvault positions, obligations
+    /lighter         Lighter perps market catalog
+    /ondo            Ondo perps market catalog
+    /prices/native   Native asset prices
+    /spend           Rain card issuance and purchase history
+    /trustware       Route, quote, balances, allowance, receipt, status proxies
+    /waitlist        Public signup
 /components          UI components
   /ui                shadcn primitives
 /lib
-  /privy             Privy config and hooks
-  /jupiter           Ultra API client and swap helpers
-  /kamino            klend SDK wrappers, reserve metadata
-  /solana            Connection, signing helpers
+  /borrow            Borrow summary and market stats hooks
+  /jupiter           Ultra client, Lend earn/borrow, looping, triggers,
+                     prices, curated xStock list
+  /kamino            Reserve metadata, kvaults, positions, borrow helpers
+  /lighter           Lighter perps: markets, sizing, risk, hedge construction
+  /ondo              Ondo perps, same module shape as lighter
+  /privy             Privy config, auth, Solana and EVM wallet hooks
+  /solana            Connection, balances, holdings, sending, activity
+  /supabase          Server-only admin client (service role key)
+  /trustware         Cross-chain conversion: equivalents, planner, execution,
+                     plus the curated swap registry and its pricing
+  users.ts           Supabase user model (signup, Privy sync, approval)
+  waitlist.ts        Waitlist form validation
+/spend               Rain virtual card. Sits at the top level, not under /lib,
+                     and holds its own panel component and SQL migration.
+/scripts             Live-API check scripts. Run these to verify an integration
+                     against the real endpoint rather than trusting a doc.
+/supabase            SQL migrations
 /docs                Integration docs (read these before writing code)
-  /privy
-  /jupiter
-  /kamino
-  /xstocks
+  jupiter-borrow.md
+  kamino.md
+  ondo-perps.md
+  privy.md
 CLAUDE.md            This file
 ```
 
 ## Integration Notes
 
-These are the things that are easy to get wrong. Read the relevant `docs/` subfolder before writing integration code, and verify against the live docs if anything looks stale.
+These are the things that are easy to get wrong. Read the relevant file in `docs/` before writing integration code, and verify against the live docs if anything looks stale. Coverage is partial: there is a doc for Jupiter borrow, Kamino, Ondo perps, and Privy, and none for Trustware or Lighter. For those two, the module comments and the matching script in `scripts/` are the record.
 
 For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json` pointing at `https://developers.jup.ag/docs/mcp`. Prefer it over web fetches when checking Jupiter API behavior:
 
@@ -67,8 +100,9 @@ For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json`
 ### Privy
 
 - For Solana wallets, import hooks from the `@privy-io/react-auth/solana` subpath, not the root. The root `useWallets` returns EVM wallets; the Solana subpath's `useWallets` returns Solana wallets. (Older Privy docs reference a `useSolanaWallets` name — that was the v2 API; v3 unified to subpath-scoped `useWallets`.)
-- Configure Privy in the dashboard to create embedded Solana wallets on login, not Ethereum.
-- For signing, use `signTransaction` or `signAndSendTransaction` from the Solana wallet object. Do not try to use viem or wagmi patterns.
+- Privy creates two embedded wallets on login, not one. `lib/privy/provider.tsx` sets both `embeddedWallets.solana.createOnLogin` and `embeddedWallets.ethereum.createOnLogin` to `users-without-wallets`. Solana is still the primary wallet: `appearance.walletChainType` is `solana-only`, so the EVM wallet is never offered as a login method. It exists to sign the source leg of a Trustware conversion.
+- `supportedChains` is `[mainnet, bsc]` with `defaultChain: mainnet`. Privy signs only on chains declared here, so `execute.ts` fails loudly on an undeclared chain instead of signing on the wrong network. Adding a Trustware source chain means adding it both here and to `lib/trustware/equivalents.ts`.
+- For Solana signing, use `signTransaction` or `signAndSendTransaction` from the Solana wallet object. For the EVM leg, go through the EIP-1193 provider returned by `useEmbeddedEvmWallet()`. viem is a dependency, but only for calldata encoding (`encodeFunctionData`, `erc20Abi`) and chain constants. There is no wagmi and no viem wallet client.
 - The Privy app ID goes in `NEXT_PUBLIC_PRIVY_APP_ID`. The app secret is server-side only and never exposed to the client.
 
 ### Jupiter (Ultra API)
@@ -114,21 +148,31 @@ For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json`
 Before writing code for any task:
 
 1. Read this file.
-2. Read the relevant `docs/` subfolder for the integration involved.
+2. Read the relevant file in `docs/` for the integration involved.
 3. Summarize back what you understand about the task and the approach you plan to take. Wait for confirmation before generating code.
 4. Implement the smallest testable slice. End with manual test instructions.
 
 Do not chain integrations together in a single pass. Build Privy login, verify it works, then add Jupiter, verify it works, then add Kamino. Each step has its own session if needed.
 
-## Out of Scope for v1
+## Built Since v1
+
+These exist in the repo and are past the "do not build" line. They are listed here so a session does not mistake them for scope creep.
+
+- Cross-chain deposits via Trustware. See Chain Assumptions.
+- Non-xStock RWAs. Ondo tokens are accepted as a conversion source on Ethereum, BNB Chain, and Solana.
+- Leveraged looping and unwinding against the Jupiter Lend borrow vaults (`lib/jupiter/multiply.ts`, surfaced by `components/LoopingPanel.tsx`).
+- Kamino borrow against xStock collateral, through Kamino's isolated xStocks Market.
+- Perps hedging, so a user long an xStock can open an offsetting short without selling. Two implementations exist. `lib/lighter` is the current one and `lib/lighter/constants.ts` records the 2026-08-16 measurements that chose it: share-level SPY and QQQ markets, zero maker and taker fees, permissionless access. `lib/ondo` is the superseded route, kept for its index-proxy and sandbox-versus-production notes. Neither is wired into a component yet. Both stop at an API route.
+- A Rain virtual card (`/spend`).
+- Waitlist signup, Privy-backed user sync, admin approval, and referral codes.
+
+## Out of Scope
 
 These will come later. Do not build them now, even if it seems easy.
 
 - Fiat on-ramp
 - Additional lending venues beyond Kamino and Jupiter Lend (Morpho, MarginFi, etc.)
-- Leveraged or looped positions
 - Portfolio analytics beyond a single position view
 - Mobile-specific UI
-- EVM chains
-- Non-xStock RWAs (Ondo, etc.)
-- Notifications, email, referrals
+- EVM chains as a destination **for a position**. A position never settles off Solana. Swapping out to an EVM chain is allowed and is described under Chain Assumptions.
+- Notifications and email

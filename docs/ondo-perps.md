@@ -52,28 +52,50 @@ production and diffs sandbox, so a change on either side surfaces as a failed ch
 
 ## Getting access
 
-Ondo Perps is not self-serve. A builder integration requires a human step with the Ondo team before
-anything is callable, including in sandbox.
+**The API is self-serve. The frontend is not.** This was recorded backwards here until 2026-08-17,
+on the assumption that a walled-off login meant a walled-off integration. It does not.
 
-**The integration guide's first step does not work from outside Ondo.** It says to log in at
-`app.ondoperps-sandbox.xyz` and copy an account ID. That host is a Vercel deployment with Vercel SSO
-deployment protection enabled, wired to Ondo Finance's corporate Okta tenant
-(`oktaondofinance.okta.com`). Requesting it redirects to an Okta SAML login for Ondo's internal
-Vercel team. It is not a wallet login and there is no account to create. Verified 2026-08-10.
+The integration guide opens by telling you to log in at `app.ondoperps-sandbox.xyz` and copy an
+account ID. That host is a Vercel deployment with Vercel SSO deployment protection enabled, wired to
+Ondo Finance's corporate Okta tenant (`oktaondofinance.okta.com`), so it redirects to an Okta SAML
+login for Ondo's internal Vercel team. There is no wallet login and no account to create. Still true,
+verified 2026-08-10.
 
-The sandbox **API** (`api.ondoperps-sandbox.xyz`) is reachable; only the sandbox **frontend** is
-walled off. So the real sequence is:
+That step is skippable. `scripts/ondo-auth-check.mts` runs the whole SIWE handshake with a freshly
+generated burner keypair, no invite code and no builder code, and it passes against **both**
+environments. Verified 2026-08-17:
 
-1. Go to `app.ondoperps.xyz`, the production frontend, which is public and uses Connect Wallet
-   (SIWE). Access there is gated by an **invite code**, with a waitlist and referral flow.
-2. Email `builders@ondoperps.xyz` with the app's public URL and the fee in bps the app will charge
-   on routed orders. Builders are capped at 10 bps per order. Ask in the same message for sandbox
-   access, since the sandbox frontend cannot be reached without it.
-3. Ondo returns an **invite code** and a **builder code**, and enables API key management.
-4. Create API keys once a frontend is actually reachable.
+- `get_challenge` answers 200 to any address.
+- `complete_challenge` accepts the signature and returns a JWT.
+- `GET /v1/account` returns an `accountID` with `accountState: "open"`.
+- `disablePerps`, `disableTransfers` and `disableAPIKeyCreation` are all **false** on a brand new
+  account, in production as well as sandbox.
+- Balance, positions, open orders, `max_order_size` and deposits all read fine with
+  `termsVersion: 0`, so `POST /v1/agreement` does not gate reads.
+
+So the account ID is not something to ask Ondo for; it is one signature away. API key management is
+not something to have switched on; it is already on. The invite code gates `app.ondoperps.xyz`, the
+consumer frontend, which we do not use.
+
+### What the onboarding email is actually for
+
+One thing: the **builder code**. It attributes routed fills to us and it is the only item in the
+onboarding flow with no API path. Without it the integration works end to end and earns nothing.
+
+| Item | Status |
+|---|---|
+| Public URL | `https://aeras.finance`, verified serving the app 2026-08-17. `aeras-finance.vercel.app` is the same deployment. Needed for the email and for a browser WebSocket, not for REST. |
+| Account ID | Self-serve via `GET /v1/account`. Do not ask for it. |
+| API keys | Already enabled. Do not ask for them. |
+| Fee in bps | Integer, capped at 10. Can be omitted from the email and passed per order as `builderCode.feeRateBps`, so it does not have to be decided up front. |
+| Builder code | **The only blocker, and it blocks revenue, not development.** |
+
+A wrong builder code does not fail loudly. An unknown one is accepted at `get_challenge` with a 200
+and baked into the JWT, so `ONDO_BUILDER_CODE` being empty or stale surfaces as missing attribution
+rather than an error. Guard it on our side before sending orders.
 
 Nothing in this repo is blocked on the above. Every read path used by the hedge slice is
-unauthenticated.
+unauthenticated, and now the authenticated ones are reachable too.
 
 The builder code is what attributes routed fills back to us. Fees land in our own Ondo Perps margin
 account. It can be attached either at auth time on `get_challenge` (recommended: it is then baked
@@ -81,7 +103,8 @@ into the JWT and applied to every subsequent order automatically) or per order i
 The integration guide warns the field name may change before v1.
 
 CORS allowlisting is only needed for browser-direct calls. We proxy through Next.js route handlers,
-so it does not apply to our REST traffic. It would apply to a browser WebSocket connection.
+so it does not apply to our REST traffic. It would apply to a browser WebSocket connection, which is
+the one place the allowlisted URL would actually bite.
 
 ## Collateral: the binding constraint
 
@@ -330,7 +353,7 @@ entries. This is per-builder, not per-user, so it does not replace SIWE for user
 | Accept terms | `POST /v1/agreement` |
 | Account | `GET /v1/account` |
 | Deposit address | `POST /v1/provision_address` |
-| Deposits | `GET /v1/deposits` |
+| Deposits | `GET /v1/wallet/deposits` (the guide says `/v1/deposits`, which 404s) |
 | Markets / contracts | `GET /v1/markets`, `GET /v1/perps/contracts` |
 | Mark prices | `GET /v1/perps/mark_prices` |
 | Balance | `GET /v1/perps/balance` |
@@ -344,6 +367,36 @@ entries. This is per-builder, not per-user, so it does not replace SIWE for user
 | Leverage | `GET`/`POST /v1/perps/leverage` |
 | Funding rates | `GET /v1/perps/funding_rates`, `/funding_rate_history`, `/funding_fees` |
 | Chart history | `GET /v1/perps/history?symbol=&resolution=&to=&countback=` (no auth) |
+
+### Chart history takes a different symbol format, and fails silently
+
+Every other endpoint takes `market`, which is hyphenated: `XAU-USD.P`. `GET /v1/perps/history`
+takes `symbol`, which is not: `XAUUSD.P`. **Live-verified 2026-08-17** against production:
+
+```
+symbol=XAUUSD.P    {"s":"ok","t":[1787000400,1787001300],"o":[4416.41,4415.94], ...}
+symbol=XAU-USD.P   {"s":"ok","t":[],"o":[],"h":[],"l":[],"c":[],"v":[]}
+```
+
+The hyphenated form returns `s: "ok"` with empty arrays. It is not an error, so a chart built with
+the order-format symbol renders blank instead of throwing, and the bug looks like missing liquidity.
+Same result on `NVDA-USD.P` versus `NVDAUSD.P`.
+
+Do not derive the history symbol by string surgery on `market`. Every perps market carries a
+`displayName` field, and `displayName + ".P"` is exactly the history symbol. Checked against all 40
+markets, zero mismatches. Read it from `GET /v1/markets`.
+
+Note also that this endpoint does not use the `{ success, result }` envelope. It returns a
+TradingView-style UDF payload with `s`, `t`, `o`, `h`, `l`, `c`, `v` at the top level, so the shared
+`parseResponse` unwrapper does not apply to it.
+
+### Deposit addresses
+
+`POST /v1/provision_address` takes `{ symbol, deposit_destination: { id, wallet: 'margin' }, network }`,
+where `id` is the `accountID` from `GET /v1/account`. The address it returns is permanently bound to
+the account, so provision once and cache it rather than calling on every deposit. `network` is
+`ethereum` for every asset we care about; see the collateral section for why the `solana` enum value
+is not real in production.
 
 ### Order request
 
@@ -423,6 +476,13 @@ and custody.
 - Index perps are priced at index level, not ETF level.
 - `type` defaults to `limit`.
 - `netQuantity` is unsigned. Read `direction` for the sign.
+- `history` takes `symbol` in the unhyphenated `XAUUSD.P` form and returns an empty `s: "ok"` for
+  the hyphenated one. Use `displayName + ".P"`, and note it skips the response envelope.
+- `GET /v1/deposits`, as printed in the integration guide, 404s. It is `GET /v1/wallet/deposits`.
+- An unknown `builderCode` is accepted silently at `get_challenge`. Validate ours before sending
+  orders, or fills go unattributed with no error anywhere.
+- `cooldownPeriodSecs` is another undocumented sandbox/production divergence: 25 in sandbox, 0 in
+  production. Read it from `GET /v1/account` rather than assuming either.
 - LTV and the haircut are not returned by any endpoint and must be computed client-side.
 - No rate limits are documented anywhere. The only hint is a "wait 2 seconds between polls" comment
   in the integration guide. Ask Ondo before writing a polling loop.
@@ -436,7 +496,10 @@ and custody.
 - USDC margin deposits on Arbitrum.
 - Unwinding a hedge back into Solana xStocks.
 - WebSocket price streaming. Poll `mark_prices` first, add the socket when the UI needs tick-level
-  updates.
+  updates. The shape, for when it is picked up: connect to `ONDO_WS_URL`, send
+  `{ op: 'subscribe', channel: 'markPricesPerps', markets: [...] }`, and ping every second. That
+  ping interval is aggressive enough that it belongs in a hook with a real teardown, not in a
+  component effect.
 - API-key auth. SIWE covers user actions.
 
 ## References
@@ -446,3 +509,8 @@ and custody.
 - OpenAPI spec: https://docs.ondoperps.xyz/api-reference/rest-spec.json
 - Builder onboarding: builders@ondoperps.xyz
 - Live market and token config: `GET https://api.ondoperps.xyz/v1/markets`
+
+This file is reconciled against Builder Integration Guide **v1.0.3** (2026-06-01), whose only
+changelog entry is that `builderCode` moved from `complete_challenge` to `get_challenge`. Where the
+guide and the live API disagree, the live reading is the one recorded here and the disagreement is
+called out inline.
