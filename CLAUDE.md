@@ -36,6 +36,8 @@ EVM chains appear only as a source of funds **for anything that becomes a positi
 
 The swap surface is the one exception, and it is deliberate. A swap may end on an EVM chain: Solana USDC to Ethereum USDT is a supported pair. That is wallet plumbing, not lending, and it does not weaken the rule that a *position* never settles off Solana. Its tokens are a separate hardcoded registry in `lib/trustware/swap-tokens.ts`, and both sides of a pair must be in it.
 
+Morpho-on-Monad earn is the second, larger exception, and here a *position* really does live on an EVM chain. Users deposit USDC into a MetaMorpho (ERC-4626) vault on Monad mainnet (chainId 143) and earn its yield; the shares sit in the user's embedded EVM wallet, not on Solana. `lib/morpho` holds the curated vault registry and Monad constants, `app/api/morpho` serves live APY (Morpho's indexer) and per-wallet positions (Monad RPC reads). Funding runs through Trustware with a Monad-USDC destination, the same universal-deposit machinery the Solana path uses, pointed at an EVM chain instead. This is the one place the "positions settle on Solana" rule is knowingly broken; treat it as venue-scoped, not a general license to settle elsewhere.
+
 EVM code is confined to three files. `lib/privy/evm.ts` resolves the embedded EVM wallet and hands back its EIP-1193 provider. `lib/trustware/evm-tx.ts` translates a Trustware route payload into `eth_sendTransaction` params. `lib/trustware/execute.ts` grants ERC-20 allowances, calls `wallet_switchEthereumChain`, broadcasts the source leg, and tracks the route to settlement. Nothing outside those files should reach for an EVM provider.
 
 Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do not use the public mainnet-beta endpoint for anything beyond local prototyping. There is no EVM RPC of our own. Trustware proxies allowance reads and cross-chain balance scans, which is what the `/sdk/rpc/evm` and `/data` endpoints in `lib/trustware/constants.ts` are for.
@@ -53,6 +55,8 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      prices, charts, sparklines, trigger orders
     /kamino          KTX transaction proxy, reserve and kvault metrics,
                      kvault positions, obligations
+    /morpho          Monad Morpho vault metrics (indexer) and per-wallet
+                     positions (Monad RPC reads)
     /lighter         Lighter perps market catalog
     /ondo            Ondo perps market catalog
     /prices/native   Native asset prices
@@ -68,6 +72,8 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
   /kamino            Reserve metadata, kvaults, positions, borrow helpers
   /lighter           Lighter perps: markets, sizing, risk, hedge construction
   /ondo              Ondo perps, same module shape as lighter
+  /morpho            Monad Morpho earn: curated USDC vault registry, Monad
+                     constants, client read helpers
   /privy             Privy config, auth, Solana and EVM wallet hooks
   /solana            Connection, balances, holdings, sending, activity
   /supabase          Server-only admin client (service role key)
@@ -164,6 +170,7 @@ These exist in the repo and are past the "do not build" line. They are listed he
 - Kamino borrow against xStock collateral, through Kamino's isolated xStocks Market.
 - Perps hedging, so a user long an xStock can open an offsetting short without selling. Two implementations exist. `lib/lighter` is the current one and `lib/lighter/constants.ts` records the 2026-08-16 measurements that chose it: share-level SPY and QQQ markets, zero maker and taker fees, permissionless access. `lib/ondo` is the superseded route, kept for its index-proxy and sandbox-versus-production notes. Neither is wired into a component yet. Both stop at an API route.
 - A Rain virtual card (`/spend`).
+- Morpho-on-Monad earn (`lib/morpho`, `app/api/morpho`). Curated USDC MetaMorpho vaults on Monad mainnet as Earn options. The read layer (live APY, on-chain positions) is in; ERC-4626 deposit/withdraw through the embedded EVM wallet and Trustware funding into Monad USDC are being built on top of it. This is the exception to Solana-only positions described under Chain Assumptions.
 - Waitlist signup, Privy-backed user sync, admin approval, and referral codes.
 
 ## Out of Scope
@@ -171,8 +178,8 @@ These exist in the repo and are past the "do not build" line. They are listed he
 These will come later. Do not build them now, even if it seems easy.
 
 - Fiat on-ramp
-- Additional lending venues beyond Kamino and Jupiter Lend (Morpho, MarginFi, etc.)
+- Additional lending venues beyond Kamino, Jupiter Lend, and Morpho-on-Monad (MarginFi, Save, etc.)
 - Portfolio analytics beyond a single position view
 - Mobile-specific UI
-- EVM chains as a destination **for a position**. A position never settles off Solana. Swapping out to an EVM chain is allowed and is described under Chain Assumptions.
+- EVM chains as a destination for a position, **except** the Morpho-on-Monad earn venue described under Chain Assumptions. Outside that one venue, a position never settles off Solana. Swapping out to an EVM chain is also allowed and is described under Chain Assumptions.
 - Notifications and email
