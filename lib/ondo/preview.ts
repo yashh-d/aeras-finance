@@ -1,5 +1,10 @@
 import { ONDO_DEPOSIT_NETWORK } from "./constants";
-import { hedgeRouteFor, type HedgeRoute } from "./hedge";
+import {
+  hedgeRouteFor,
+  isProxyRoute,
+  resolveHedgeRoute,
+  type HedgeRoute,
+} from "./hedge";
 import { collateralOnNetwork, findMarket, type OndoCatalog } from "./markets";
 import {
   autoExchangePrice,
@@ -88,13 +93,17 @@ export function previewHedge(input: HedgePreviewInput): HedgePreviewResult {
   const route = hedgeRouteFor(input.xstockSymbol);
   if (!route) return { ok: false, reason: "unsupported-asset", route: undefined, market: undefined };
 
-  const market = findMarket(input.catalog.markets, route.market);
+  // Which market this route lands on is read from the live catalog, never
+  // assumed: the exact perp is preferred and the index proxy is the fallback,
+  // and Ondo has flipped which of the two is tradeable without notice.
+  const resolved = resolveHedgeRoute(route, input.catalog.markets);
+  const market = resolved?.market ?? findMarket(input.catalog.markets, route.market);
 
   if (!route.collateralSymbol) {
     return { ok: false, reason: "no-ondo-collateral", route, market };
   }
   if (!market) return { ok: false, reason: "market-missing", route, market: undefined };
-  if (!market.tradeable) return { ok: false, reason: "market-disabled", route, market };
+  if (!resolved) return { ok: false, reason: "market-disabled", route, market };
 
   const onchain = collateralOnNetwork(
     input.catalog.collateral,
@@ -158,7 +167,7 @@ export function previewHedge(input: HedgePreviewInput): HedgePreviewResult {
         usdcBalanceUsd,
       }).sufficient,
     },
-    basisRisk: route.match === "proxy",
+    basisRisk: isProxyRoute(resolved),
     marketClosed: market.isClosed,
   };
 }

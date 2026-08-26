@@ -1,3 +1,5 @@
+import { tokenIdentityByMint, tokenLogoBySymbol } from "@/lib/tokens/logos";
+
 // Asset class, used to group the Markets catalog. The catalog is small enough
 // that one flat table works, but a user shopping for index exposure should not
 // have to scan past eight single-name equities to find it.
@@ -113,6 +115,19 @@ export const XSTOCKS: readonly XStock[] = [
     category: "indices",
     logo: "/logos/qqq.png",
   },
+  {
+    symbol: "SPCXx",
+    name: "SpaceX",
+    mint: "Xs3oZwbHvqis4NYcf4YKWmEia2eC84wSiVrcYcTqpH8",
+    decimals: 8,
+    // Plural, unlike every other entry here. Verified by looking the mint up on
+    // CoinGecko's Solana contract endpoint rather than following the pattern:
+    // "spacex-xstock" is a 404, so the obvious guess would have left the chart
+    // and price silently empty.
+    coingeckoId: "spacex-xstocks",
+    category: "stocks",
+    logo: "/logos/spacex.png",
+  },
   // Backed also issues SLVx (silver) and TBLLx (T-bills), but both quote under
   // $10 of Jupiter liquidity, so a buy would move the price against the user.
   // Gold is the only non-equity xStock with a route worth listing.
@@ -123,6 +138,7 @@ export const XSTOCKS: readonly XStock[] = [
     decimals: 8,
     coingeckoId: "gold-xstock",
     category: "metals",
+    logo: "/logos/gld.png",
   },
 ] as const;
 
@@ -146,11 +162,21 @@ export function xstockBySymbol(symbol: string): XStock | undefined {
 }
 
 // What <AssetLogo /> needs for a mint that may not be in the curated catalog.
-// Kamino lists a few xStocks we do not trade yet, so a borrow row can reference
-// a mint with no catalog entry. Those fall back to a symbol monogram.
+// Resolved in order: the curated xStock catalog, then the stablecoin and SOL
+// registry in lib/tokens/logos.ts, then a symbol monogram.
+//
+// The second step is what the Earn tab needs. Every asset it lists is a
+// stablecoin or SOL, so before that registry existed every row there fell
+// through to a monogram. Kamino also lists a few xStocks we do not trade yet,
+// so a borrow row can still reference a mint with no entry anywhere; that is
+// the case the monogram is for.
 export function assetIdentity(
   mint: string,
   symbol: string,
 ): Pick<XStock, "symbol" | "name" | "logo"> {
-  return xstockByMint(mint) ?? { symbol, name: symbol };
+  const xstock = xstockByMint(mint);
+  if (xstock) return xstock;
+  const token = tokenIdentityByMint(mint);
+  if (token) return token;
+  return { symbol, name: symbol, logo: tokenLogoBySymbol(symbol) };
 }

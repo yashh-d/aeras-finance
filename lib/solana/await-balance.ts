@@ -27,18 +27,20 @@ export async function awaitTokenBalance(args: {
   owner: string;
   // Stop as soon as the account holds at least this much, in atomic units.
   atLeastAtomic: string;
+  // Token program the ATA is derived under. Defaults to Token-2022 (xStocks);
+  // classic SPL mints like USDC pass TOKEN_PROGRAM_ID.
+  programId?: PublicKey;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<string> {
   const { mint, owner, atLeastAtomic, timeoutMs = 90_000, signal } = args;
   const target = BigInt(atLeastAtomic);
   const conn = getConnection();
-  // xStocks are Token-2022, matching how the deposit path derives the same ATA.
   const ata = getAssociatedTokenAddressSync(
     new PublicKey(mint),
     new PublicKey(owner),
     false,
-    TOKEN_2022_PROGRAM_ID,
+    args.programId ?? TOKEN_2022_PROGRAM_ID,
   );
 
   const deadline = Date.now() + timeoutMs;

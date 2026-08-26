@@ -6,7 +6,7 @@ import {
   type Hex,
 } from "viem";
 
-import { MONAD_RPC_URL } from "@/lib/morpho/constants";
+import { MONAD_RPC_URL, MONAD_USDC } from "@/lib/morpho/constants";
 import { MONAD_USDC_VAULTS } from "@/lib/morpho/vaults";
 
 export const dynamic = "force-dynamic";
@@ -40,19 +40,14 @@ const ABI = [
   },
 ] as const;
 
-// One eth_call against Monad RPC. Kept to a plain JSON-RPC POST rather than a
+// One JSON-RPC request against Monad RPC. Kept to a plain POST rather than a
 // viem public client so this stays a read, not an app-owned EVM provider.
-async function ethCall(to: string, data: Hex): Promise<Hex> {
+async function rpc(method: string, params: unknown[]): Promise<Hex> {
   const res = await fetch(MONAD_RPC_URL, {
     method: "POST",
     cache: "no-store",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "eth_call",
-      params: [{ to, data }, "latest"],
-    }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   if (!res.ok) throw new Error(`Monad RPC ${res.status}`);
   const json = (await res.json()) as {
@@ -64,6 +59,25 @@ async function ethCall(to: string, data: Hex): Promise<Hex> {
   return json.result;
 }
 
+function ethCall(to: string, data: Hex): Promise<Hex> {
+  return rpc("eth_call", [{ to, data }, "latest"]);
+}
+
+// Per-address cache with stale-while-error, matching the metrics route. Three
+// pollers read this route (the earn card, the wallet panel, and a funding
+// flow's arrival loop), and the default public Monad RPC rate-limits under
+// that load (observed 502s, 2026-08-26). The TTL is short so an arrival poll
+// still sees a fresh balance quickly; the grace keeps the panel alive through
+// an RPC blip instead of blanking it.
+interface PositionBody {
+  positions: MorphoPosition[];
+  usdcBalanceAtomic: string;
+  monBalanceAtomic: string;
+}
+const cache = new Map<string, { fetchedAt: number; body: PositionBody }>();
+const CACHE_TTL_MS = 5_000;
+const STALE_GRACE_MS = 5 * 60_000;
+
 export async function GET(request: Request) {
   const address = new URL(request.url).searchParams.get("address");
   if (!address || !isAddress(address)) {
@@ -72,8 +86,35 @@ export async function GET(request: Request) {
       { status: 400 },
     );
   }
+  const cacheKey = address.toLowerCase();
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+    return NextResponse.json(cached.body);
+  }
 
   try {
+    // The wallet's spendable USDC on Monad — the deposit ceiling the form needs.
+    const usdcBalanceHex = await ethCall(
+      MONAD_USDC.address,
+      encodeFunctionData({
+        abi: ABI,
+        functionName: "balanceOf",
+        args: [address],
+      }),
+    );
+    const usdcBalanceAtomic = decodeFunctionResult({
+      abi: ABI,
+      functionName: "balanceOf",
+      data: usdcBalanceHex,
+    }).toString();
+
+    // Native MON, 18-decimal atomic. Every Monad transaction needs it for gas,
+    // and a freshly funded wallet holds none, so the deposit planner reads this
+    // to decide whether to add a gas top-up leg (lib/morpho/fund.ts).
+    const monBalanceAtomic = BigInt(
+      await rpc("eth_getBalance", [address, "latest"]),
+    ).toString();
+
     const positions = await Promise.all(
       MONAD_USDC_VAULTS.map(async (v): Promise<MorphoPosition> => {
         const sharesHex = await ethCall(
@@ -113,8 +154,14 @@ export async function GET(request: Request) {
         };
       }),
     );
-    return NextResponse.json({ positions });
+    const body: PositionBody = { positions, usdcBalanceAtomic, monBalanceAtomic };
+    cache.set(cacheKey, { fetchedAt: Date.now(), body });
+    return NextResponse.json(body);
   } catch (err) {
+    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS + STALE_GRACE_MS) {
+      console.warn("[morpho position] RPC failed, serving stale:", err);
+      return NextResponse.json(cached.body);
+    }
     const msg = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: msg }, { status: 502 });
   }

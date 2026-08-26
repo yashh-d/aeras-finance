@@ -5,6 +5,13 @@
 import "server-only";
 
 import { XSTOCK_BORROW_VAULTS } from "@/lib/jupiter/borrow";
+import { USDC_MINT } from "@/lib/jupiter/constants";
+import {
+  MONAD_CHAIN_ID,
+  MONAD_NATIVE_TOKEN,
+  MONAD_USDC,
+} from "@/lib/morpho/constants";
+import { ONDO_MARGIN_TOKEN_ADDRESSES } from "@/lib/ondo/collateral";
 import {
   TRUSTWARE_API_BASE_URL,
   TRUSTWARE_DATA_BASE_URL,
@@ -28,6 +35,28 @@ const ALLOWED_DEST_MINTS = new Set(
   XSTOCK_BORROW_VAULTS.map((v) => v.collateralMint),
 );
 
+// Funding destinations for the Morpho-on-Monad earn venue, delivered to the
+// user's embedded EVM wallet: USDC (the deposit asset) and native MON (the gas
+// top-up so the wallet can sign the approve and deposit).
+const MONAD_CHAIN = String(MONAD_CHAIN_ID);
+const MONAD_FUNDING_TOKENS = new Set([
+  MONAD_USDC.address.toLowerCase(),
+  MONAD_NATIVE_TOKEN.toLowerCase(),
+]);
+
+// Margin destinations for Ondo Perps, delivered to the deposit address Ondo
+// provisioned for the user's account. Ethereum only: Ondo credits no other
+// network, and `provision_address` answers service_unavailable for Solana.
+//
+// The destination address here is NOT the user's own wallet, which is the one
+// place this differs from every other shape below. Ondo's deposit addresses are
+// permanently bound to an account and credit any supported asset sent to them,
+// so routing the bridge straight at one removes the Ethereum gas problem
+// entirely: the user never needs ETH, never switches chains, and signs once on
+// Solana. What it costs is recoverability, since the funds land somewhere the
+// user cannot sign for. lib/ondo/fund.ts is where that tradeoff is guarded.
+const ETHEREUM_CHAIN = "1";
+
 // Atomic amounts cross the wire as decimal strings. Anything else is rejected
 // rather than forwarded, so a caller cannot smuggle scientific notation or a
 // negative through to the upstream.
@@ -37,15 +66,36 @@ const ATOMIC_AMOUNT = /^\d+$/;
 // caller to surface as a 400, or null when valid.
 //
 // This is the control that keeps the key-bearing proxy from being used as an
-// open cross-chain swap for arbitrary tokens. There are exactly two shapes it
-// accepts, and both are allowlists resolved server-side from hardcoded
-// registries. Neither takes the caller's word for what is permissible:
+// open cross-chain swap for arbitrary tokens. There are exactly five shapes it
+// accepts, and all are allowlists resolved server-side from hardcoded
+// registries. None takes the caller's word for what is permissible:
 //
 //   deposit  anything -> a Jupiter Lend vault's collateral mint on Solana.
 //            The destination set is XSTOCK_BORROW_VAULTS. The source is
 //            unconstrained here because the planner has already matched it
 //            against the equivalence registry, and a wrong source can only
 //            waste the caller's own funds.
+//
+//   funding  anything -> USDC or native MON on Monad, delivered to an EVM
+//            address. The legs that fund a Morpho-on-Monad earn deposit (USDC
+//            is the deposit asset, MON is the gas top-up). Same trust model as
+//            deposit: the destination tokens and chain are pinned here, the
+//            source is constrained by the client planner, and a wrong source
+//            can only waste the caller's own funds.
+//
+//   return   anything -> canonical USDC on Solana, delivered to a Solana
+//            address. The reverse of funding: money the user parked on Monad
+//            (or another chain) coming home to the primary wallet. Destination
+//            token and chain pinned here, same trust model as funding.
+//
+//   margin   anything -> an Ondo Perps collateral token on Ethereum, delivered
+//            to an Ondo-provisioned deposit address. The destination token set
+//            is ONDO_MARGIN_TOKENS, pinned in lib/ondo/collateral.ts and
+//            asserted against Ondo's live token config by
+//            scripts/ondo-collateral-check.mts. Unlike every other shape the
+//            recipient is not the user's own wallet, so the caller-supplied
+//            address is checked against Ondo before the route is built, in
+//            lib/ondo/fund.ts, not here.
 //
 //   swap     a curated token -> a curated token, either direction, including
 //            EVM destinations. BOTH sides must be in SWAP_TOKENS. Widening this
@@ -83,6 +133,24 @@ export function validateTrustwareRequest(
   const isDeposit =
     req.toChain === TRUSTWARE_SOLANA_CHAIN && ALLOWED_DEST_MINTS.has(req.toToken);
   if (isDeposit) return null;
+
+  const isMorphoFunding =
+    req.toChain === MONAD_CHAIN &&
+    MONAD_FUNDING_TOKENS.has(req.toToken.toLowerCase()) &&
+    EVM_ADDRESS.test(req.toAddress!);
+  if (isMorphoFunding) return null;
+
+  const isFundingReturn =
+    req.toChain === TRUSTWARE_SOLANA_CHAIN &&
+    req.toToken === USDC_MINT &&
+    SOLANA_ADDRESS.test(req.toAddress!);
+  if (isFundingReturn) return null;
+
+  const isOndoMargin =
+    req.toChain === ETHEREUM_CHAIN &&
+    ONDO_MARGIN_TOKEN_ADDRESSES.has(req.toToken.toLowerCase()) &&
+    EVM_ADDRESS.test(req.toAddress!);
+  if (isOndoMargin) return null;
 
   const from = findSwapToken(req.fromChain!, req.fromToken!);
   const to = findSwapToken(req.toChain, req.toToken);

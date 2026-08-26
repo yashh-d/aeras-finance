@@ -15,6 +15,9 @@ import {
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 
+import { resolvePriorityFee } from "@/lib/solana/priority-fee";
+import type { BuiltTransaction } from "@/lib/solana/send-confirm";
+
 import { SOL_MINT, USDC_MINT } from "./constants";
 
 // Jupiter Lend Earn vaults. Deposit an asset, receive a jlToken share, redeem it
@@ -314,22 +317,53 @@ async function compileV0(
   ixs: TransactionInstruction[],
   signerAddress: string,
   connection: Connection,
-): Promise<string> {
+): Promise<BuiltTransaction> {
   const { ComputeBudgetProgram, TransactionMessage, VersionedTransaction } =
     await import("@solana/web3.js");
   const signer = new PublicKey(signerAddress);
-  const { blockhash } = await connection.getLatestBlockhash();
+
+  // A unit limit alone only raises the ceiling; it does not buy a place in the
+  // queue. Without a unit PRICE these went out at zero priority and were the
+  // first thing dropped whenever the network got busy.
+  const microLamports = await resolvePriorityFee(connection, {
+    accountKeys: accountKeysOf(ixs),
+    computeUnitLimit: COMPUTE_UNIT_LIMIT,
+  });
+
+  const { blockhash, lastValidBlockHeight } =
+    await connection.getLatestBlockhash("confirmed");
   const message = new TransactionMessage({
     payerKey: signer,
     recentBlockhash: blockhash,
     instructions: [
       ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNIT_LIMIT }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
       ...ixs,
     ],
   }).compileToV0Message();
-  return Buffer.from(new VersionedTransaction(message).serialize()).toString(
-    "base64",
-  );
+
+  return {
+    transaction: Buffer.from(
+      new VersionedTransaction(message).serialize(),
+    ).toString("base64"),
+    blockhash,
+    lastValidBlockHeight,
+  };
+}
+
+// Unique account addresses touched by these instructions, for the fee
+// estimator. Writable accounts are what actually drive contention, so they lead.
+function accountKeysOf(ixs: TransactionInstruction[]): string[] {
+  const writable = new Set<string>();
+  const readonly = new Set<string>();
+  for (const ix of ixs) {
+    for (const key of ix.keys) {
+      const addr = key.pubkey.toBase58();
+      if (key.isWritable) writable.add(addr);
+      else readonly.add(addr);
+    }
+  }
+  return [...writable, ...readonly];
 }
 
 async function buildDepositIxs({
@@ -382,7 +416,7 @@ async function buildDepositIxs({
 
 export async function buildEarnDepositTx(
   args: BuildArgs & { amountAtomic: BN },
-): Promise<string> {
+): Promise<BuiltTransaction> {
   const ixs = await buildDepositIxs(args);
   return compileV0(ixs, args.signerAddress, args.connection);
 }
@@ -394,7 +428,7 @@ export async function buildEarnWithdrawTx({
   amountAtomic,
   signerAddress,
   connection,
-}: BuildArgs & { amountAtomic: BN }): Promise<string> {
+}: BuildArgs & { amountAtomic: BN }): Promise<BuiltTransaction> {
   const { getWithdrawIxs } = await import("@jup-ag/lend/earn");
   const signer = new PublicKey(signerAddress);
   const { ixs } = await getWithdrawIxs({
@@ -414,7 +448,7 @@ export async function buildEarnRedeemAllTx({
   sharesAtomicAmount,
   signerAddress,
   connection,
-}: BuildArgs & { sharesAtomicAmount: BN }): Promise<string> {
+}: BuildArgs & { sharesAtomicAmount: BN }): Promise<BuiltTransaction> {
   const { getRedeemIxs } = await import("@jup-ag/lend/earn");
   const signer = new PublicKey(signerAddress);
   const { ixs } = await getRedeemIxs({

@@ -60,13 +60,17 @@ export function useConversionRunner(): ConversionRunner {
         plan,
         solana: { address: solanaAddress, signAndSendBase64: sendSolanaTx },
         evm: evm.address
-          ? { address: evm.address, getProvider: evm.getProvider }
+          ? {
+              address: evm.address,
+              switchChain: evm.switchChain,
+              getProvider: evm.getProvider,
+            }
           : undefined,
         onProgress,
         signal,
       });
     },
-    [solanaAddress, sendSolanaTx, evm.address, evm.getProvider],
+    [solanaAddress, sendSolanaTx, evm.address, evm.switchChain, evm.getProvider],
   );
 
   return { canRun, run };

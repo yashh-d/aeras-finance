@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { SOL_MINT } from "@/lib/jupiter/constants";
 import { isAllowedSwapPair } from "@/lib/jupiter/swap-pairs";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +36,16 @@ export async function POST(request: Request) {
     );
   }
 
+  // Native SOL has to be wrapped into wSOL for the swap program and unwrapped
+  // after. An SPL-to-SPL conversion skips that overhead, but pinning it off
+  // for a pair that includes native SOL builds a transaction that reads a
+  // wSOL account the user does not have — it fails simulation every time
+  // (observed live as custom program error 0x1788 on the SOL->USDC repay
+  // funding leg, 2026-08-26).
+  const involvesNativeSol =
+    quoteResponse.inputMint === SOL_MINT ||
+    quoteResponse.outputMint === SOL_MINT;
+
   const res = await fetch(`${LITE_SWAP_BASE}/swap`, {
     method: "POST",
     cache: "no-store",
@@ -42,8 +53,7 @@ export async function POST(request: Request) {
     body: JSON.stringify({
       quoteResponse,
       userPublicKey,
-      // The conversion moves SPL tokens only, so there is no SOL to wrap.
-      wrapAndUnwrapSol: false,
+      wrapAndUnwrapSol: involvesNativeSol,
       dynamicComputeUnitLimit: true,
     }),
   });

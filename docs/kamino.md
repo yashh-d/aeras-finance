@@ -282,3 +282,47 @@ Developers integrate via REST API (language-agnostic) or TypeScript SDK (full on
 * API Reference: [https://kamino.com/docs/build/api-reference](https://kamino.com/docs/build/api-reference)
 * Risk Dashboard: [https://risk.kamino.finance](https://risk.kamino.finance)
 * Discord: [https://discord.com/invite/kamino](https://discord.com/invite/kamino)
+---
+
+## Aeras notes
+
+Everything above is Kamino's own documentation. This section is ours.
+
+### K-Vault deposits go through `-instructions`, not `/deposit`
+
+`app/api/kamino/kvaults/ktx/route.ts` calls `POST /ktx/kvault/deposit-instructions`
+and `withdraw-instructions`, and `composeKvaultTx` in `lib/kamino/kvaults.ts`
+builds the transaction on the client. Do not "simplify" this back to `/deposit`,
+which returns a finished transaction. Two reasons, both verified against the live
+API on 2026-08-26 and both re-checked by
+`npx tsx scripts/kamino-deposit-check.mts`:
+
+1. **KTX bakes in no ComputeBudget instruction.** A `/deposit` response decodes
+   to exactly four instructions: an idempotent ATA create, the kvault deposit,
+   and two farm instructions. No `setComputeUnitLimit`, no
+   `setComputeUnitPrice`. So every deposit signed as KTX built it went out at a
+   compute unit price of zero, behind every fee-paying transaction in the
+   leader's queue. There is no request parameter to change this; the KTX
+   OpenAPI spec accepts `wallet`, `kvault`, `amount` and `memo` and nothing
+   else.
+2. **The blockhash was Kamino's.** It was chosen before the round trip back to
+   the browser and the Privy signing prompt, so it arrived already part-spent
+   against its 150-slot life.
+
+The check script asserts the composed transaction is semantically identical to
+the one KTX would have built: same programs, same resolved accounts, same
+instruction data, differing only by the two ComputeBudget instructions. Measured
+consumption is about 289k units against a default ceiling of 800k, so the old
+transactions were never failing on compute. They were failing on priority and on
+rebroadcast.
+
+If a future check run reports that KTX has started setting its own compute
+budget, this composition is worth revisiting.
+
+### Lookup tables are resolved from chain
+
+`composeKvaultTx` fetches each table named in `lutsByAddress` with
+`getAddressLookupTable` rather than trusting the addresses the response echoes.
+The runtime resolves indices against on-chain state, so that is the copy the
+message has to compile against. Tables only ever grow, so one extended since KTX
+read it still resolves the same indices.

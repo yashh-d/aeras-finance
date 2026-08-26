@@ -46,3 +46,19 @@ export function AssetLogo({
     </div>
   );
 }
+
+// Small square mark for a venue or chain, used in column headers and section
+// labels. Square and borderless on purpose: at this size the circular AssetLogo
+// badge reads as a bullet point rather than a logo.
+export function VenueMark({ src, size = 14 }: { src: string; size?: number }) {
+  return (
+    /* eslint-disable-next-line @next/next/no-img-element */
+    <img
+      src={src}
+      alt=""
+      aria-hidden="true"
+      className="shrink-0 rounded-sm object-contain"
+      style={{ width: size, height: size }}
+    />
+  );
+}

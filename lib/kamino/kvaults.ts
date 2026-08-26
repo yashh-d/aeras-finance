@@ -1,3 +1,13 @@
+import type {
+  AddressLookupTableAccount,
+  Connection,
+  PublicKey,
+  TransactionInstruction,
+} from "@solana/web3.js";
+
+import { resolvePriorityFee } from "@/lib/solana/priority-fee";
+import type { BuiltTransaction } from "@/lib/solana/send-confirm";
+
 // Kamino Earn vaults (K-Vaults) as a second venue on the Earn surface.
 //
 // A K-Vault is not a lending reserve. It is a curator-run strategy that spreads
@@ -261,20 +271,45 @@ export async function fetchKaminoPositionsViaProxy(
 
 export type KaminoVaultAction = "deposit" | "withdraw";
 
-// Build an unsigned base64 transaction. `amountAtomic` is in token atomic units
-// for a deposit and SHARE atomic units for a withdrawal, matching what the
-// underlying instruction takes.
+// An instruction as KTX's `-instructions` endpoints return it. `data` is
+// base64; `role` is one of WRITABLE_SIGNER, READONLY_SIGNER, WRITABLE,
+// READONLY.
+export interface KtxInstruction {
+  programAddress: string;
+  data: string | null;
+  accounts: { address: string; role: string }[];
+}
+
+// Ceiling used only when a simulation cannot measure the real cost. A K-Vault
+// deposit fans out into the lending reserve and two farm instructions; measured
+// consumption sits well under this, but an explicit limit that is too low fails
+// the transaction outright, so the fallback errs high.
+const KVAULT_FALLBACK_CU_LIMIT = 600_000;
+
+// Headroom over measured consumption. Reserve state moves between the
+// simulation and the real slot, so the limit cannot be the measurement.
+const CU_SAFETY_MULTIPLIER = 1.3;
+
+// Build an unsigned K-Vault deposit or withdrawal, ready to sign.
+// `amountAtomic` is in token atomic units for a deposit and SHARE atomic units
+// for a withdrawal, matching what the underlying instruction takes.
+//
+// The proxy hands back raw instructions rather than a finished transaction so
+// that the priority fee and the blockhash are both set here, on the client,
+// immediately before signing. See the comment in the proxy route for why.
 export async function buildKaminoVaultTx({
   action,
   walletAddress,
   vault,
   amountAtomic,
+  connection,
 }: {
   action: KaminoVaultAction;
   walletAddress: string;
   vault: KaminoVaultMeta;
   amountAtomic: string;
-}): Promise<string> {
+  connection: Connection;
+}): Promise<BuiltTransaction> {
   const res = await fetch("/api/kamino/kvaults/ktx", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -286,11 +321,161 @@ export async function buildKaminoVaultTx({
     }),
   });
   const payload = (await res.json()) as {
-    transaction?: string;
+    instructions?: KtxInstruction[];
+    lutsByAddress?: Record<string, string[]>;
     error?: string;
   };
-  if (!res.ok || !payload.transaction) {
+  if (!res.ok || !payload.instructions?.length) {
     throw new Error(payload.error ?? `Kamino ${action} failed (${res.status})`);
   }
-  return payload.transaction;
+
+  return composeKvaultTx({
+    instructions: payload.instructions,
+    lutsByAddress: payload.lutsByAddress ?? {},
+    walletAddress,
+    connection,
+  });
+}
+
+// The composition half of the above, split out so scripts/kamino-deposit-check
+// can exercise the real code against live KTX output without an app server in
+// front of it. This is where a Kamino deposit gets the two things KTX does not
+// give it: a priority fee and a blockhash fetched moments before signing.
+export async function composeKvaultTx({
+  instructions: rawInstructions,
+  lutsByAddress,
+  walletAddress,
+  connection,
+}: {
+  instructions: KtxInstruction[];
+  lutsByAddress: Record<string, string[]>;
+  walletAddress: string;
+  connection: Connection;
+}): Promise<BuiltTransaction> {
+  const {
+    ComputeBudgetProgram,
+    PublicKey,
+    TransactionMessage,
+    VersionedTransaction,
+  } = await import("@solana/web3.js");
+  const payload = { instructions: rawInstructions, lutsByAddress };
+
+  const signer = new PublicKey(walletAddress);
+  const instructions = payload.instructions.map((ix) => ({
+    programId: new PublicKey(ix.programAddress),
+    keys: ix.accounts.map((a) => ({
+      pubkey: new PublicKey(a.address),
+      isSigner: a.role.endsWith("SIGNER"),
+      isWritable: a.role.startsWith("WRITABLE"),
+    })),
+    data: Buffer.from(ix.data ?? "", "base64"),
+  }));
+
+  // Resolve the lookup tables from chain rather than from the addresses the
+  // proxy echoed. The runtime resolves indices against on-chain state, so that
+  // is the copy the message has to be compiled against. Tables only ever grow,
+  // so a table extended since KTX read it still resolves the same indices.
+  const lookupTables = (
+    await Promise.all(
+      Object.keys(payload.lutsByAddress ?? {}).map(async (address) => {
+        const fetched = await connection.getAddressLookupTable(
+          new PublicKey(address),
+        );
+        return fetched.value;
+      }),
+    )
+  ).filter((t): t is AddressLookupTableAccount => t !== null);
+
+  const accountKeys = accountKeysOf(payload.instructions);
+
+  // Measure the real compute cost before pricing it: Solana charges the
+  // priority fee on the requested unit limit, not on units consumed, so an
+  // inflated limit is money spent for nothing.
+  const computeUnitLimit = await measureComputeUnits({
+    connection,
+    signer,
+    instructions,
+    lookupTables,
+  });
+
+  const microLamports = await resolvePriorityFee(connection, {
+    accountKeys,
+    computeUnitLimit,
+  });
+
+  const { blockhash, lastValidBlockHeight } =
+    await connection.getLatestBlockhash("confirmed");
+
+  const message = new TransactionMessage({
+    payerKey: signer,
+    recentBlockhash: blockhash,
+    instructions: [
+      ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitLimit }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+      ...instructions,
+    ],
+  }).compileToV0Message(lookupTables);
+
+  return {
+    transaction: Buffer.from(
+      new VersionedTransaction(message).serialize(),
+    ).toString("base64"),
+    blockhash,
+    lastValidBlockHeight,
+  };
+}
+
+// Simulate to find actual consumption. Falls back to a safe ceiling rather than
+// failing the build: a slightly overpriced deposit beats a blocked one.
+async function measureComputeUnits({
+  connection,
+  signer,
+  instructions,
+  lookupTables,
+}: {
+  connection: Connection;
+  signer: PublicKey;
+  instructions: TransactionInstruction[];
+  lookupTables: AddressLookupTableAccount[];
+}): Promise<number> {
+  try {
+    const { PublicKey, TransactionMessage, VersionedTransaction } =
+      await import("@solana/web3.js");
+    // replaceRecentBlockhash makes the node substitute its own, so the probe
+    // needs a syntactically valid placeholder and nothing more. Spending a
+    // getLatestBlockhash here would only age the real one fetched below.
+    const probe = new VersionedTransaction(
+      new TransactionMessage({
+        payerKey: signer,
+        recentBlockhash: PublicKey.default.toBase58(),
+        instructions,
+      }).compileToV0Message(lookupTables),
+    );
+    const sim = await connection.simulateTransaction(probe, {
+      sigVerify: false,
+      replaceRecentBlockhash: true,
+    });
+    const consumed = sim.value.unitsConsumed;
+    if (sim.value.err || !consumed) return KVAULT_FALLBACK_CU_LIMIT;
+    return Math.min(
+      1_400_000,
+      Math.ceil(consumed * CU_SAFETY_MULTIPLIER),
+    );
+  } catch {
+    return KVAULT_FALLBACK_CU_LIMIT;
+  }
+}
+
+// Unique addresses the instructions touch, writable first, for the fee
+// estimator.
+function accountKeysOf(instructions: KtxInstruction[]): string[] {
+  const writable = new Set<string>();
+  const readonly = new Set<string>();
+  for (const ix of instructions) {
+    for (const account of ix.accounts) {
+      if (account.role.startsWith("WRITABLE")) writable.add(account.address);
+      else readonly.add(account.address);
+    }
+  }
+  return [...writable, ...readonly];
 }

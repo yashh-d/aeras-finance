@@ -33,6 +33,11 @@ const ROUTES: readonly HedgeRoute[] = [
   { xstockSymbol: "TSLAx", market: "TSLA", match: "exact", basis: null },
   { xstockSymbol: "NVDAx", market: "NVDA", match: "exact", basis: null },
   { xstockSymbol: "AAPLx", market: "AAPL", match: "exact", basis: null },
+  // Lighter lists two SpaceX books. SPCX (id 194) is active and marks at
+  // $138.42, matching the xStock. SPACEX (id 173) is inactive and marks at
+  // $2,406, a differently denominated instrument, so routing here by name
+  // would hedge against a dead book at 17x the wrong price.
+  { xstockSymbol: "SPCXx", market: "SPCX", match: "exact", basis: null },
   { xstockSymbol: "METAx", market: "META", match: "exact", basis: null },
   { xstockSymbol: "GOOGLx", market: "GOOGL", match: "exact", basis: null },
   { xstockSymbol: "COINx", market: "COIN", match: "exact", basis: null },

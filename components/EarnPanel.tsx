@@ -4,14 +4,21 @@
 // terminal" feel: yield Vaults (Jupiter Lend Earn and Kamino Earn vaults),
 // Looping (recursive borrow against collateral), and direct Lend.
 //
-// Vaults carry two venues per asset. They are not the same kind of product:
-// Jupiter Lend is a single protocol-native vault per asset, while a Kamino
-// K-Vault is a curator-run strategy that allocates across Kamino Lend reserves.
-// Kamino usually pays more and does not cover every asset, so the rows show
-// both rates side by side rather than picking one. Looping (multiply / unwind)
-// lives in LoopingPanel. Morpho and Aave are not on this surface: both are
-// EVM-only lending protocols, so they need an EVM wallet and a bridge before
-// they can be wired up. See the Stage 2 notes in the PR description.
+// One Vaults table, three venues. The Solana assets carry two of them side by
+// side per row: Jupiter Lend is a single protocol-native vault per asset, while
+// a Kamino K-Vault is a curator-run strategy allocating across Kamino Lend
+// reserves. Kamino usually pays more and does not cover every asset, so both
+// rates show rather than picking one.
+//
+// Morpho-on-Monad is the third venue and renders as a section at the foot of
+// the same table (MorphoVaultsSection). It is shaped differently - one row per
+// curator vault, not per asset, since all three are USDC - so it keeps its own
+// column labels while sharing the card and the right-hand columns. It is also
+// the one EVM venue here: the embedded EVM wallet signs its deposits and
+// Trustware funds them from Solana USDC.
+//
+// Looping (multiply / unwind) lives in LoopingPanel. Aave stays off until it
+// gets the same treatment.
 
 import { useCallback, useEffect, useState } from "react";
 import BN from "bn.js";
@@ -53,12 +60,21 @@ import {
   type KaminoVaultState,
 } from "@/lib/kamino/kvaults";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
+import { MorphoVaultsSection } from "@/components/MorphoVaultsCard";
 import {
   atomicToUiString,
   getConnection,
   type AccountBalances,
 } from "@/lib/solana/balances";
+import {
+  SolanaSendError,
+  sendAndConfirm,
+  type BuiltTransaction,
+} from "@/lib/solana/send-confirm";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
+import { assetIdentity } from "@/lib/jupiter/xstocks";
+import { VENUE_LOGOS } from "@/lib/tokens/logos";
+import { AssetLogo, VenueMark } from "@/components/AssetLogo";
 import { LoopingCard } from "@/components/LoopingPanel";
 import { RyskOptionsCard } from "@/components/RyskOptionsPanel";
 
@@ -90,8 +106,10 @@ export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props)
         kaminoPositions={kaminoPositions}
         vaultsError={vaultsError}
         balances={earnBalances}
+        solanaBalances={balances}
         walletAddress={walletAddress}
         onSettled={handleSettled}
+        onRefresh={onRefresh}
       />
       <LoopingCard
         walletAddress={walletAddress}
@@ -284,8 +302,10 @@ function VaultsCard({
   kaminoPositions,
   vaultsError,
   balances,
+  solanaBalances,
   walletAddress,
   onSettled,
+  onRefresh,
 }: {
   vaults: Map<string, EarnVaultState>;
   kaminoVaults: Map<string, KaminoVaultState>;
@@ -294,6 +314,10 @@ function VaultsCard({
   balances: EarnWalletBalances | null;
   walletAddress: string | undefined;
   onSettled: () => Promise<void>;
+  // Solana balances and the page-level refresh, both needed by the Monad
+  // Morpho rows: a deposit there can be funded from Solana USDC.
+  solanaBalances: AccountBalances | null;
+  onRefresh: () => Promise<void>;
 }) {
   const [openMint, setOpenMint] = useState<string | null>(null);
 
@@ -308,7 +332,9 @@ function VaultsCard({
             Deposit, hold, earn
           </div>
         </div>
-        <div className="text-[11px] text-white/50">Two venues per asset</div>
+        <div className="text-[11px] text-white/50">
+          Jupiter Lend, Kamino and Morpho
+        </div>
       </div>
 
       {vaultsError && (
@@ -320,8 +346,14 @@ function VaultsCard({
       <div className="mt-5 divide-y divide-white/10">
         <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           <div className="col-span-3">Asset</div>
-          <div className="col-span-3 text-right">Jupiter Lend</div>
-          <div className="col-span-3 text-right">Kamino</div>
+          <div className="col-span-3 flex items-center justify-end gap-1.5">
+            <VenueMark src={VENUE_LOGOS.jupiter} />
+            Jupiter Lend
+          </div>
+          <div className="col-span-3 flex items-center justify-end gap-1.5">
+            <VenueMark src={VENUE_LOGOS.kamino} />
+            Kamino
+          </div>
           <div className="col-span-2 text-right">Your deposit</div>
           <div className="col-span-1" />
         </div>
@@ -351,15 +383,12 @@ function VaultsCard({
             />
           );
         })}
+        <MorphoVaultsSection
+          walletAddress={walletAddress}
+          balances={solanaBalances}
+          onRefresh={onRefresh}
+        />
       </div>
-
-      <p className="mt-4 text-[11px] text-white/50">
-        Deposits earn a variable rate that moves with vault utilization.
-        Withdrawals are subject to available vault liquidity. Jupiter Lend
-        vaults are protocol-native. Kamino vaults are run by third-party
-        curators who choose which Kamino Lend reserves the deposit is allocated
-        to, and each one sets its own fees and risk limits.
-      </p>
     </div>
   );
 }
@@ -435,14 +464,32 @@ function VaultRow({
 
   const canOpen = Boolean((vault || kaminoUsable) && walletAddress);
 
+  // Withdraw falls back to deposit when the selected venue holds nothing, so
+  // switching venue mid-flow can never leave an unusable form on screen.
+  const [pickedMode, setPickedMode] = useState<EarnMode>("deposit");
+  const venuePositionUi = venue === "jupiter" ? positionUi : kaminoPositionUi;
+  const mode: EarnMode =
+    pickedMode === "withdraw" && venuePositionUi <= 0 ? "deposit" : pickedMode;
+  const venueApy = venue === "jupiter" ? jupiterApy : kaminoApy;
+  const venueLabel =
+    venue === "jupiter" ? "Jupiter Lend" : (kaminoMeta?.name ?? "Kamino");
+
   return (
     <div className="py-2.5">
       <div className="grid grid-cols-12 items-center gap-2 text-sm">
-        <div className="col-span-3">
-          <div className="font-medium tracking-tight text-white">
-            {meta.symbol}
+        <div className="col-span-3 flex items-center gap-2.5">
+          <AssetLogo
+            xstock={assetIdentity(meta.assetMint, meta.symbol)}
+            size={32}
+          />
+          <div className="min-w-0">
+            <div className="truncate font-medium tracking-tight text-white">
+              {meta.symbol}
+            </div>
+            <div className="truncate text-[11px] text-white/50">
+              {meta.name}
+            </div>
           </div>
-          <div className="text-[11px] text-white/50">{meta.name}</div>
         </div>
 
         <VenueCell
@@ -503,7 +550,19 @@ function VaultRow({
       </div>
 
       {open && walletAddress && (
-        <div className="mt-3 space-y-3">
+        <div className="mt-3 space-y-5">
+          <VaultDetailHeader
+            mint={meta.assetMint}
+            symbol={meta.symbol}
+            positionUi={venuePositionUi}
+            decimalsShown={decimalsShown}
+            apy={venueApy}
+            venueLabel={venueLabel}
+            mode={mode}
+            onModeChange={setPickedMode}
+            canWithdraw={venuePositionUi > 0}
+          />
+
           <VenueTabs
             venue={venue}
             onPick={setPicked}
@@ -516,6 +575,8 @@ function VaultRow({
 
           {venue === "jupiter" && vault && (
             <VaultForm
+              key={`jupiter-${mode}`}
+              mode={mode}
               meta={meta}
               vault={vault}
               balances={balances}
@@ -525,6 +586,8 @@ function VaultRow({
           )}
           {venue === "kamino" && kaminoMeta && kaminoVault && (
             <KaminoVaultForm
+              key={`kamino-${mode}`}
+              mode={mode}
               asset={meta}
               vaultMeta={kaminoMeta}
               vault={kaminoVault}
@@ -537,6 +600,113 @@ function VaultRow({
         </div>
       )}
     </div>
+  );
+}
+
+type EarnMode = "deposit" | "withdraw";
+
+// Head of an expanded vault row, matching the borrow market card: what the
+// asset is, what is already deposited in the selected venue, and which of the
+// two actions the form below is showing.
+function VaultDetailHeader({
+  mint,
+  symbol,
+  positionUi,
+  decimalsShown,
+  apy,
+  venueLabel,
+  mode,
+  onModeChange,
+  canWithdraw,
+}: {
+  mint: string;
+  symbol: string;
+  positionUi: number;
+  decimalsShown: number;
+  apy: number | null;
+  venueLabel: string;
+  mode: EarnMode;
+  onModeChange: (mode: EarnMode) => void;
+  canWithdraw: boolean;
+}) {
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AssetLogo xstock={assetIdentity(mint, symbol)} size={44} />
+        <div className="font-light text-xl tracking-tight text-white">
+          {symbol}
+        </div>
+      </div>
+
+      <div className="space-y-1 text-center">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+          Your deposit
+        </div>
+        <div className="font-mono text-[2.25rem] font-light leading-none tracking-tight tabular-nums text-white">
+          {positionUi.toFixed(decimalsShown)}
+        </div>
+        <div className="text-xs text-white/50">
+          {apy === null ? (
+            <>Rate unavailable in {venueLabel}</>
+          ) : (
+            <>
+              Earning{" "}
+              <span className="font-mono tabular-nums text-white">
+                {(apy * 100).toFixed(2)}%
+              </span>{" "}
+              in {venueLabel}
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <ModeButton
+          label="Withdraw"
+          active={mode === "withdraw"}
+          disabled={!canWithdraw}
+          onClick={() => onModeChange("withdraw")}
+        />
+        <ModeButton
+          label="Deposit"
+          active={mode === "deposit"}
+          onClick={() => onModeChange("deposit")}
+        />
+      </div>
+      {!canWithdraw && (
+        <p className="text-center text-[11px] text-white/50">
+          Nothing deposited in {venueLabel} yet.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function ModeButton({
+  label,
+  active,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-pressed={active}
+      className={`rounded-full px-4 py-2.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+        active
+          ? "bg-aeras-blue text-white hover:bg-aeras-blue-medium"
+          : "border border-white/15 bg-white/5 text-white/70 hover:border-white/25 hover:text-white"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -646,12 +816,14 @@ type FormState =
   | { kind: "error"; message: string };
 
 function VaultForm({
+  mode,
   meta,
   vault,
   balances,
   walletAddress,
   onSettled,
 }: {
+  mode: EarnMode;
   meta: EarnAssetMeta;
   vault: EarnVaultState;
   balances: EarnWalletBalances | null;
@@ -659,7 +831,6 @@ function VaultForm({
   onSettled: () => Promise<void>;
 }) {
   const signTxBase64 = useSignSolanaTxBase64();
-  const [mode, setMode] = useState<"deposit" | "withdraw">("deposit");
   const [input, setInput] = useState("");
   // Set when the user hits Max on a full withdrawal, so we redeem the exact
   // share balance instead of an asset amount that rounds against them.
@@ -695,34 +866,27 @@ function VaultForm({
     if (state.kind !== "idle") setState({ kind: "idle" });
   }
 
-  function switchMode(next: "deposit" | "withdraw") {
-    setMode(next);
-    setInput("");
-    setRedeemAll(false);
-    setState({ kind: "idle" });
-  }
-
   async function handleSubmit() {
     setState({ kind: "submitting" });
     try {
       const connection = getConnection();
-      let base64Tx: string;
+      let built: BuiltTransaction;
       if (mode === "deposit") {
-        base64Tx = await buildEarnDepositTx({
+        built = await buildEarnDepositTx({
           meta,
           amountAtomic,
           signerAddress: walletAddress,
           connection,
         });
       } else if (redeemAll) {
-        base64Tx = await buildEarnRedeemAllTx({
+        built = await buildEarnRedeemAllTx({
           meta,
           sharesAtomicAmount: new BN(shares),
           signerAddress: walletAddress,
           connection,
         });
       } else {
-        base64Tx = await buildEarnWithdrawTx({
+        built = await buildEarnWithdrawTx({
           meta,
           amountAtomic,
           signerAddress: walletAddress,
@@ -730,12 +894,12 @@ function VaultForm({
         });
       }
 
-      const signed = await signTxBase64(base64Tx);
-      const sig = await connection.sendRawTransaction(base64ToBytes(signed), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      await connection.confirmTransaction(sig, "confirmed");
+      const signed = await signTxBase64(built.transaction);
+      const sig = await sendAndConfirm(
+        connection,
+        base64ToBytes(signed),
+        built,
+      );
       setState({ kind: "done", signature: sig });
       setInput("");
       setRedeemAll(false);
@@ -761,23 +925,6 @@ function VaultForm({
         />
       )}
       <div className="space-y-3 rounded-xl border border-white/10 bg-white/5 p-4">
-      <div className="flex gap-1">
-        {(["deposit", "withdraw"] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => switchMode(m)}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-              mode === m
-                ? "bg-white/15 text-white"
-                : "text-white/50 hover:text-white"
-            }`}
-          >
-            {m}
-          </button>
-        ))}
-      </div>
-
       <div>
         <div className="mb-1 flex items-baseline justify-between">
           <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
@@ -928,6 +1075,7 @@ function VaultForm({
 //     amount is converted before it is sent.
 //  3. Positions come from the API, because deposits auto-stake the shares.
 function KaminoVaultForm({
+  mode,
   asset,
   vaultMeta,
   vault,
@@ -936,6 +1084,7 @@ function KaminoVaultForm({
   walletAddress,
   onSettled,
 }: {
+  mode: EarnMode;
   asset: EarnAssetMeta;
   vaultMeta: KaminoVaultMeta;
   vault: KaminoVaultState;
@@ -945,7 +1094,6 @@ function KaminoVaultForm({
   onSettled: () => Promise<void>;
 }) {
   const signTxBase64 = useSignSolanaTxBase64();
-  const [mode, setMode] = useState<"deposit" | "withdraw">("deposit");
   const [input, setInput] = useState("");
   // Set when the user hits Max on a withdrawal, so we redeem the exact share
   // balance rather than a token amount converted back into shares. The round
@@ -983,13 +1131,6 @@ function KaminoVaultForm({
     if (state.kind !== "idle") setState({ kind: "idle" });
   }
 
-  function switchMode(next: "deposit" | "withdraw") {
-    setMode(next);
-    setInput("");
-    setWithdrawAll(false);
-    setState({ kind: "idle" });
-  }
-
   async function handleSubmit() {
     setState({ kind: "submitting" });
     try {
@@ -1011,20 +1152,21 @@ function KaminoVaultForm({
         throw new Error("Amount rounds to zero shares.");
       }
 
-      const base64Tx = await buildKaminoVaultTx({
+      const connection = getConnection();
+      const built = await buildKaminoVaultTx({
         action: mode,
         walletAddress,
         vault: vaultMeta,
         amountAtomic: sendAtomic,
+        connection,
       });
 
-      const connection = getConnection();
-      const signed = await signTxBase64(base64Tx);
-      const sig = await connection.sendRawTransaction(base64ToBytes(signed), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      await connection.confirmTransaction(sig, "confirmed");
+      const signed = await signTxBase64(built.transaction);
+      const sig = await sendAndConfirm(
+        connection,
+        base64ToBytes(signed),
+        built,
+      );
       setState({ kind: "done", signature: sig });
       setInput("");
       setWithdrawAll(false);
@@ -1052,23 +1194,6 @@ function KaminoVaultForm({
       )}
 
       <div className="space-y-3 rounded-xl border border-white/10 bg-white/5 p-4">
-        <div className="flex gap-1">
-          {(["deposit", "withdraw"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => switchMode(m)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                mode === m
-                  ? "bg-white/15 text-white"
-                  : "text-white/50 hover:text-white"
-              }`}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
-
         <div>
           <div className="mb-1 flex items-baseline justify-between">
             <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
@@ -1404,6 +1529,14 @@ function base64ToBytes(b64: string): Uint8Array {
 // Chain errors are unreadable by default. Map the ones users actually hit and
 // fall back to the raw message rather than swallowing it.
 function readableError(err: unknown): string {
+  // sendAndConfirm already decided what happened and phrased it. Its expiry
+  // message in particular is the one place we can promise nothing moved.
+  if (
+    err instanceof SolanaSendError &&
+    (err.kind === "expired" || err.kind === "unknown")
+  ) {
+    return err.message;
+  }
   const raw = err instanceof Error ? err.message : String(err);
   if (/insufficient funds|0x1\b/i.test(raw)) {
     return "Not enough balance to cover this amount plus fees.";

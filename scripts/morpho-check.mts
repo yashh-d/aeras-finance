@@ -55,18 +55,19 @@ async function main() {
   const wallet = process.argv[2];
 
   console.log("=== Morpho indexer (Monad chainId", MONAD_CHAIN_ID, ") ===");
+  // The curated vaults are Morpho Vaults V2, served by the `vaultV2s` query.
+  // The `vaults` query is V1-only and returns their near-empty V1 twins.
   const gql = await fetch(MORPHO_BLUE_API_URL, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      query: `query($a:[String!]!,$c:Int!){vaults(first:50,where:{address_in:$a,chainId_in:[$c]}){items{address name state{netApy weeklyNetApy totalAssetsUsd}}}}`,
-      variables: { a: MONAD_USDC_VAULTS.map((v) => v.address), c: MONAD_CHAIN_ID },
+      query: `query($a:[String!],$c:[Int!]){vaultV2s(first:50,where:{address_in:$a,chainId_in:$c}){items{address name listed netApy avgNetApy totalAssetsUsd}}}`,
+      variables: { a: MONAD_USDC_VAULTS.map((v) => v.address), c: [MONAD_CHAIN_ID] },
     }),
   }).then((r) => r.json());
-  for (const it of gql.data.vaults.items) {
-    const s = it.state ?? {};
+  for (const it of gql.data.vaultV2s.items) {
     console.log(
-      `  ${it.name.padEnd(28)} netApy=${((s.netApy ?? 0) * 100).toFixed(2)}%  7d=${((s.weeklyNetApy ?? 0) * 100).toFixed(2)}%  tvl=$${Math.round(s.totalAssetsUsd ?? 0).toLocaleString()}`,
+      `  ${it.name.padEnd(28)} netApy=${((it.netApy ?? 0) * 100).toFixed(2)}%  avg=${((it.avgNetApy ?? 0) * 100).toFixed(2)}%  tvl=$${Math.round(it.totalAssetsUsd ?? 0).toLocaleString()}  listed=${it.listed}`,
     );
   }
 

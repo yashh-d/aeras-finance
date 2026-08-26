@@ -4,19 +4,32 @@ import {
   KAMINO_ALLOWED_KVAULTS,
   atomicToDecimalString,
   kaminoVaultByAddress,
+  type KtxInstruction,
 } from "@/lib/kamino/kvaults";
 
 export const dynamic = "force-dynamic";
 
-// Builds an unsigned K-Vault deposit or withdrawal. Same role as the klend KTX
-// proxy: stable User-Agent, no CORS, and a vault allowlist so a caller cannot
-// have us build a transaction into an uncurated vault.
+// Builds a K-Vault deposit or withdrawal. Same role as the klend KTX proxy:
+// stable User-Agent, no CORS, and a vault allowlist so a caller cannot have us
+// build a transaction into an uncurated vault.
 //
 // KTX takes HUMAN-READABLE amounts, not atomic units. Posting `amount: "1"` to
 // a 6-decimal vault produces an on-chain arg of 1000000. Verified on 2026-08-05
 // by decoding the returned instruction data. Callers pass atomic units, which
 // is the repo convention and keeps float rounding out of the amount path, and
 // the conversion happens here, once, at the boundary.
+//
+// This hits the `-instructions` endpoints, not `/deposit` and `/withdraw`,
+// which return a fully built transaction. Two reasons, both about deposits
+// landing. KTX bakes no ComputeBudget instructions into the transactions it
+// builds -- verified 2026-08-26 by decoding one: an ATA create, the kvault
+// instruction and two farm instructions, no unit limit and no unit price -- so
+// every Kamino deposit went out at zero priority fee, and there is no request
+// parameter to change that (its OpenAPI spec takes wallet, kvault, amount and
+// memo, nothing else). And the blockhash was Kamino's, chosen before the
+// round trip back to the browser and the signing prompt, so it arrived already
+// part-spent. Taking the raw instructions lets the client attach a priority fee
+// and a blockhash it fetched itself, moments before signing.
 const KTX_BASE = "https://api.kamino.finance/ktx/kvault";
 
 const ALLOWED_ACTIONS = new Set(["deposit", "withdraw"]);
@@ -79,7 +92,7 @@ export async function POST(request: Request) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
   try {
-    const res = await fetch(`${KTX_BASE}/${action}`, {
+    const res = await fetch(`${KTX_BASE}/${action}-instructions`, {
       method: "POST",
       cache: "no-store",
       signal: controller.signal,
@@ -92,12 +105,13 @@ export async function POST(request: Request) {
     clearTimeout(timeout);
 
     const payload = (await res.json()) as {
-      transaction?: string;
+      instructions?: KtxInstruction[];
+      lutsByAddress?: Record<string, string[]>;
       message?: string;
       code?: string;
     };
 
-    if (!res.ok || !payload.transaction) {
+    if (!res.ok || !payload.instructions?.length) {
       return NextResponse.json(
         {
           error: payload.message ?? `Kamino KTX failed: ${res.status}`,
@@ -107,7 +121,25 @@ export async function POST(request: Request) {
       );
     }
 
-    return NextResponse.json({ transaction: payload.transaction });
+    // Every instruction must be signable by this wallet and nobody else. KTX is
+    // upstream and trusted, but a deposit is the one place where an unexpected
+    // extra signer would be worth catching before it reaches a signing prompt.
+    for (const ix of payload.instructions) {
+      for (const account of ix.accounts) {
+        const isSigner = account.role.endsWith("SIGNER");
+        if (isSigner && account.address !== wallet) {
+          return NextResponse.json(
+            { error: "Kamino returned a transaction requiring another signer" },
+            { status: 502 },
+          );
+        }
+      }
+    }
+
+    return NextResponse.json({
+      instructions: payload.instructions,
+      lutsByAddress: payload.lutsByAddress ?? {},
+    });
   } catch (err) {
     clearTimeout(timeout);
     const msg = err instanceof Error ? err.message : String(err);
