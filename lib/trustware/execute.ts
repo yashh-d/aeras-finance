@@ -36,7 +36,6 @@ import {
   extractExecution,
   extractIntentId,
   isTerminalStatus,
-  toQuantity,
   type TrustwareApproval,
   type TrustwareEvmTransaction,
   type TrustwareQuoteRequest,
@@ -61,6 +60,11 @@ export interface ConversionProgress {
 
 export interface EvmSigner {
   address: string;
+  // Wallet-level chain switch. Privy binds each provider instance to the chain
+  // active when it was requested, and the signing confirmation follows the
+  // wallet's active chain, so the switch must happen at the wallet level and a
+  // FRESH provider must be requested after it (see lib/privy/evm.ts).
+  switchChain: (chainId: number) => Promise<void>;
   getProvider: () => Promise<EIP1193Provider>;
 }
 
@@ -198,8 +202,7 @@ export async function executeConversion(
   }
 
   if (!evm) throw new Error("No EVM wallet is available to sign.");
-  const provider = await evm.getProvider();
-  await ensureChain(provider, plan.source.chain);
+  const provider = await connectChain(evm, plan.source.chain);
   await grantApprovals({
     provider,
     approvals: usableApprovals(execution?.approvals),
@@ -221,12 +224,12 @@ export async function executeConversion(
 
   // Submit immediately after broadcast, before anything else. Without this
   // Trustware cannot track a route the user has already paid for.
-  await submitReceipt(intentId, sourceTxHash, signal);
+  await submitTrustwareReceipt(intentId, sourceTxHash, signal);
 
   report("tracking", "Waiting for the converted asset to arrive on Solana.", {
     sourceTxHash,
   });
-  const final = await trackToSettlement(intentId, signal, (status) =>
+  const final = await trackTrustwareSettlement(intentId, signal, (status) =>
     report("tracking", describeStatus(status, plan), {
       sourceTxHash,
       destTxHash: status.data?.dest_tx_hash,
@@ -308,24 +311,154 @@ async function runSolanaConversion(
   };
 }
 
-// Point the wallet at the source chain. Privy only permits chains declared in
+// Run one EVM-source Trustware route end to end: build it, grant approvals,
+// sign the source transaction with the embedded wallet, submit the receipt,
+// and track to settlement. The generic engine behind flows that are not xStock
+// conversions (the Monad -> Solana USDC return leg in lib/morpho/fund.ts).
+// The same two rules as executeConversion apply: nothing downstream treats
+// funds as delivered before Trustware reports success, and the last free abort
+// is before the user signs.
+export interface EvmRouteResult {
+  intentId: string;
+  sourceTxHash: string;
+  destTxHash: string | null;
+  // Destination units actually delivered, when Trustware reports them.
+  deliveredAtomic: string | null;
+}
+
+export async function executeEvmRoute(args: {
+  request: TrustwareQuoteRequest;
+  evm: EvmSigner;
+  // Progress-copy noun for what is moving, e.g. "USDC".
+  describe: string;
+  // Guaranteed-minimum floor the fresh route must clear before signing.
+  // 0n disables the check.
+  minDeliveredAtomic?: bigint;
+  onProgress?: (progress: ConversionProgress) => void;
+  signal?: AbortSignal;
+}): Promise<EvmRouteResult> {
+  const { request, evm, describe, onProgress, signal } = args;
+  const report = (
+    stage: ConversionStage,
+    message: string,
+    extra?: Partial<ConversionProgress>,
+  ) => onProgress?.({ stage, message, ...extra });
+
+  report("routing", `Preparing the ${describe} transfer.`);
+  const routeRes = await postJson<TrustwareQuoteResponse>(
+    "/api/trustware/route",
+    request,
+  );
+  const intentId = extractIntentId(routeRes);
+  const execution = extractExecution(routeRes);
+  const transaction = execution?.transaction;
+  if (!intentId) throw new Error("Trustware returned no intent to track.");
+  if (!transaction) throw new Error("Trustware returned no transaction to sign.");
+
+  const estimate = extractEstimate(routeRes);
+  const guaranteed = estimate?.toAmountMin ?? estimate?.toAmount;
+  const floor = args.minDeliveredAtomic ?? 0n;
+  if (floor > 0n && guaranteed && BigInt(guaranteed) < floor) {
+    throw new Error(
+      "The rate moved and no longer covers this transfer. " +
+        "Try again to get a fresh quote.",
+    );
+  }
+
+  const provider = await connectChain(evm, request.fromChain);
+  await grantApprovals({
+    provider,
+    approvals: usableApprovals(execution?.approvals),
+    owner: evm.address,
+    chain: request.fromChain,
+    symbol: describe,
+    report,
+    signal,
+  });
+  report("signing", `Sending ${describe}.`);
+  const sourceTxHash = await sendEvmTransaction(provider, transaction, evm.address);
+
+  // Submit immediately after broadcast, before anything else. Without this
+  // Trustware cannot track a route the user has already paid for.
+  await submitTrustwareReceipt(intentId, sourceTxHash, signal);
+
+  report("tracking", `Bridging ${describe}. This can take a few minutes.`, {
+    sourceTxHash,
+  });
+  const final = await trackTrustwareSettlement(intentId, signal, (status) =>
+    report(
+      "tracking",
+      status.data?.gas_status === "needs_gas"
+        ? "The route stalled waiting for destination gas. Trustware is retrying."
+        : `Bridging ${describe}. This can take a few minutes.`,
+      { sourceTxHash, destTxHash: status.data?.dest_tx_hash },
+    ),
+  );
+
+  report("settled", `${describe} arrived.`, {
+    sourceTxHash,
+    destTxHash: final.data?.dest_tx_hash,
+  });
+  return {
+    intentId,
+    sourceTxHash,
+    destTxHash: final.data?.dest_tx_hash ?? null,
+    deliveredAtomic: final.data?.to_amount_wei ?? null,
+  };
+}
+
+// Point the wallet at the source chain and hand back a provider bound to it.
+//
+// The switch happens on the WALLET, never via wallet_switchEthereumChain on a
+// provider: a provider instance is bound to the chain active when it was
+// requested, and the Privy signing confirmation follows the wallet's active
+// chain, not the provider's (that split once presented a Monad transaction as
+// an Ethereum one in the Morpho flow). Privy only permits chains declared in
 // `supportedChains`, so an undeclared chain fails here rather than silently
-// signing on the wrong network.
-async function ensureChain(provider: EIP1193Provider, chain: string) {
-  const chainId = toQuantity(chain);
-  if (!chainId) throw new Error(`Unsupported source chain: ${chain}`);
-  const current = (await provider.request({ method: "eth_chainId" })) as string;
-  if (BigInt(current) === BigInt(chain)) return;
+// signing on the wrong network, and the chainId read-back on the fresh
+// provider is the final guard before anything is signed.
+async function connectChain(
+  evm: EvmSigner,
+  chain: string,
+): Promise<EIP1193Provider> {
+  const target = Number(chain);
+  if (!Number.isInteger(target) || target <= 0) {
+    throw new Error(`Unsupported source chain: ${chain}`);
+  }
   try {
-    await provider.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId }],
-    });
+    await evm.switchChain(target);
   } catch {
     throw new Error(
       `Could not switch the wallet to chain ${chain}. ` +
         "The conversion was not started and no funds moved.",
     );
+  }
+  // The wallet-level switch propagates asynchronously: switchChain can resolve
+  // while a provider requested right after is still bound to the previous
+  // chain (observed live on the Monad flow, 2026-08-26). Poll for the binding,
+  // nudging the provider instance directly as a fallback. The chainId
+  // read-back stays the hard gate: nothing is signed until a provider actually
+  // reports the target chain.
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const provider = await evm.getProvider();
+    const current = (await provider.request({ method: "eth_chainId" })) as string;
+    if (BigInt(current) === BigInt(target)) return provider;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `The wallet did not switch to chain ${chain}. ` +
+          "The conversion was not started and no funds moved.",
+      );
+    }
+    try {
+      await provider.request({
+        method: "wallet_switchEthereumChain",
+        params: [{ chainId: `0x${target.toString(16)}` }],
+      });
+    } catch {
+      // The wallet-level switch may still land on its own; keep polling.
+    }
+    await new Promise((r) => setTimeout(r, 250));
   }
 }
 
@@ -411,7 +544,10 @@ async function sendEvmTransaction(
   })) as string;
 }
 
-async function submitReceipt(
+// Exported for reuse: the Morpho-on-Monad funding leg (lib/morpho/fund.ts)
+// broadcasts its own source transaction and then needs the same receipt and
+// settlement machinery as an xStock conversion.
+export async function submitTrustwareReceipt(
   intentId: string,
   txHash: string,
   signal?: AbortSignal,
@@ -437,7 +573,7 @@ async function submitReceipt(
   );
 }
 
-async function trackToSettlement(
+export async function trackTrustwareSettlement(
   intentId: string,
   signal: AbortSignal | undefined,
   onTick: (status: TrustwareStatusResponse) => void,

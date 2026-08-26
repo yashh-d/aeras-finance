@@ -73,8 +73,17 @@ function getRpcUrl(): string {
   return url;
 }
 
+// One Connection for the whole client. This used to construct a fresh one on
+// every call, which meant every balance poll and every transaction opened its
+// own WebSocket and paid the handshake again -- latency spent inside the window
+// a confirmation has to complete in, plus a steady leak of sockets.
+let connection: Connection | null = null;
+
 export function getConnection(): Connection {
-  return new Connection(getRpcUrl(), "confirmed");
+  if (!connection) {
+    connection = new Connection(getRpcUrl(), "confirmed");
+  }
+  return connection;
 }
 
 export async function fetchAllBalances(

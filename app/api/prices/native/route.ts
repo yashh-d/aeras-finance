@@ -4,14 +4,16 @@ export const dynamic = "force-dynamic";
 
 // USD prices for native chain assets.
 //
-// Jupiter prices Solana mints, so it cannot quote ETH or BNB held on their own
-// chains, and Trustware's balance scan returns no USD values at all. This fills
-// that one gap and nothing more: two assets, cached, no key required.
+// Jupiter prices Solana mints, so it cannot quote ETH, BNB, or MON held on
+// their own chains, and Trustware's balance scan returns no USD values at all.
+// This fills that one gap and nothing more: three assets, cached, no key
+// required. MON is priced so the Monad balances count toward the portfolio
+// total instead of showing as unpriced rows.
 //
 // A failure here is not fatal. The wallet shows the balance without a dollar
 // figure rather than hiding the holding.
 const COINGECKO =
-  "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,binancecoin&vs_currencies=usd";
+  "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,binancecoin,monad&vs_currencies=usd";
 
 export interface NativePriceMap {
   [coingeckoId: string]: number;

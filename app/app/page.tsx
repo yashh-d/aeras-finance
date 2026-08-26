@@ -11,6 +11,7 @@ import { AssetTradePanel } from "@/components/AssetTradePanel";
 import { BorrowPanel } from "@/components/BorrowPanel";
 import { EarnPanel } from "@/components/EarnPanel";
 import { HedgePanel } from "@/components/HedgePanel";
+import { PerpsPanel } from "@/components/PerpsPanel";
 import { PositionsPanel } from "@/components/PositionsPanel";
 import { PriceChart } from "@/components/PriceChart";
 import { WalletPanel } from "@/components/WalletPanel";
@@ -23,6 +24,7 @@ import {
 import { fetchSparklines, type SparklinesResponse } from "@/lib/jupiter/charts";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useJupiterPrices } from "@/lib/jupiter/use-prices";
+import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
 import { totalPortfolioUsd } from "@/lib/solana/holdings";
 import { useWalletScan } from "@/lib/trustware/use-wallet-scan";
 import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
@@ -207,25 +209,40 @@ function SignedIn({
   // Scanned once here rather than inside the wallet card, so the header total
   // and the balance rows can never disagree about what the account holds.
   const walletScan = useWalletScan(walletAddress ?? undefined);
+  // Monad balances live in the embedded EVM wallet, outside both the Solana
+  // read and the Trustware scan, so the header total reads them separately.
+  const monad = useMonadBalances(walletScan.evmAddress);
   // A deposit can spend a holding on another chain, so anything that refreshes
   // the Solana balances has to re-scan the others too. Without this the panel
   // kept showing an EVM balance the conversion had already consumed.
   const refreshScan = walletScan.refresh;
+  const refreshMonad = monad.refresh;
   const refreshAll = useCallback(async () => {
     refreshScan();
-    await refreshBalances();
-  }, [refreshScan, refreshBalances]);
+    await Promise.all([refreshBalances(), refreshMonad()]);
+  }, [refreshScan, refreshBalances, refreshMonad]);
   const settleAll = useCallback(async () => {
     refreshScan();
-    await settleBalances();
-  }, [refreshScan, settleBalances]);
-  const totalUsd = totalPortfolioUsd(
+    await Promise.all([settleBalances(), refreshMonad()]);
+  }, [refreshScan, settleBalances, refreshMonad]);
+  const solanaTotalUsd = totalPortfolioUsd(
     balances,
     prices,
     walletScan.held,
     walletScan.native,
     walletScan.nativePrices,
   );
+  // Monad USDC at par, MON at the native price feed's rate (0 while the price
+  // is loading, so the total can only understate, never invent value).
+  const monadUsd =
+    (monad.balances?.usdcUi ?? 0) +
+    (monad.balances?.monUi ?? 0) * (walletScan.nativePrices["monad"] ?? 0);
+  const totalUsd =
+    solanaTotalUsd != null
+      ? solanaTotalUsd + monadUsd
+      : monadUsd > 0
+        ? monadUsd
+        : null;
 
   // Jupiter Trigger auth for the Home asset detail's limit tab. Cheap to hold:
   // it signs nothing until an order is actually placed.
@@ -294,6 +311,11 @@ function SignedIn({
             label="Hedge"
             active={activeSection === "hedge"}
             onClick={() => setActiveSection("hedge")}
+          />
+          <SidebarNavItem
+            label="Perps"
+            active={activeSection === "perps"}
+            onClick={() => setActiveSection("perps")}
           />
           <SidebarNavItem
             label="Withdraw"
@@ -373,6 +395,11 @@ function SignedIn({
             )
           ) : activeSection === "hedge" ? (
             <HedgePanel balances={balances} prices={prices} scan={walletScan} />
+          ) : activeSection === "perps" ? (
+            // Balances and the cross-chain scan are for the margin card: a
+            // position is opened against margin held on Ondo, but what funds
+            // that margin is whatever the user holds anywhere.
+            <PerpsPanel balances={balances} prices={prices} scan={walletScan} />
           ) : activeSection === "borrow" ? (
             walletAddress ? (
               <BorrowSection
@@ -1065,6 +1092,7 @@ type Section =
   | "earn"
   | "borrow"
   | "hedge"
+  | "perps"
   | "withdraw"
   | "positions"
   | "activity";

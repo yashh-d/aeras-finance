@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import {
   useCreateWallet,
@@ -18,8 +18,13 @@ import {
   type HoldingGroup,
 } from "@/lib/solana/holdings";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
+import type { SolanaSigner } from "@/lib/morpho/fund";
+import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
 import { nativeUiAmount } from "@/lib/trustware/native";
+import { stableUiAmount } from "@/lib/trustware/stables";
+import { MonadFundForm } from "./MonadFundForm";
 import { SendForm } from "./SendForm";
 import {
   Sheet,
@@ -72,6 +77,7 @@ export function WalletPanel({
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [receiving, setReceiving] = useState(false);
+  const [fundingMonad, setFundingMonad] = useState(false);
   const [fundError, setFundError] = useState<string | null>(null);
   const { fundWallet } = useFundWallet({
     onUserExited: () => {
@@ -82,17 +88,53 @@ export function WalletPanel({
   const { createWallet: createEvmWallet } = useCreateWallet();
   const [creatingEvm, setCreatingEvm] = useState(false);
   const { address: evmAddress } = useEmbeddedEvmWallet();
+  // Monad balances live in the embedded EVM wallet, outside both the Solana
+  // read and the Trustware scan, so they get their own read. USDC counts at
+  // par and MON at the native price feed's rate (missing price -> no USD
+  // figure on the row and no MON value in the total).
+  const monad = useMonadBalances(evmAddress);
+  const monadUsdc = monad.balances?.usdcUi ?? 0;
+  const monPrice = scan.nativePrices["monad"];
+  const monadUsd = monadUsdc + (monad.balances?.monUi ?? 0) * (monPrice ?? 0);
+  // Signer for the Monad Fund flow's Solana source leg.
+  const sendSolanaTx = useSendSolanaTxBase64();
+  const solanaSigner = useMemo<SolanaSigner>(
+    () => ({ address: walletAddress, signAndSendBase64: sendSolanaTx }),
+    [walletAddress, sendSolanaTx],
+  );
 
-  const totalUsd = totalPortfolioUsd(
+  const solanaTotalUsd = totalPortfolioUsd(
     balances,
     prices,
     scan.held,
     scan.native,
     scan.nativePrices,
   );
+  const totalUsd =
+    solanaTotalUsd != null
+      ? solanaTotalUsd + monadUsd
+      : monadUsd > 0
+        ? monadUsd
+        : null;
   // One row per equity, not per mint. TSLAx and TSLAon are the same Tesla
   // position, so they collapse into a single line that opens to show the parts.
   const groups = groupHoldings(balances, prices, scan.held);
+  // Same rule for dollars: one USDC row totalled across chains, opening to the
+  // per-chain breakdown. Solana always shows (it is the primary wallet); other
+  // chains appear once they hold something.
+  const usdcParts = [
+    { key: "solana", chainLabel: "Solana", amount: balances?.usdc ?? 0 },
+    ...(monadUsdc > 0.000001
+      ? [{ key: "monad", chainLabel: "Monad", amount: monadUsdc }]
+      : []),
+    ...scan.stables
+      .filter((s) => stableUiAmount(s) > 0)
+      .map((s) => ({
+        key: s.chain,
+        chainLabel: s.chainLabel,
+        amount: stableUiAmount(s),
+      })),
+  ];
   const hasIndirectHolding = groups.some((g) =>
     g.parts.some((p) => !p.direct),
   );
@@ -164,7 +206,10 @@ export function WalletPanel({
         <div className="flex items-baseline gap-3 text-xs text-white/50">
           <button
             type="button"
-            onClick={() => onRefresh()}
+            onClick={() => {
+              onRefresh();
+              monad.refresh();
+            }}
             disabled={balancesRefreshing}
             className="underline-offset-2 hover:text-white hover:underline disabled:opacity-50"
           >
@@ -206,17 +251,11 @@ export function WalletPanel({
                 />
               }
             />
-            <BalanceRow
-              label="USDC"
-              sublabel="US Dollar"
-              amount={balances.usdc}
-              decimals={2}
-              usd={balances.usdc}
-              icon={
-                <AssetLogo
-                  xstock={{ symbol: "USDC", name: "USD Coin", logo: "/logos/usdc.png" }}
-                  size={30}
-                />
+            <UsdcRow
+              parts={usdcParts}
+              expanded={expandedKey === "usdc"}
+              onToggle={() =>
+                setExpandedKey(expandedKey === "usdc" ? null : "usdc")
               }
             />
             {groups.map((group) => (
@@ -258,9 +297,30 @@ export function WalletPanel({
                 />
               );
             })}
+            {monad.balances && monad.balances.monUi > 0 && (
+              <BalanceRow
+                label="MON"
+                sublabel="Monad"
+                amount={monad.balances.monUi}
+                decimals={4}
+                usd={monPrice ? monad.balances.monUi * monPrice : null}
+                icon={
+                  <AssetLogo
+                    xstock={{ symbol: "MON", name: "Monad", logo: "/logos/monad.png" }}
+                    size={30}
+                  />
+                }
+                badge={
+                  <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+                    Gas
+                  </span>
+                }
+              />
+            )}
             {balances.usdc === 0 &&
               balances.sol === 0 &&
               scan.native.length === 0 &&
+              monadUsdc === 0 &&
               groups.length === 0 && (
                 <div className="px-3 py-4 text-center text-xs text-white/50">
                   No balances yet. Fund USDC or SOL to start.
@@ -292,6 +352,18 @@ export function WalletPanel({
                 {creatingEvm ? "Setting up…" : "Fund ETH"}
               </ActionButton>
             </FundRow>
+            {/* Monad has no Privy funding provider, so its Fund flow moves
+                USDC to or from the Solana wallet through Trustware instead.
+                Gas arrives automatically on the way in; direct transfers go
+                through Receive. */}
+            <FundRow label="Monad">
+              <ActionButton onClick={() => setFundingMonad(true)}>
+                Move USDC
+              </ActionButton>
+              <ActionButton onClick={() => setReceiving(true)}>
+                Receive USDC
+              </ActionButton>
+            </FundRow>
             <div className="grid grid-cols-2 gap-2">
               <ActionButton onClick={() => setReceiving(true)}>
                 Receive
@@ -321,6 +393,30 @@ export function WalletPanel({
                   accepts="SOL, USDC, xStocks, and Ondo's Solana tokens."
                 />
                 <EvmReceiveAddress />
+              </div>
+            </SheetContent>
+          </Sheet>
+
+          <Sheet open={fundingMonad} onOpenChange={setFundingMonad}>
+            <SheetContent side="right" className="w-full sm:max-w-md">
+              <SheetHeader className="border-b border-white/10">
+                <SheetTitle>Move USDC</SheetTitle>
+                <SheetDescription>
+                  Converts USDC between your Solana wallet and your Monad
+                  wallet, in either direction.
+                </SheetDescription>
+              </SheetHeader>
+              <div className="overflow-y-auto px-4 py-4">
+                <MonadFundForm
+                  solanaAddress={walletAddress}
+                  solanaUsdcAtomic={balances.usdcAtomic}
+                  monadUsdcAtomic={monad.balances?.usdcAtomic ?? "0"}
+                  monBalanceAtomic={monad.balances?.monAtomic ?? "0"}
+                  solanaSigner={solanaSigner}
+                  onFunded={async () => {
+                    await Promise.all([onRefresh(), monad.refresh()]);
+                  }}
+                />
               </div>
             </SheetContent>
           </Sheet>
@@ -495,11 +591,13 @@ function ReceiveAddress({
 // cross-chain deposit path the borrow flow already supports had no way to be
 // funded.
 //
-// Only Ethereum and BNB Chain are named, because those are the chains the app
-// can actually spend from: they are declared in Privy's supportedChains and
-// carry registered equivalents. Assets sent on any other EVM chain arrive at
-// this same address and then cannot be moved from here, so the warning says so
-// rather than leaving it to be discovered.
+// Only Ethereum, BNB Chain, and Monad are named, because those are the chains
+// the app can actually spend from: they are declared in Privy's
+// supportedChains, and each carries something the app uses (registered
+// equivalents on the first two, USDC and MON gas for Morpho earn on Monad).
+// Assets sent on any other EVM chain arrive at this same address and then
+// cannot be moved from here, so the warning says so rather than leaving it to
+// be discovered.
 function EvmReceiveAddress() {
   const { address, ready } = useEmbeddedEvmWallet();
   const { createWallet } = useCreateWallet();
@@ -512,7 +610,7 @@ function EvmReceiveAddress() {
     return (
       <div className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-3">
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          Ethereum and BNB Chain
+          Ethereum, BNB Chain, and Monad
         </div>
         <p className="mt-1.5 text-[11px] text-white/50">
           This account has no Ethereum wallet yet. Creating one takes a moment
@@ -545,11 +643,107 @@ function EvmReceiveAddress() {
 
   return (
     <ReceiveAddress
-      label="Ethereum and BNB Chain"
+      label="Ethereum, BNB Chain, and Monad"
       address={address}
-      accepts="Tokenized stocks on either chain. Deposit one as collateral in Borrow and it converts to the Solana version first."
-      warning="Only these two chains. Assets sent on another EVM chain reach this address but cannot be used or moved."
+      accepts="Tokenized stocks on Ethereum or BNB Chain (Borrow converts them to the Solana version first), and USDC on Monad for Morpho earn deposits. Earn deposits also fund this wallet automatically from Solana USDC."
+      warning="Only these three chains. Assets sent on another EVM chain reach this address but cannot be used or moved."
     />
+  );
+}
+
+// The account's dollars as one row. USDC held on a single chain renders plain;
+// spread across chains it shows the total and opens to the per-chain
+// breakdown, mirroring how HoldingRow treats an equity held through several
+// mints. All parts are the same dollar, so the total is a plain sum.
+function UsdcRow({
+  parts,
+  expanded,
+  onToggle,
+}: {
+  parts: { key: string; chainLabel: string; amount: number }[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const total = parts.reduce((sum, p) => sum + p.amount, 0);
+  const icon = (
+    <AssetLogo
+      xstock={{ symbol: "USDC", name: "USD Coin", logo: "/logos/usdc.png" }}
+      size={30}
+    />
+  );
+
+  if (parts.length === 1) {
+    return (
+      <BalanceRow
+        label="USDC"
+        sublabel="US Dollar"
+        amount={parts[0].amount}
+        decimals={2}
+        usd={parts[0].amount}
+        icon={icon}
+      />
+    );
+  }
+
+  return (
+    <div className="border-b border-white/10 last:border-b-0">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between px-3.5 py-2.5 text-left transition-colors hover:bg-white/5"
+      >
+        <div className="flex items-center gap-2.5">
+          {icon}
+          <div>
+            <div className="text-sm font-medium tracking-tight text-white">
+              USDC
+            </div>
+            <div className="text-xs text-white/50">
+              US Dollar · {parts.length} chains
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="text-right">
+            <div className="font-mono text-sm tabular-nums text-white">
+              ${total.toFixed(2)}
+            </div>
+            <div className="font-mono text-xs text-white/50">
+              {total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+            </div>
+          </div>
+          <ChevronDown
+            className={`size-4 shrink-0 text-white/40 transition-transform ${
+              expanded ? "rotate-180" : ""
+            }`}
+          />
+        </div>
+      </button>
+      {expanded && (
+        <div className="border-t border-white/5 bg-black/20 px-3.5 py-1">
+          {parts.map((part) => (
+            <div
+              key={part.key}
+              className="flex items-center justify-between py-2"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-white">USDC</span>
+                <span className="text-[10px] text-white/40">
+                  {part.chainLabel}
+                </span>
+              </div>
+              <span className="font-mono text-xs tabular-nums text-white">
+                {part.amount.toFixed(2)}
+                <span className="ml-1.5 text-white/50">
+                  ${part.amount.toFixed(2)}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

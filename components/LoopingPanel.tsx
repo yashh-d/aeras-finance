@@ -37,6 +37,7 @@ import {
   getConnection,
   type AccountBalances,
 } from "@/lib/solana/balances";
+import { SolanaSendError, sendAndConfirm } from "@/lib/solana/send-confirm";
 
 const MULTIPLY_SLIPPAGE_BPS = 100;
 const UNWIND_SLIPPAGE_BPS = 150;
@@ -60,15 +61,17 @@ export function LoopingCard({
     () => new Set(),
   );
 
-  // Show a vault if the user holds its collateral or already has a position NFT
-  // for it (so an open loop stays visible after the wallet balance is deposited).
+  // Show a vault if the user holds its collateral or already has a loop open in
+  // it (so an open loop stays visible after the wallet balance is deposited).
+  // Keyed on the loop marker, not the shared borrow NFT: a plain borrow in a
+  // vault should not pull that vault into the looping surface.
   useEffect(() => {
     if (typeof window === "undefined" || !walletAddress) return;
     const ids = new Set<number>();
     for (const v of XSTOCK_BORROW_VAULTS) {
-      const raw = localStorage.getItem(`aeras:borrow:${walletAddress}:${v.vaultId}`);
-      const n = raw ? Number(raw) : NaN;
-      if (Number.isInteger(n) && n > 0) ids.add(v.vaultId);
+      if (localStorage.getItem(`aeras:loop:${walletAddress}:${v.vaultId}`) === "1") {
+        ids.add(v.vaultId);
+      }
     }
     setVaultsWithPosition(ids);
   }, [walletAddress]);
@@ -209,19 +212,31 @@ function LoopController({
     [storageKey],
   );
 
-  // Flag that this vault's position is leverage-managed, so the plain-borrow
-  // surface offers an unwind (sell collateral to repay) instead of a direct
-  // repay that would need USDC the loop has tied up as collateral.
+  // Flag that this vault's position is leverage-managed. The borrow and loop
+  // surfaces share one position NFT per vault, so this is the only thing that
+  // distinguishes a loop from a plain borrow. Absence is treated as a plain
+  // borrow, which under-labels a loop whose localStorage was cleared but never
+  // presents an unchosen leverage figure as if the user had picked it.
   const loopKey = `aeras:loop:${walletAddress}:${vault.vaultId}`;
+  const [loopManaged, setLoopManaged] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem(loopKey) === "1";
+    } catch {
+      return false;
+    }
+  });
   const markLoopManaged = useCallback(() => {
     try {
       localStorage.setItem(loopKey, "1");
     } catch {}
+    setLoopManaged(true);
   }, [loopKey]);
   const clearLoopManaged = useCallback(() => {
     try {
       localStorage.removeItem(loopKey);
     } catch {}
+    setLoopManaged(false);
   }, [loopKey]);
 
   // Discover an existing position NFT (shared with the plain-borrow flow).
@@ -373,11 +388,7 @@ function LoopController({
         slippageBps: MULTIPLY_SLIPPAGE_BPS,
       });
       const signed = await signTxBase64(base64Tx);
-      const sig = await conn.sendRawTransaction(base64ToBytes(signed), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      await conn.confirmTransaction(sig, "confirmed");
+      const sig = await sendAndConfirm(conn, base64ToBytes(signed));
       const finalNft = newNft ?? nftId;
       if (finalNft) persistNftId(finalNft);
       markLoopManaged();
@@ -406,11 +417,7 @@ function LoopController({
         slippageBps: UNWIND_SLIPPAGE_BPS,
       });
       const signed = await signTxBase64(base64Tx);
-      const sig = await conn.sendRawTransaction(base64ToBytes(signed), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      await conn.confirmTransaction(sig, "confirmed");
+      const sig = await sendAndConfirm(conn, base64ToBytes(signed));
       // This vault is no longer leverage-managed; drop the tag so a later plain
       // borrow in the same vault closes via repay+withdraw, not an unwind.
       clearLoopManaged();
@@ -423,7 +430,11 @@ function LoopController({
     }
   }
 
+  // Only surface a position here when this vault is leverage-managed. The borrow
+  // and loop surfaces share one NFT per vault, so an on-chain position alone is
+  // not enough: a plain borrow belongs to the Borrow panel, not looping.
   const hasPosition =
+    loopManaged &&
     position != null &&
     (position.collateralAtomic.gtn(0) || position.debtAtomic.gtn(0));
 
@@ -610,6 +621,9 @@ function LoopController({
   );
 }
 
+// Only rendered for a leverage-managed position (see `hasPosition`). A plain
+// borrow shares the same position NFT but belongs to the Borrow panel, so it is
+// filtered out before it reaches this card.
 function OpenPositionCard({
   vault,
   position,
@@ -716,9 +730,9 @@ function OpenPositionCard({
         {submitting ? "Unwinding position…" : "Unwind position"}
       </button>
       <p className="text-[11px] text-white/50">
-        Unwind sells enough {vault.collateralSymbol} to repay the {debtUi.toFixed(2)}{" "}
-        {vault.borrowSymbol} debt in one transaction. No USDC needed in your
-        wallet. Remaining {vault.collateralSymbol} returns to you.
+        This sells enough {vault.collateralSymbol} to repay the{" "}
+        {debtUi.toFixed(2)} {vault.borrowSymbol} debt in one transaction. No USDC
+        needed in your wallet. Remaining {vault.collateralSymbol} returns to you.
       </p>
 
       {state.kind === "error" && (
@@ -812,6 +826,13 @@ function base64ToBytes(b64: string): Uint8Array {
 }
 
 function readableError(err: unknown): string {
+  // sendAndConfirm already decided what happened and phrased it.
+  if (
+    err instanceof SolanaSendError &&
+    (err.kind === "expired" || err.kind === "unknown")
+  ) {
+    return err.message;
+  }
   const raw = err instanceof Error ? err.message : String(err);
   if (/insufficient funds|0x1\b/i.test(raw)) {
     return "Not enough balance to cover this position plus fees.";

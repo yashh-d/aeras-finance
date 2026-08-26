@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 
+import {
+  creditableCollateral,
+  type OndoCatalogWithCollateral,
+} from "@/lib/ondo/collateral";
 import { ONDO_ENV } from "@/lib/ondo/constants";
-import { buildCatalog, collateralAssets, type OndoCatalog } from "@/lib/ondo/markets";
+import { buildCatalog, collateralAssets } from "@/lib/ondo/markets";
 import { ondoContracts, ondoMarkets } from "@/lib/ondo/server";
 
 export const dynamic = "force-dynamic";
@@ -21,10 +25,18 @@ export async function GET() {
       ondoContracts(),
     ]);
 
-    const body: OndoCatalog = {
+    const joined = buildCatalog(markets, contracts);
+    const collateral = collateralAssets(markets);
+
+    const body: OndoCatalogWithCollateral = {
       environment: ONDO_ENV,
-      markets: buildCatalog(markets, contracts),
-      collateral: collateralAssets(markets),
+      markets: joined,
+      collateral,
+      // What Ondo actually credits as margin, joined to the market each asset
+      // is marked against. Discovered from the live token config rather than
+      // hardcoded: Ondo added three collateral assets in August 2026 without
+      // updating their docs, and a fixed list would have refused them.
+      creditable: creditableCollateral(collateral, joined),
     };
     return NextResponse.json(body);
   } catch (err) {

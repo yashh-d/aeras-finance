@@ -20,7 +20,10 @@ import {
 } from "@/lib/jupiter/ultra";
 import type { XStock } from "@/lib/jupiter/xstocks";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
-import type { AccountBalances } from "@/lib/solana/balances";
+import {
+  atomicToUiString,
+  type AccountBalances,
+} from "@/lib/solana/balances";
 
 type QuoteAsset = "USDC" | "SOL";
 type Direction = "buy" | "sell";
@@ -69,6 +72,21 @@ export function SwapForm({
       ? balances?.usdc ?? null
       : balances?.sol ?? null
     : balances?.xstocks[ticker.mint] ?? null;
+  // The exact balance as a lossless string. Max fills THIS: the display
+  // rounding (toFixed) rounds UP for high-decimal mints, so filling it made
+  // Max request more than the wallet holds and fail its own check with
+  // "Need 0.1188, have 0.1188". SOL has no stored atomic figure, so its float
+  // is rendered at full precision instead.
+  const inputBalanceExact = !balances
+    ? null
+    : isBuy
+      ? quoteAsset === "USDC"
+        ? atomicToUiString(balances.usdcAtomic, USDC_DECIMALS)
+        : String(balances.sol)
+      : atomicToUiString(
+          balances.xstocksAtomic[ticker.mint] ?? "0",
+          ticker.decimals,
+        );
   const inputPriceUsd = isBuy ? quotePriceUsd : marketPrice;
 
   const outputSymbol = isBuy ? ticker.symbol : quoteAsset;
@@ -101,10 +119,13 @@ export function SwapForm({
 
   const inputAmount = Number(amountInput);
   const belowMin = !Number.isFinite(inputAmount) || inputAmount < minInputAmount;
+  // Compared in atomic units (toAtomic truncates, matching what the quote
+  // will actually request), so an exact-balance Max always passes.
   const insufficient =
-    inputBalance != null &&
+    inputBalanceExact != null &&
     Number.isFinite(inputAmount) &&
-    inputBalance < inputAmount;
+    BigInt(toAtomic(inputAmount, inputDecimals)) >
+      BigInt(toAtomic(Number(inputBalanceExact), inputDecimals));
 
   async function fetchQuote(): Promise<UltraOrderResponse> {
     const quote = await fetchUltraOrderViaProxy({
@@ -208,11 +229,11 @@ export function SwapForm({
             {inputBalance == null
               ? "..."
               : `${inputBalance.toFixed(inputAmountFmtDigits)} ${inputSymbol}`}
-            {inputBalance != null && inputBalance > 0 && (
+            {inputBalanceExact != null && Number(inputBalanceExact) > 0 && (
               <button
                 type="button"
                 onClick={() => {
-                  setAmountInput(inputBalance.toFixed(inputAmountFmtDigits));
+                  setAmountInput(inputBalanceExact);
                   reset();
                 }}
                 className="ml-1 text-white/60 underline-offset-2 hover:underline"
@@ -258,7 +279,7 @@ export function SwapForm({
         </div>
         <p className="mt-1 text-xs text-white/50">
           {insufficient
-            ? `Insufficient ${inputSymbol}. Need ${inputAmount}, have ${inputBalance?.toFixed(inputAmountFmtDigits)}.`
+            ? `Insufficient ${inputSymbol}. Need ${inputAmount}, have ${inputBalanceExact}.`
             : `Minimum ~${minInputAmount.toFixed(inputAmountFmtDigits)} ${inputSymbol} ($${ULTRA_MIN_USD} gasless minimum).`}
         </p>
       </div>

@@ -32,9 +32,33 @@ interface PledgedCollateral {
   ltvFraction: number;
 }
 
+// One market the account currently owes money in. The summary already reads
+// every venue to total the debt, so it keeps the per-market breakdown rather
+// than discarding it: the repay flow needs to name a specific position, and
+// re-deriving it would repeat the same chain reads.
+export type BorrowPositionRef =
+  | { venue: "jupiter"; vault: XStockBorrowVault; nftId: number }
+  | { venue: "kamino"; position: KaminoPosition };
+
+export interface OpenBorrowPosition {
+  // Stable identity for React keys and selection state.
+  key: string;
+  venueLabel: "Jupiter Lend" | "Kamino";
+  collateralSymbol: string;
+  collateralMint: string;
+  collateralUi: number;
+  // Outstanding debt in the borrow asset, which is USDC on both venues.
+  debtUi: number;
+  debtSymbol: string;
+  ref: BorrowPositionRef;
+}
+
 export interface BorrowSummary {
   // Total USDC drawn across every venue.
   debtUsd: number;
+  // Every market with a non-zero debt, largest first. Empty when nothing is
+  // owed anywhere.
+  positions: OpenBorrowPosition[];
   // Most that could be drawn at max LTV against everything the account can put
   // up: collateral already deposited, xStocks sitting in the Solana wallet, and
   // same-underlying holdings that convert into a vault's collateral mint on
@@ -116,6 +140,7 @@ export function useBorrowSummary({
   equivalents: HeldEquivalent[];
 }): BorrowSummary {
   const [debtUsd, setDebtUsd] = useState(0);
+  const [positions, setPositions] = useState<OpenBorrowPosition[]>([]);
   const [pledged, setPledged] = useState<PledgedCollateral[]>([]);
   const [kaminoPosition, setKaminoPosition] = useState<KaminoPosition | null>(
     null,
@@ -132,6 +157,7 @@ export function useBorrowSummary({
       const connection = getConnection();
       let debt = 0;
       const collateral: PledgedCollateral[] = [];
+      const open: OpenBorrowPosition[] = [];
 
       const jupiter = XSTOCK_BORROW_VAULTS.map(async (vault) => {
         try {
@@ -141,11 +167,24 @@ export function useBorrowSummary({
             connection,
           );
           if (!position) return;
-          debt += fromAtomicBN(position.debtAtomic, vault.borrowDecimals);
+          const debtUi = fromAtomicBN(position.debtAtomic, vault.borrowDecimals);
+          debt += debtUi;
           const amountUi = fromAtomicBN(
             position.collateralAtomic,
             vault.collateralDecimals,
           );
+          if (debtUi > 0) {
+            open.push({
+              key: `jupiter:${vault.vaultId}`,
+              venueLabel: "Jupiter Lend",
+              collateralSymbol: vault.collateralSymbol,
+              collateralMint: vault.collateralMint,
+              collateralUi: amountUi,
+              debtUi,
+              debtSymbol: vault.borrowSymbol,
+              ref: { venue: "jupiter", vault, nftId: position.nftId },
+            });
+          }
           if (amountUi > 0) {
             collateral.push({
               mint: vault.collateralMint,
@@ -165,6 +204,18 @@ export function useBorrowSummary({
           setKaminoPosition(p);
           if (p) {
             debt += p.debtUsdc;
+            if (p.debtUsdc > 0) {
+              open.push({
+                key: `kamino:${p.collateral.reserve}`,
+                venueLabel: "Kamino",
+                collateralSymbol: p.collateral.symbol,
+                collateralMint: p.collateral.collateralMint,
+                collateralUi: p.collateralUi,
+                debtUi: p.debtUsdc,
+                debtSymbol: "USDC",
+                ref: { venue: "kamino", position: p },
+              });
+            }
             if (p.collateralUi > 0) {
               collateral.push({
                 mint: p.collateral.collateralMint,
@@ -181,6 +232,10 @@ export function useBorrowSummary({
       await Promise.all([...jupiter, kamino]);
       if (cancelled) return;
       setDebtUsd(debt);
+      // The venue reads settle concurrently, so sort rather than relying on the
+      // order they happened to finish in.
+      open.sort((a, b) => b.debtUi - a.debtUi);
+      setPositions(open);
       setPledged(collateral);
       setLoading(false);
     })();
@@ -226,6 +281,7 @@ export function useBorrowSummary({
 
   return {
     debtUsd,
+    positions,
     capacityUsd,
     availableUsd: Math.max(0, capacityUsd - debtUsd),
     kaminoPosition,

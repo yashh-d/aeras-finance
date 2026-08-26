@@ -8,29 +8,31 @@ export const dynamic = "force-dynamic";
 // Live net APY and TVL for the curated Monad USDC vaults, from Morpho's indexer.
 // netApy is the compounded rate the depositor earns, rewards included and curator
 // fee deducted, matching what Morpho's own UI shows.
+//
+// The curated vaults are Morpho Vaults V2, which the indexer serves under the
+// `vaultV2s` query (the `vaults` query only covers V1 MetaMorpho, including the
+// near-empty V1 twins of these vaults — see lib/morpho/vaults.ts).
 export interface MorphoVaultMetric {
   address: string;
   // Net supply APY as a decimal (0.05 = 5%). Null if the indexer omits it.
   netApy: number | null;
-  // 7-day average net APY, a steadier figure than the spot rate for a young,
-  // low-TVL vault. Null if unavailable.
-  weeklyNetApy: number | null;
+  // Trailing average net APY, a steadier figure than the spot rate. Null if
+  // unavailable.
+  avgNetApy: number | null;
   // Total assets in the vault, USD.
   tvlUsd: number | null;
 }
 
 interface RawItem {
   address: string;
-  state: {
-    netApy?: number | null;
-    weeklyNetApy?: number | null;
-    totalAssetsUsd?: number | null;
-  } | null;
+  netApy?: number | null;
+  avgNetApy?: number | null;
+  totalAssetsUsd?: number | null;
 }
 
-const QUERY = `query Vaults($addresses: [String!]!, $chainId: Int!) {
-  vaults(first: 50, where: { address_in: $addresses, chainId_in: [$chainId] }) {
-    items { address state { netApy weeklyNetApy totalAssetsUsd } }
+const QUERY = `query Vaults($addresses: [String!], $chainIds: [Int!]) {
+  vaultV2s(first: 50, where: { address_in: $addresses, chainId_in: $chainIds }) {
+    items { address netApy avgNetApy totalAssetsUsd }
   }
 }`;
 
@@ -47,28 +49,28 @@ async function fetchUpstream(): Promise<MorphoVaultMetric[]> {
       query: QUERY,
       variables: {
         addresses: MONAD_USDC_VAULTS.map((v) => v.address),
-        chainId: MONAD_CHAIN_ID,
+        chainIds: [MONAD_CHAIN_ID],
       },
     }),
   });
   if (!res.ok) throw new Error(`Morpho indexer ${res.status}`);
   const json = (await res.json()) as {
     errors?: { message: string }[];
-    data?: { vaults?: { items?: RawItem[] } };
+    data?: { vaultV2s?: { items?: RawItem[] } };
   };
   if (json.errors?.length) {
     throw new Error(`Morpho indexer: ${json.errors[0].message}`);
   }
-  const items = json.data?.vaults?.items ?? [];
+  const items = json.data?.vaultV2s?.items ?? [];
   const byAddress = new Map(items.map((i) => [i.address.toLowerCase(), i]));
   // Return one entry per curated vault so a vault missing upstream still renders
   // (as nulls) rather than silently dropping out of the list.
   return MONAD_USDC_VAULTS.map((v) => {
-    const s = byAddress.get(v.address.toLowerCase())?.state ?? null;
+    const s = byAddress.get(v.address.toLowerCase()) ?? null;
     return {
       address: v.address,
       netApy: s?.netApy ?? null,
-      weeklyNetApy: s?.weeklyNetApy ?? null,
+      avgNetApy: s?.avgNetApy ?? null,
       tvlUsd: s?.totalAssetsUsd ?? null,
     };
   });

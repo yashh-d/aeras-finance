@@ -153,6 +153,67 @@ export function computeHedgeSize(input: HedgeSizeInput): HedgeSize {
   };
 }
 
+export interface OrderSizeInput {
+  // What the user wants the position to be worth, in USD.
+  notionalUsd: string;
+  marketPriceUsd: string;
+  baseIncrement: string;
+  maxPositionBaseSize: string;
+}
+
+export interface OrderSize {
+  size: string;
+  notionalUsd: string;
+  requestedNotionalUsd: string;
+  limitedBy: HedgeSizeLimit;
+}
+
+// Sizing a trade the user entered in dollars.
+//
+// The hedge path sizes from a holding: quantity, price, ratio. A trade has no
+// holding behind it, only an amount someone typed, so this is the same
+// arithmetic entered from the other end. Both round **down** to baseIncrement
+// and both refuse to exceed maxPositionBaseSize, because those are properties
+// of the market rather than of the reason for the order.
+//
+// Rounding down matters differently here than on a hedge. A hedge that rounds
+// up becomes a net short; a trade that rounds up is simply larger than the user
+// asked for, which is still their money committed without being requested.
+export function computeOrderSize(input: OrderSizeInput): OrderSize {
+  const marketPrice = parseDecimal(input.marketPriceUsd);
+  if (marketPrice <= 0n) {
+    throw new Error("Market has no usable price, refusing to size an order");
+  }
+
+  const requested = parseDecimal(input.notionalUsd);
+  const increment = parseDecimal(input.baseIncrement);
+  const maxBaseSize = parseDecimal(input.maxPositionBaseSize);
+
+  let limitedBy: HedgeSizeLimit = "none";
+  let size = floorTo(divide(requested, marketPrice), increment);
+
+  if (maxBaseSize > 0n && size > maxBaseSize) {
+    size = floorTo(maxBaseSize, increment);
+    limitedBy = "market-cap";
+  }
+
+  if (size <= 0n) {
+    return {
+      size: "0",
+      notionalUsd: "0",
+      requestedNotionalUsd: formatDecimal(requested),
+      limitedBy: limitedBy === "market-cap" ? limitedBy : "below-increment",
+    };
+  }
+
+  return {
+    size: formatDecimal(size),
+    notionalUsd: formatDecimal(multiply(size, marketPrice)),
+    requestedNotionalUsd: formatDecimal(requested),
+    limitedBy,
+  };
+}
+
 // Ondo's own ceiling for the account, from GET /v1/perps/max_order_size. A short
 // reads maxAskBaseSize; there is no side parameter on that endpoint. Applied
 // after computeHedgeSize because it depends on live margin rather than on the

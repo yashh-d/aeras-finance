@@ -55,6 +55,14 @@ function merge(
     indexPrice: ticker?.indexPrice ?? "0",
     fundingRate: ticker?.fundingRate ?? null,
     schedule: pair.schedule,
+    // Ondo serves a logo for only 8 of 52 markets and a brand colour for even
+    // fewer, so the UI treats both as optional and falls back to a monogram
+    // badge. See lib/tokens/market-logos.ts.
+    logoUrl: pair.logoUrl,
+    backgroundColour: pair.backgroundColour,
+    priceChangePercent: ticker?.priceChangePercent ?? null,
+    usdVolume: ticker?.usdVolume ?? null,
+    openInterestUsd: ticker?.openInterestUsd ?? null,
   };
 }
 

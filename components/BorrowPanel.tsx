@@ -11,7 +11,7 @@ import {
 
 import { PriceChart } from "@/components/PriceChart";
 import { KaminoBorrowCard } from "@/components/KaminoBorrowCard";
-import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
+import { SOLSCAN_TX_BASE, SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { assetIdentity, xstockByMint } from "@/lib/jupiter/xstocks";
 import { AssetLogo } from "@/components/AssetLogo";
@@ -43,12 +43,16 @@ import {
   MarketStatGrid,
   type BorrowMode,
 } from "@/components/BorrowMarketDetail";
-import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
+import { fundRepayUsdc, repayFundingSources } from "@/lib/borrow/fund-repay";
+import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
+import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { useSendSolanaTxBase64, useSignSolanaTxBase64 } from "@/lib/privy/sign";
 import {
   atomicToUiString,
   getConnection,
   type AccountBalances,
 } from "@/lib/solana/balances";
+import { sendAndConfirm } from "@/lib/solana/send-confirm";
 import { awaitTokenBalance } from "@/lib/solana/await-balance";
 import {
   floorToDisplay,
@@ -72,6 +76,7 @@ import {
   type ConversionPreview,
 } from "@/lib/trustware/use-preview";
 import { useEquivalentBalances } from "@/lib/trustware/use-equivalents";
+import { RepayPanel } from "@/components/RepayPanel";
 import BN from "bn.js";
 
 // Matches the loop surface so a borrow-side unwind sizes its swap identically.
@@ -139,6 +144,10 @@ export function BorrowPanel({
   // lazily on expand rather than once per market up front.
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
 
+  // Repay opens under the headline rather than inside a market card, since the
+  // position it targets is chosen in the panel itself.
+  const [repayOpen, setRepayOpen] = useState(false);
+
   // On a dark surface the panel is already inside a card, so its sections drop
   // their own chrome rather than nesting one card inside another.
   const sectionClass = dark
@@ -153,8 +162,26 @@ export function BorrowPanel({
         availableUsd={summary.availableUsd}
         loading={summary.loading}
         onAddFunds={onAddFunds}
+        onRepay={
+          summary.positions.length > 0
+            ? () => setRepayOpen((open) => !open)
+            : undefined
+        }
         dark={dark}
       />
+
+      {repayOpen && (
+        <RepayPanel
+          positions={summary.positions}
+          walletUsdc={balances?.usdc ?? 0}
+          solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+          sol={balances?.sol ?? 0}
+          solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
+          walletAddress={walletAddress}
+          onSettled={refreshAll}
+          onClose={() => setRepayOpen(false)}
+        />
+      )}
 
       <div className={sectionClass}>
         <div className="space-y-1.5">
@@ -191,6 +218,9 @@ export function BorrowPanel({
                       vault={vault}
                       walletAddress={walletAddress}
                       walletUsdc={balances?.usdc ?? 0}
+                      solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+                      solBalance={balances?.sol ?? 0}
+                      solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
                       collateralBalance={
                         balances?.xstocks[vault.collateralMint] ?? 0
                       }
@@ -264,6 +294,7 @@ function BorrowSummaryHero({
   availableUsd,
   loading,
   onAddFunds,
+  onRepay,
   dark,
 }: {
   debtUsd: number;
@@ -271,6 +302,9 @@ function BorrowSummaryHero({
   availableUsd: number;
   loading: boolean;
   onAddFunds?: () => void;
+  // Absent when nothing is owed, so the button only appears next to Add funds
+  // once there is a loan to pay down.
+  onRepay?: () => void;
   dark?: boolean;
 }) {
   const utilisationPct =
@@ -312,14 +346,31 @@ function BorrowSummaryHero({
         </div>
       </div>
 
-      {onAddFunds && (
-        <button
-          type="button"
-          onClick={onAddFunds}
-          className="rounded-full bg-aeras-blue px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium"
-        >
-          Add funds
-        </button>
+      {(onAddFunds || onRepay) && (
+        <div className="flex flex-wrap items-center gap-3">
+          {onAddFunds && (
+            <button
+              type="button"
+              onClick={onAddFunds}
+              className="rounded-full bg-aeras-blue px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium"
+            >
+              Add funds
+            </button>
+          )}
+          {onRepay && (
+            <button
+              type="button"
+              onClick={onRepay}
+              className={`rounded-full px-6 py-2.5 text-sm font-medium transition-colors ${
+                dark
+                  ? "border border-white/15 bg-white/5 text-white hover:border-white/25 hover:bg-white/10"
+                  : "border border-aeras-border bg-white text-aeras-900 hover:border-aeras-300"
+              }`}
+            >
+              Repay
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -449,6 +500,12 @@ interface VaultCardProps {
   // Wallet USDC, used to decide whether a close can repay directly from the
   // wallet (returning the stock) or would need the user to sell collateral.
   walletUsdc: number;
+  // Exact atomic Solana USDC, so a cross-chain close sizes its Monad funding
+  // leg against the real figure rather than a display float.
+  solanaUsdcAtomic: string;
+  // SOL balance and price: spare SOL swaps into USDC as a close-repay source.
+  solBalance: number;
+  solPriceUsd: number | null;
   collateralBalance: number;
   // Exact base-unit balance as a decimal string. Used to defeat float rounding
   // in Max/submit so we never request more than the wallet actually holds.
@@ -482,6 +539,9 @@ function VaultCard({
   vault,
   walletAddress,
   walletUsdc,
+  solanaUsdcAtomic,
+  solBalance,
+  solPriceUsd,
   collateralBalance,
   collateralBalanceAtomic,
   heldEquivalents,
@@ -499,7 +559,20 @@ function VaultCard({
   const [closingState, setClosingState] = useState<FormState>({ kind: "idle" });
 
   const signTxBase64 = useSignSolanaTxBase64();
+  const sendSolanaTx = useSendSolanaTxBase64();
   const conversion = useConversionRunner();
+  // A close can fund its repay from the account's other balances (Monad USDC
+  // through Trustware, spare SOL through a Jupiter swap) when the Solana
+  // wallet is short, mirroring the headline Repay panel.
+  const evm = useEmbeddedEvmWallet();
+  const monad = useMonadBalances(evm.address);
+  const fundableUsdc =
+    repayFundingSources({
+      solanaUsdc: 0,
+      sol: solBalance,
+      solPriceUsd,
+      monadUsdcAtomic: monad.balances?.usdcAtomic ?? "0",
+    }).total;
 
   // Tracked nftId — mirrors localStorage but mutable via state so React re-renders
   // when auto-recovery rebinds an existing on-chain position NFT.
@@ -809,11 +882,7 @@ function VaultCard({
       });
       const signed = await signTxBase64(base64Tx);
       const signedBytes = base64ToBytes(signed);
-      const sig = await conn.sendRawTransaction(signedBytes, {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      await conn.confirmTransaction(sig, "confirmed");
+      const sig = await sendAndConfirm(conn, signedBytes);
       // Persist nftId for future operations on this vault.
       const finalNftId = nftId ?? storedNftId;
       if (finalNftId) persistNftId(finalNftId);
@@ -841,6 +910,36 @@ function VaultCard({
     if (!position) return;
     setClosingState({ kind: "submitting" });
     try {
+      // A wallet-funded repay can draw on the Monad balance: bring the Solana
+      // wallet up to the payoff (plus the interest buffer the gate below uses)
+      // before building the close transaction. The sell path never needs this;
+      // it pays the debt out of the collateral.
+      if (method === "repay") {
+        const debtUi = fromAtomicBN(position.debtAtomic, vault.borrowDecimals);
+        const walletAtLeastAtomic = BigInt(Math.ceil(debtUi * 1.005 * 1e6));
+        if (walletAtLeastAtomic > BigInt(solanaUsdcAtomic || "0")) {
+          await fundRepayUsdc({
+            walletAtLeastAtomic,
+            solanaUsdcAtomic,
+            sol: solBalance,
+            solPriceUsd,
+            monadUsdcAtomic: monad.balances?.usdcAtomic ?? "0",
+            monBalanceAtomic: monad.balances?.monAtomic ?? "0",
+            evm: evm.address
+              ? {
+                  address: evm.address,
+                  switchChain: evm.switchChain,
+                  getProvider: evm.getProvider,
+                }
+              : undefined,
+            solana: { address: walletAddress, signAndSendBase64: sendSolanaTx },
+            onProgress: (p) =>
+              setClosingState({ kind: "converting", message: p.message }),
+          });
+          setClosingState({ kind: "submitting" });
+        }
+      }
+
       const conn = getConnection();
       let base64Tx: string;
       if (method === "sell") {
@@ -870,11 +969,7 @@ function VaultCard({
       }
       const signed = await signTxBase64(base64Tx);
       const signedBytes = base64ToBytes(signed);
-      const sig = await conn.sendRawTransaction(signedBytes, {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      await conn.confirmTransaction(sig, "confirmed");
+      const sig = await sendAndConfirm(conn, signedBytes);
       // Position is zeroed but the on-chain position-NFT account stays alive
       // (Jupiter Lend has no close-position instruction). Keep the nftId in
       // localStorage so future borrows in this vault reuse it instead of
@@ -935,6 +1030,7 @@ function VaultCard({
           vault={vault}
           position={position}
           walletUsdc={walletUsdc}
+          fundableUsdc={fundableUsdc}
           state={closingState}
           onClose={handleClose}
           onReset={() => setClosingState({ kind: "idle" })}
@@ -1564,6 +1660,7 @@ function ClosePositionControl({
   vault,
   position,
   walletUsdc,
+  fundableUsdc,
   state,
   onClose,
   onReset,
@@ -1571,17 +1668,21 @@ function ClosePositionControl({
   vault: XStockBorrowVault;
   position: UserPositionState;
   walletUsdc: number;
+  // What the Monad wallet can contribute after conversion costs; the close
+  // bridges it in before repaying when the Solana wallet is short.
+  fundableUsdc: number;
   state: FormState;
   onClose: (method: "repay" | "sell") => void;
   onReset: () => void;
 }) {
   const debtUi = fromAtomicBN(position.debtAtomic, vault.borrowDecimals);
   const colUi = fromAtomicBN(position.collateralAtomic, vault.collateralDecimals);
-  const submitting = state.kind === "submitting";
+  const submitting = state.kind === "submitting" || state.kind === "converting";
 
   // A small buffer over the displayed debt covers interest that accrues between
   // this render and settlement, so we don't offer a repay the tx would reject.
-  const canRepayFromWallet = walletUsdc >= debtUi * 1.005;
+  const canRepayDirect = walletUsdc >= debtUi * 1.005;
+  const canRepayFromWallet = walletUsdc + fundableUsdc >= debtUi * 1.005;
 
   // Selling collateral disposes of the underlying stock, so it is never the
   // default and never automatic. The user opts in explicitly (this arms the
@@ -1597,20 +1698,27 @@ function ClosePositionControl({
         className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50"
       >
         {submitting
-          ? "Closing position…"
+          ? state.kind === "converting"
+            ? state.message
+            : "Closing position…"
           : `Close · repay ${debtUi.toFixed(4)} ${vault.borrowSymbol} + withdraw ${colUi.toFixed(4)} ${vault.collateralSymbol}`}
       </button>
-      {canRepayFromWallet ? (
+      {canRepayDirect ? (
         <p className="text-[11px] text-white/50">
           Repays the loan from your wallet {vault.borrowSymbol} and returns your{" "}
           {vault.collateralSymbol} in full.
         </p>
+      ) : canRepayFromWallet ? (
+        // Funded from the other balances automatically; the button's progress
+        // copy narrates the legs, so no standing explainer is needed.
+        <p className="text-[11px] text-white/50">Takes a few minutes.</p>
       ) : (
         <div className="space-y-2">
           <p className="text-[11px] text-white/50">
-            Needs ≥ {debtUi.toFixed(4)} {vault.borrowSymbol} in your wallet to
-            repay and keep your {vault.collateralSymbol}. You have{" "}
-            {walletUsdc.toFixed(2)} {vault.borrowSymbol}.
+            Needs ≥ {debtUi.toFixed(4)} {vault.borrowSymbol} across your
+            balances to repay and keep your {vault.collateralSymbol}. Your
+            USDC, SOL, and Monad USDC together cover{" "}
+            {(walletUsdc + fundableUsdc).toFixed(2)} {vault.borrowSymbol}.
           </p>
           {!sellArmed ? (
             <button

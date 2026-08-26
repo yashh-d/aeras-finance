@@ -5,6 +5,7 @@ import { useCallback } from "react";
 import { useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
 
 import { getConnection } from "@/lib/solana/balances";
+import { sendAndConfirm } from "@/lib/solana/send-confirm";
 
 function base64ToBytes(b64: string): Uint8Array {
   const binary = atob(b64);
@@ -58,17 +59,11 @@ export function useSendSolanaTxBase64() {
     async function sendTxBase64(b64Tx: string): Promise<string> {
       const signed = await signTxBase64(b64Tx);
       const conn = getConnection();
-      const signature = await conn.sendRawTransaction(base64ToBytes(signed), {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      const { value } = await conn.confirmTransaction(signature, "confirmed");
-      if (value.err) {
-        throw new Error(
-          `The conversion transaction failed on Solana (${signature}).`,
-        );
-      }
-      return signature;
+      // No confirmation window is passed: Trustware built this transaction and
+      // chose its blockhash, so sendAndConfirm reads expiry off the transaction
+      // itself. It throws on both on-chain failure and expiry, which is what
+      // the note above wants -- a hash only comes back if it really landed.
+      return sendAndConfirm(conn, base64ToBytes(signed));
     },
     [signTxBase64],
   );

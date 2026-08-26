@@ -30,6 +30,7 @@ import {
   atomicToUiString,
   getConnection,
 } from "@/lib/solana/balances";
+import { sendAndConfirm } from "@/lib/solana/send-confirm";
 
 // USDC is the only borrow asset in this market for v1.
 const BORROW_SYMBOL = "USDC";
@@ -159,12 +160,7 @@ export function KaminoBorrowCard({
       const conn = getConnection();
       const signed = await signTxBase64(base64Tx);
       const bytes = base64ToBytes(signed);
-      const sig = await conn.sendRawTransaction(bytes, {
-        skipPreflight: false,
-        maxRetries: 3,
-      });
-      await conn.confirmTransaction(sig, "confirmed");
-      return sig;
+      return sendAndConfirm(conn, bytes);
     },
     [signTxBase64],
   );

@@ -1,7 +1,15 @@
 "use client";
 
-// Hedge surface. A user long a tokenized stock opens an offsetting short on
-// Lighter without selling the stock.
+// Hedge surface. A user long a tokenized stock opens an offsetting short
+// without selling the stock.
+//
+// Two venues, switched at the top. Lighter is the default and is the body of
+// this file. Ondo lives in components/OndoHedgeSection.tsx rather than behind a
+// shared abstraction, because the venues differ in ways worth showing rather
+// than hiding: Lighter takes USDC margin and has its own candles, Ondo accepts
+// the tokenized stock itself as margin and carries a second way a hedge ends
+// (collateral auto-exchange, which is not liquidation). A common component
+// would have to suppress all of that to fit both.
 //
 // The panel is organized around one row per holding, because the decision the
 // user is making is per holding: this position, how much of it, offset or not.
@@ -23,7 +31,13 @@
 import { useMemo, useState } from "react";
 
 import { LighterChart } from "@/components/LighterChart";
+import { OndoMarketsCard } from "@/components/OndoMarketsCard";
+import { AssetLogo } from "@/components/AssetLogo";
+import { MarketLogo } from "@/components/MarketLogo";
+import { assetIdentity } from "@/lib/jupiter/xstocks";
+import { OndoHedgeSection } from "@/components/OndoHedgeSection";
 import { Sparkline } from "@/components/Sparkline";
+import { useOndoHedge } from "@/lib/ondo/use-ondo-hedge";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { AccountBalances } from "@/lib/solana/balances";
@@ -64,10 +78,34 @@ const PANEL = "rounded-xl border border-white/[0.07] bg-[#111415]";
 const LABEL =
   "text-[10px] font-medium uppercase tracking-[0.14em] text-white/35";
 
+type Venue = "lighter" | "ondo";
+
+// Lighter first because it is the venue that is fully wired: permissionless,
+// zero fees, and margin funded natively from Solana. Ondo is the one that
+// accepts the stock itself as collateral, which costs an Ethereum leg.
+const VENUES: { id: Venue; label: string }[] = [
+  { id: "lighter", label: "Lighter" },
+  { id: "ondo", label: "Ondo" },
+];
+
 export function HedgePanel({ balances, prices, scan }: Props) {
   const wallet = useEmbeddedEvmWallet();
   const hedge = useHedge({ l1Address: wallet.address, balances, prices });
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+
+  // Ondo is the default venue: it is the one that can post the held stock as
+  // its own margin, which is the reason to hedge here rather than sell.
+  const [venue, setVenue] = useState<Venue>("ondo");
+
+  // Both hooks run, because hooks cannot be called conditionally, but the Ondo
+  // one no-ops while another venue is selected rather than holding a session
+  // open and polling a catalog nobody is looking at.
+  const ondo = useOndoHedge({
+    evmAddress: wallet.address,
+    balances,
+    prices,
+    enabled: venue === "ondo",
+  });
 
   const margin = useMarginFunding({
     balances,
@@ -183,10 +221,36 @@ export function HedgePanel({ balances, prices, scan }: Props) {
   return (
     <div className="rounded-2xl border border-white/[0.07] bg-[#0a0c0d] p-4 text-white lg:p-5">
       <TopBar
-        refreshing={hedge.refreshing}
-        onRefresh={() => void hedge.refresh()}
+        venue={venue}
+        onVenue={setVenue}
+        refreshing={venue === "ondo" ? ondo.refreshing : hedge.refreshing}
+        onRefresh={() =>
+          void (venue === "ondo" ? ondo.refresh() : hedge.refresh())
+        }
       />
 
+      {venue === "ondo" ? (
+        <div className="mt-3 space-y-3">
+          <OndoMarketsCard />
+          <OndoHedgeSection hedge={ondo} />
+        </div>
+      ) : (
+        // Called, not rendered as <LighterBody />. A function declared inside a
+        // component is a new function identity on every render, so React would
+        // treat it as a different component type each time and remount the
+        // whole subtree, resetting the open/ratio state inside every row. A
+        // plain call returns the same JSX with no component boundary at all.
+        LighterBody()
+      )}
+    </div>
+  );
+
+  // The Lighter surface, unchanged. Kept as a closure rather than lifted to its
+  // own component so the venue switch stays a small change to this file and
+  // nothing about the existing layout, state or handlers moves.
+  function LighterBody() {
+    return (
+      <>
       <StatStrip
         exposureUsd={hedge.totals.exposureUsd}
         shortNotionalUsd={hedge.totals.shortNotionalUsd}
@@ -285,14 +349,19 @@ export function HedgePanel({ balances, prices, scan }: Props) {
 
         <Disclosure />
       </div>
-    </div>
-  );
+      </>
+    );
+  }
 }
 
 function TopBar({
+  venue,
+  onVenue,
   refreshing,
   onRefresh,
 }: {
+  venue: Venue;
+  onVenue: (v: Venue) => void;
   refreshing: boolean;
   onRefresh: () => void;
 }) {
@@ -300,18 +369,33 @@ function TopBar({
     <div className="flex items-center justify-between gap-4 border-b border-white/[0.07] pb-3">
       <div className="flex items-baseline gap-3">
         <span className="text-sm font-medium tracking-tight text-white">Hedge</span>
-        <span className="text-xs text-white/35">
-          Offset a holding without selling it
-        </span>
       </div>
-      <button
-        type="button"
-        onClick={onRefresh}
-        disabled={refreshing}
-        className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-white/55 transition-colors hover:border-white/20 hover:text-white disabled:opacity-40"
-      >
-        {refreshing ? "Refreshing" : "Refresh"}
-      </button>
+      <div className="flex items-center gap-2">
+        <div className="flex items-center rounded-lg border border-white/10 p-0.5">
+          {VENUES.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              onClick={() => onVenue(v.id)}
+              className={`rounded-[6px] px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                venue === v.id
+                  ? "bg-white/10 text-white"
+                  : "text-white/45 hover:text-white/70"
+              }`}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={refreshing}
+          className="rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-white/55 transition-colors hover:border-white/20 hover:text-white disabled:opacity-40"
+        >
+          {refreshing ? "Refreshing" : "Refresh"}
+        </button>
+      </div>
     </div>
   );
 }
@@ -601,17 +685,23 @@ function HedgeRow({
         <button
           type="button"
           onClick={onSelect}
-          className="col-span-2 text-left lg:col-span-3"
+          className="col-span-2 flex items-center gap-2.5 text-left lg:col-span-3"
         >
-          <div
-            className={`text-sm font-medium transition-colors ${
-              selected ? "text-white" : "text-white/80 hover:text-white"
-            }`}
-          >
-            {holding.xstockSymbol}
-          </div>
-          <div className="mt-0.5 font-mono text-[11px] tabular-nums text-white/35">
-            {trim(holding.quantity)} tokens
+          <AssetLogo
+            xstock={assetIdentity(holding.mint, holding.xstockSymbol)}
+            size={28}
+          />
+          <div className="min-w-0">
+            <div
+              className={`truncate text-sm font-medium transition-colors ${
+                selected ? "text-white" : "text-white/80 hover:text-white"
+              }`}
+            >
+              {holding.xstockSymbol}
+            </div>
+            <div className="mt-0.5 font-mono text-[11px] tabular-nums text-white/35">
+              {trim(holding.quantity)} tokens
+            </div>
           </div>
         </button>
 
@@ -624,6 +714,7 @@ function HedgeRow({
         </div>
 
         <div className="flex items-center gap-2 lg:col-span-2">
+          <MarketLogo market={route.market} size={18} />
           <div className="min-w-0">
             <div className="text-xs text-white/55">{route.market}</div>
             <div className="mt-0.5 font-mono text-[11px] tabular-nums text-white/30">

@@ -116,6 +116,23 @@ async function buildViaKtx(
   return payload.transaction;
 }
 
+// Repay part of the debt, leaving the rest outstanding and the collateral
+// deposited. Deliberately unpadded: REPAY_BUFFER exists so a full close still
+// covers interest that accrues between the read and the signature, and Kamino
+// caps that overshoot at the real debt. Applying it to a partial repay would
+// take more from the wallet than the user asked for, with nothing to cap it.
+export async function buildKaminoPartialRepayTx(
+  walletAddress: string,
+  amountUsdc: number,
+): Promise<string> {
+  return buildViaKtx(
+    "repay",
+    walletAddress,
+    KAMINO_USDC_BORROW.reserve,
+    String(amountUsdc),
+  );
+}
+
 export async function buildKaminoRepayTx(
   walletAddress: string,
   debtUsdc: number,
