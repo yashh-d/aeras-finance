@@ -171,6 +171,18 @@ export function SwapForm({
       if (result.status !== "Success" || !result.signature) {
         throw new Error(result.error ?? "Swap failed");
       }
+      // Clear the field before the refreshed balances land.
+      //
+      // The amount stays whatever was typed, and a moment later the new
+      // balances arrive lower, so `insufficient` flips true and a *successful*
+      // sell ended with "Not enough TSLAx. You have 0.0000." under it. Selling
+      // the whole position hit this every time: the field still held the size
+      // that had just been sold. The order is finished, so the amount is spent
+      // input, not pending input.
+      //
+      // Deliberately not folded into reset(): that runs on every keystroke and
+      // on Max, where clearing the field would make it impossible to type.
+      setAmountInput("");
       setStatus({ kind: "done", signature: result.signature });
       onBalanceChange();
     } catch (err) {
