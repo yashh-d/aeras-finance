@@ -123,12 +123,6 @@ export function LoopingCard({
         </span>
       </div>
 
-      <p className="text-xs text-white/50">
-        Borrow USDC against your tokenized stock, buy more of the same stock, and
-        deposit it as collateral. One transaction multiplies your exposure. Your
-        liquidation price rises with leverage.
-      </p>
-
       {eligible.length === 0 ? (
         <p className="rounded-xl border border-aeras-blue/30 bg-aeras-blue/15 px-4 py-3 text-sm text-white/60">
           Buy{" "}

@@ -188,7 +188,14 @@ export function PriceChart({
           </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={candles} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
+            {/* 2px on the right so the last point is not clipped.
+                Both axes are hidden, so at right:0 the series ends exactly on
+                the SVG boundary and the 1.25px stroke centred there loses its
+                outer half — measured at 0.63px. It showed up once the Markets
+                chart lost its card padding and started running flush to the
+                column edge. 2px contains the overhang and reads as flush; 8px
+                left a visible gap. */}
+            <AreaChart data={candles} margin={{ top: 4, right: 2, bottom: 0, left: 0 }}>
               <defs>
                 <linearGradient id={fillId} x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stopColor={stroke} stopOpacity={0.18} />
