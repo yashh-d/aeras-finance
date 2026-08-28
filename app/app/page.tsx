@@ -851,7 +851,8 @@ const GROUP_PREVIEW_ROWS = 5;
 const MK_HOLDINGS = "hidden w-24 shrink-0 text-right lg:block";
 const MK_PRICE = "w-24 shrink-0 text-right";
 const MK_SPARK = "hidden w-24 shrink-0 md:block";
-const MK_ACTION = "w-[74px] shrink-0 flex justify-end";
+// Sized for a chevron alone now, not the "Trade" pill it used to hold.
+const MK_ACTION = "w-8 shrink-0 flex justify-end";
 
 function CategoryPill({
   label,
@@ -974,15 +975,17 @@ function MarketsRow({
       <div className={MK_SPARK}>
         <RowSparkline values={sparkline} strokeClassName={sparkStroke} />
       </div>
+      {/* Just the chevron. "Trade" was a pill sitting in a row that is itself
+          the button, so it read as the thing to click when clicking anywhere
+          did the same job. The chevron stays because it is the only signal that
+          the row opens rather than navigating, which is what the Borrow rows
+          use too. */}
       <div className={MK_ACTION}>
-        <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-white/10 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white transition-colors group-hover:border-white/25">
-          Trade
-          <ChevronDown
-            className={`size-3.5 text-white/50 transition-transform ${
-              expanded ? "rotate-180" : ""
-            }`}
-          />
-        </span>
+        <ChevronDown
+          className={`size-4 text-white/40 transition-transform group-hover:text-white/70 ${
+            expanded ? "rotate-180" : ""
+          }`}
+        />
       </div>
     </button>
   );

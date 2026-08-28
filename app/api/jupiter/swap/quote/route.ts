@@ -33,6 +33,23 @@ export async function GET(request: Request) {
   url.searchParams.set("amount", amount);
   url.searchParams.set("slippageBps", slippageBps);
 
+  // Account budget for the route. Only the looping path sends this: a plain
+  // swap owns the whole transaction and should route freely, but a loop packs
+  // the swap in beside a flashloan and a vault operate, and Solana locks at
+  // most 64 accounts per transaction. Jupiter treats it as a rough estimate
+  // rather than a hard cap, so the caller still counts the compiled message.
+  const maxAccounts = searchParams.get("maxAccounts");
+  if (maxAccounts) {
+    const n = Number(maxAccounts);
+    if (!Number.isInteger(n) || n < 1 || n > 64) {
+      return NextResponse.json(
+        { error: "maxAccounts must be an integer between 1 and 64" },
+        { status: 400 },
+      );
+    }
+    url.searchParams.set("maxAccounts", String(n));
+  }
+
   const res = await fetch(url.toString(), { cache: "no-store" });
   const body = await res.json();
   if (!res.ok) {

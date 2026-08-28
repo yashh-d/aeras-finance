@@ -32,11 +32,14 @@
   --color-aeras-hero-from: #15181a;
   --color-aeras-hero-to: #222529;
   --color-aeras-positive: #119b62;
-  /* Repay. Its own colour rather than `positive`, which is reserved for gains
-     and confirmations: paying down a loan is neither, and it sits beside the
-     blue Add funds where a green read as "this is the good outcome". */
-  --color-aeras-purple: #6d4aff;
-  --color-aeras-purple-medium: #5c3ae0;
+  /* Repay. Not `positive`, which is reserved for gains and confirmations, and
+     paying down a loan is neither. A soft blue rather than a solid one: it sits
+     beside the blue Add funds, and at this weight it stays legible as an action
+     without competing with the primary one. The dark navy label carries the
+     contrast, since white on a tint this light is unreadable. */
+  --color-aeras-repay: #aac3f7;
+  --color-aeras-repay-medium: #93b2f2;
+  --color-aeras-repay-ink: #16315e;
   --color-aeras-negative: #d93232;
   --color-aeras-warning: #c47b00;
   --color-sidebar-ring: var(--sidebar-ring);
@@ -157,4 +160,139 @@
   html {
     @apply font-sans;
   }
+}
+/* Capsule range input: a thick rounded track, blue up to the thumb, and a white
+   pill thumb. Replaces the native `accent-color` slider, which colours the thumb
+   and the filled track together and gives no control over the shape of either.
+   Shared rather than per-panel, because the app has eight of these.
+
+   The fill is painted with a gradient on the input itself. That is not a
+   stylistic choice: there is no cross-browser pseudo-element for "the track
+   before the thumb" — Firefox has ::-moz-range-progress, WebKit has nothing —
+   and a gradient is the one approach that renders identically in both.
+
+   The component sets --range-progress as a UNITLESS fraction (0 to 1). It is not
+   a percentage because the fill edge has to track the thumb's CENTRE, and the
+   thumb's centre only travels between half a thumb-width from each end. Feeding
+   a raw percentage straight into the gradient leaves the colour boundary drifting
+   up to half a thumb away from the thumb it is supposed to meet, which is most
+   visible at the two ends where it matters most. */
+.aeras-range {
+  /* A circle, so width and height move together. The fill maths below reads
+     these, so the boundary keeps meeting the thumb's centre at any size. */
+  --range-thumb-w: 1.75rem;
+  --range-thumb-h: 1.75rem;
+  --range-track-h: 1.875rem;
+
+  /* Polished chrome. The band structure is what sells it: bright at the crown,
+     a fast light-to-dark crossover just above the middle where a curved metal
+     surface flips from catching the sky to catching the ground, then a second
+     bounce at the base. A flat grey or a single smooth gradient reads as
+     plastic, because real chrome is mostly a reflection of its surroundings
+     rather than a colour of its own. */
+  --range-thumb-face: linear-gradient(
+    180deg,
+    #ffffff 0%,
+    #eef1f4 20%,
+    #c2c8d0 44%,
+    #949ba4 52%,
+    #b9c0c8 60%,
+    #e6eaee 82%,
+    #fbfcfd 100%
+  );
+  /* Rim and interior lighting, kept out of `border` so the thumb's box stays
+     exactly --range-thumb-w wide and the fill maths stays honest. */
+  --range-thumb-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.95),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.22);
+  /* Where the thumb's centre actually is, in track coordinates. */
+  --range-fill: calc(
+    (var(--range-thumb-w) / 2) +
+      var(--range-progress, 0) * (100% - var(--range-thumb-w))
+  );
+
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: var(--range-track-h);
+  border-radius: 9999px;
+  outline: none;
+  cursor: pointer;
+  /* #2973ff is --color-aeras-blue. It cannot be referenced as a variable here:
+     the palette lives in `@theme inline`, which inlines its values into the
+     utilities it generates rather than emitting custom properties on :root. */
+  background: linear-gradient(
+    to right,
+    #2973ff 0 var(--range-fill),
+    rgba(255, 255, 255, 0.08) var(--range-fill) 100%
+  );
+}
+
+.aeras-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.aeras-range::-webkit-slider-runnable-track {
+  height: var(--range-track-h);
+  background: transparent;
+  border-radius: 9999px;
+}
+
+.aeras-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--range-thumb-w);
+  height: var(--range-thumb-h);
+  /* WebKit positions the thumb from the top of the runnable track, so it has to
+     be centred by hand. Firefox centres its own. */
+  margin-top: calc((var(--range-track-h) - var(--range-thumb-h)) / 2);
+  border: none;
+  border-radius: 50%;
+  background: var(--range-thumb-face);
+  box-shadow: var(--range-thumb-shadow);
+  transition: filter 100ms ease;
+}
+
+.aeras-range:hover::-webkit-slider-thumb {
+  filter: brightness(1.06);
+}
+.aeras-range:active::-webkit-slider-thumb {
+  filter: brightness(0.94);
+}
+
+.aeras-range::-moz-range-track {
+  height: var(--range-track-h);
+  background: transparent;
+  border-radius: 9999px;
+}
+
+.aeras-range::-moz-range-thumb {
+  width: var(--range-thumb-w);
+  height: var(--range-thumb-h);
+  border: none;
+  border-radius: 50%;
+  background: var(--range-thumb-face);
+  box-shadow: var(--range-thumb-shadow);
+  transition: filter 100ms ease;
+}
+
+.aeras-range:hover::-moz-range-thumb {
+  filter: brightness(1.06);
+}
+.aeras-range:active::-moz-range-thumb {
+  filter: brightness(0.94);
+}
+
+/* Keyboard focus only. The thumb is already obvious under a mouse, and a ring
+   on every click reads as a rendering fault. */
+/* The ring is appended to the thumb's own shadow rather than replacing it:
+   box-shadow is one property, so setting it here alone would strip the chrome's
+   rim and interior lighting and flatten the thumb to a plain disc on focus. */
+.aeras-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: var(--range-thumb-shadow), 0 0 0 3px rgba(41, 115, 255, 0.55);
+}
+.aeras-range:focus-visible::-moz-range-thumb {
+  box-shadow: var(--range-thumb-shadow), 0 0 0 3px rgba(41, 115, 255, 0.55);
 }

@@ -2,9 +2,9 @@
 //
 // Sibling of native.ts, and it exists for the same reason: the balance scan
 // covers 129 chains and the answer has to be narrowed to what the user can
-// actually act on. Only Ethereum and BNB Chain are read, because those are the
-// two chains in Privy's supportedChains, and execute.ts fails loudly rather than
-// signing on an undeclared chain.
+// actually act on. Only Ethereum, BNB Chain and Base are read, because those
+// are the EVM chains in Privy's supportedChains that carry USDC, and execute.ts
+// fails loudly rather than signing on an undeclared chain.
 //
 // Matching is by contract address, never by symbol. The scan surfaces spam
 // tokens, and a token calling itself USDC is not one; paying a bridge from the
@@ -15,6 +15,7 @@
 // Trustware's own token registry on 2026-08-16. Assuming 6 everywhere would
 // misread a BNB balance by a factor of a trillion.
 
+import { BASE_USDC } from "./base";
 import type { TrustwareBalancesResponse } from "./types";
 
 export interface StableHolding {
@@ -42,6 +43,15 @@ const USDC_BY_CHAIN: Record<string, StableEntry> = {
     chainLabel: "BNB Chain",
     contract: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
     decimals: 18,
+  },
+  // Base is here for USDC and nothing else. It hosts no venue and holds no
+  // position; it is read because the wallet can move this balance to Solana
+  // (lib/trustware/base.ts), which is the condition for listing a chain at all.
+  // Address taken from lib/trustware/base.ts rather than repeated by hand.
+  "8453": {
+    chainLabel: "Base",
+    contract: BASE_USDC.address,
+    decimals: BASE_USDC.decimals,
   },
 };
 

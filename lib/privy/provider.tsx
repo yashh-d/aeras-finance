@@ -2,7 +2,7 @@
 
 import { PrivyProvider } from "@privy-io/react-auth";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
-import { bsc, mainnet, monad } from "viem/chains";
+import { base, bsc, mainnet, monad } from "viem/chains";
 import { useMemo, type ReactNode } from "react";
 
 export function PrivyAuthProvider({ children }: { children: ReactNode }) {
@@ -92,10 +92,14 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
         // without declaring BNB Chain here the BSC half of the Trustware
         // equivalence registry could not be signed for. Monad is declared so the
         // embedded wallet can sign the ERC-4626 deposit/withdraw for the
-        // Morpho-on-Monad earn venue. Ethereum stays default because it carries
-        // the deeper tokenized-stock liquidity; the Morpho flow switches the
-        // wallet to Monad itself before signing.
-        supportedChains: [mainnet, bsc, monad],
+        // Morpho-on-Monad earn venue. Base is declared so the embedded wallet
+        // can sign the return leg in lib/trustware/base.ts, which is the only
+        // reason Base is offered at all: it holds no position and hosts no
+        // venue, so without a signable way off it, USDC sent there would be
+        // stuck. Ethereum stays default because it carries the deeper
+        // tokenized-stock liquidity; both the Morpho and Base flows switch the
+        // wallet themselves before signing.
+        supportedChains: [mainnet, bsc, monad, base],
         defaultChain: mainnet,
         solana: { rpcs: solanaRpcs },
       }}

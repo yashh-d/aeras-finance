@@ -7,7 +7,7 @@ import {
   useFundWallet as useFundEvmWallet,
 } from "@privy-io/react-auth";
 import { useFundWallet } from "@privy-io/react-auth/solana";
-import { bsc, mainnet } from "viem/chains";
+import { base, bsc, mainnet } from "viem/chains";
 import { SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { AssetLogo } from "@/components/AssetLogo";
@@ -31,11 +31,12 @@ import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
 import type { SolanaSigner } from "@/lib/morpho/fund";
 import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
-import { nativeUiAmount } from "@/lib/trustware/native";
+import { nativeUiAmount, type NativeHolding } from "@/lib/trustware/native";
 import { stableUiAmount } from "@/lib/trustware/stables";
+import { BaseReturnForm } from "./BaseReturnForm";
 import { MonadFundForm } from "./MonadFundForm";
 import { SendForm } from "./SendForm";
-import { FundMenu } from "./FundMenu";
+import { FundMenu, type FundOption } from "./FundMenu";
 import {
   Sheet,
   SheetContent,
@@ -53,10 +54,24 @@ const USDC_FUNDING_PREFILL = "25";
 // in Privy's supportedChains can appear here: the registry may list a token on
 // a chain the wallet cannot fund, and that has to fail loudly rather than open
 // a widget pointed at the wrong network.
-const EVM_FUNDING_CHAINS: Record<string, typeof mainnet | typeof bsc> = {
+const EVM_FUNDING_CHAINS: Record<
+  string,
+  typeof mainnet | typeof bsc | typeof base
+> = {
   "1": mainnet,
   "56": bsc,
+  "8453": base,
 };
+
+// Marks for the tokenized-asset row in the Fund menu, drawn as an overlapping
+// fan. One from each kind the catalog carries: a single stock, an index ETF,
+// and gold. They stand for the class, not for a shortlist the user is picking
+// from, which is why the row is one entry and not eight.
+const TOKENIZED_ASSET_MARKS = [
+  "/logos/tesla.png",
+  "/logos/qqq.png",
+  "/logos/xaut.png",
+];
 
 // Badges for native gas tokens, keyed by symbol. Symbols without an entry
 // fall back to the AssetLogo monogram.
@@ -65,6 +80,42 @@ const NATIVE_LOGOS: Record<string, string> = {
   SOL: "/logos/solana.png",
   BNB: "/logos/bnb.png",
 };
+
+// Gas rows drawn even at zero, because an empty one is the case worth seeing.
+// Converting a holding on either chain costs an ERC-20 approval plus the route
+// transaction, both paid in that chain's native token, so a wallet holding the
+// stock and no gas cannot start. Trustware's scan drops a chain with a zero
+// balance, so these stand in when it returns nothing for one. Monad is absent
+// on purpose: MON comes from its own read.
+const GAS_ROW_FALLBACKS: NativeHolding[] = [
+  {
+    chain: "1",
+    chainLabel: "Ethereum",
+    symbol: "ETH",
+    decimals: 18,
+    balanceAtomic: "0",
+    priceId: "ethereum",
+  },
+  {
+    chain: "56",
+    chainLabel: "BNB Chain",
+    symbol: "BNB",
+    decimals: 18,
+    balanceAtomic: "0",
+    priceId: "binancecoin",
+  },
+  // Base pays gas in ETH, and moving USDC off it needs some. Nothing tops this
+  // up automatically, so an empty row here is the whole explanation for why a
+  // move to Solana will not sign.
+  {
+    chain: "8453",
+    chainLabel: "Base",
+    symbol: "ETH",
+    decimals: 18,
+    balanceAtomic: "0",
+    priceId: "ethereum",
+  },
+];
 
 export function WalletPanel({
   walletAddress,
@@ -98,6 +149,7 @@ export function WalletPanel({
   const [receiving, setReceiving] = useState(false);
   const [fundingMonad, setFundingMonad] = useState(false);
   const [movingOndo, setMovingOndo] = useState(false);
+  const [movingBase, setMovingBase] = useState(false);
   const [depositingStocks, setDepositingStocks] = useState(false);
   const [fundError, setFundError] = useState<string | null>(null);
   const { fundWallet } = useFundWallet({
@@ -179,6 +231,49 @@ export function WalletPanel({
       })),
   ];
   const hasIndirectHolding = groups.some((g) => g.parts.some((p) => !p.direct));
+  // MON leads the list when it is funded. It is gas for the Monad earn venue,
+  // and a Morpho deposit or withdrawal there fails outright once it runs out,
+  // so a real balance is worth seeing before scrolling. At zero it drops down
+  // to sit with ETH in the gas rows, where an empty wallet reads as Solana
+  // first rather than opening on a chain the user may never touch. Either way
+  // the row is drawn, because hiding an empty gas row hides the thing that will
+  // stop the deposit.
+  const monLeads = (monad.balances?.monUi ?? 0) > 0;
+  const monRow = (
+    <BalanceRow
+      label="MON"
+      sublabel="Monad"
+      amount={monad.balances?.monUi ?? 0}
+      decimals={4}
+      usd={monPrice && monad.balances ? monad.balances.monUi * monPrice : null}
+      icon={
+        <AssetLogo
+          xstock={{ symbol: "MON", name: "Monad", logo: "/logos/monad.png" }}
+          size={30}
+        />
+      }
+      badge={
+        <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+          Gas
+        </span>
+      }
+    />
+  );
+  // The scan's real rows, with a zero row standing in for any gas chain it
+  // returned nothing for. See GAS_ROW_FALLBACKS.
+  // Base holdings, pulled out of the two scans by chain id. Base is the one
+  // supported chain the app has no venue on, so these exist only to size and
+  // gate the move back to Solana.
+  const baseUsdcAtomic =
+    scan.stables.find((s) => s.chain === "8453")?.balanceAtomic ?? "0";
+  const baseEthWei =
+    scan.native.find((n) => n.chain === "8453")?.balanceAtomic ?? "0";
+  const nativeRows = useMemo<NativeHolding[]>(() => {
+    const missing = GAS_ROW_FALLBACKS.filter(
+      (f) => !scan.native.some((n) => n.chain === f.chain),
+    );
+    return missing.length ? [...scan.native, ...missing] : scan.native;
+  }, [scan.native]);
 
   async function handleFund(asset: "native-currency" | "USDC") {
     setFundError(null);
@@ -193,7 +288,6 @@ export function WalletPanel({
       console.error("[fundWallet]", err);
     }
   }
-
 
   // Funding the EVM wallet is a separate hook from the Solana one: the root
   // export funds EVM wallets, the /solana subpath funds Solana wallets. The
@@ -234,7 +328,51 @@ export function WalletPanel({
     }
   }
 
-  async function handleFundEvm(asset: "native-currency" | "USDC") {
+  // Tokenized assets as a row inside a chain's group, rather than a section of
+  // their own.
+  //
+  // A deposit address does not care which token arrives: TSLAx, QQQx and XAUt0
+  // land at the same address USDC does, and the only thing the user has to get
+  // right is the chain. So the row sits with that chain's other assets and
+  // opens the same destination they do, and the fan of marks says which kind of
+  // asset it stands for without listing every ticker in the registry.
+  //
+  // Anything already held on that chain is promoted above it, because that is a
+  // deposit the user can act on now rather than one they have to go and fund.
+  function tokenizedAssetOptions(
+    chainLabel: string,
+    onSelect: () => void,
+  ): FundOption[] {
+    return [
+      ...scan.held
+        .filter((h) => h.source.chainLabel === chainLabel)
+        .map((h) => ({
+          id: `equiv-${h.source.chain}-${h.source.token}`,
+          label: h.source.symbol,
+          hint: `${formatEquivalentAmount(
+            h.balanceAtomic,
+            h.source.decimals,
+          )} ready to convert`,
+          logo: equivalentLogo(h.source.symbol),
+          onSelect: () => setDepositingStocks(true),
+        })),
+      {
+        id: `stocks-${chainLabel}`,
+        label: "Tokenized assets",
+        hint: "Stocks, ETFs, and gold",
+        logos: TOKENIZED_ASSET_MARKS,
+        onSelect,
+      },
+    ];
+  }
+
+  async function handleFundEvm(
+    asset: "native-currency" | "USDC",
+    // Ethereum unless named. BNB Chain uses it for gas, which a conversion
+    // there spends on the approval and the route transaction, and Base for
+    // both its USDC and the ETH that moves it.
+    chain: typeof mainnet | typeof bsc | typeof base = mainnet,
+  ) {
     setFundError(null);
     try {
       // Privy provisions embedded wallets at login, and only for users who do
@@ -256,8 +394,8 @@ export function WalletPanel({
         address,
         options:
           asset === "USDC"
-            ? { chain: mainnet, asset: "USDC", amount: USDC_FUNDING_PREFILL }
-            : { chain: mainnet },
+            ? { chain, asset: "USDC", amount: USDC_FUNDING_PREFILL }
+            : { chain },
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -311,33 +449,7 @@ export function WalletPanel({
       {open && balances && (
         <>
           <div>
-            {/* MON leads the list. It is gas for the Monad earn venue, and a
-                Morpho deposit or withdrawal there fails outright once it runs
-                out, so it is the one balance worth seeing before scrolling. */}
-            {monad.balances && monad.balances.monUi > 0 && (
-              <BalanceRow
-                label="MON"
-                sublabel="Monad"
-                amount={monad.balances.monUi}
-                decimals={4}
-                usd={monPrice ? monad.balances.monUi * monPrice : null}
-                icon={
-                  <AssetLogo
-                    xstock={{
-                      symbol: "MON",
-                      name: "Monad",
-                      logo: "/logos/monad.png",
-                    }}
-                    size={30}
-                  />
-                }
-                badge={
-                  <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
-                    Gas
-                  </span>
-                }
-              />
-            )}
+            {monLeads && monRow}
             <BalanceRow
               label="SOL"
               sublabel="Solana"
@@ -403,7 +515,8 @@ export function WalletPanel({
                 }
               />
             ))}
-            {scan.native.map((n) => {
+            {!monLeads && monRow}
+            {nativeRows.map((n) => {
               const amount = nativeUiAmount(n);
               const price = scan.nativePrices[n.priceId];
               return (
@@ -513,6 +626,13 @@ export function WalletPanel({
                       logo: "/logos/solana.png",
                       onSelect: () => handleFund("native-currency"),
                     },
+                    // Privy's Solana funding config takes only 'native-currency'
+                    // or 'USDC' and cannot name an SPL mint, so this one opens
+                    // the receive address instead of the widget the two rows
+                    // above use. Same destination either way.
+                    ...tokenizedAssetOptions("Solana", () =>
+                      setReceiving(true),
+                    ),
                   ],
                 },
                 {
@@ -547,6 +667,66 @@ export function WalletPanel({
                           },
                         ]
                       : []),
+                    ...tokenizedAssetOptions("Ethereum", () =>
+                      handleFundEvmChain("1", "Ethereum"),
+                    ),
+                  ],
+                },
+                {
+                  // BNB Chain carries registered stock equivalents, and BNB to
+                  // pay for converting them: the approval and the route
+                  // transaction are both charged in it, so a wallet holding the
+                  // stock and no BNB cannot start.
+                  chain: "BNB Chain",
+                  chainLogo: "/logos/bnb.png",
+                  options: [
+                    {
+                      id: "bsc-native",
+                      label: "BNB",
+                      logo: "/logos/bnb.png",
+                      disabled: creatingEvm,
+                      onSelect: () => handleFundEvm("native-currency", bsc),
+                    },
+                    ...tokenizedAssetOptions("BNB Chain", () =>
+                      handleFundEvmChain("56", "BNB Chain"),
+                    ),
+                  ],
+                },
+                {
+                  // Base carries USDC and the ETH to move it, and nothing else.
+                  // No tokenized-asset row: the equivalents registry has no
+                  // Base entries, so a stock sent here could not be converted.
+                  chain: "Base",
+                  chainLogo: "/logos/base.svg",
+                  options: [
+                    {
+                      id: "base-usdc",
+                      label: "USDC",
+                      logo: "/logos/usdc.png",
+                      disabled: creatingEvm,
+                      onSelect: () => handleFundEvm("USDC", base),
+                    },
+                    {
+                      id: "base-native",
+                      label: "ETH",
+                      logo: "/logos/eth.png",
+                      disabled: creatingEvm,
+                      onSelect: () => handleFundEvm("native-currency", base),
+                    },
+                    // Offered only once there is something to move, matching
+                    // how the Ondo row appears. Base holds nothing that earns,
+                    // so this is the row that makes the chain worth listing.
+                    ...(BigInt(baseUsdcAtomic) > 0n
+                      ? [
+                          {
+                            id: "base-return",
+                            label: "Move USDC to Solana",
+                            hint: "Where it can be lent or spent",
+                            logo: "/logos/solana.png",
+                            onSelect: () => setMovingBase(true),
+                          },
+                        ]
+                      : []),
                   ],
                 },
                 {
@@ -562,38 +742,6 @@ export function WalletPanel({
                       hint: "Moved from Solana",
                       logo: "/logos/usdc.png",
                       onSelect: () => setFundingMonad(true),
-                    },
-                  ],
-                },
-                // Grouped by asset class rather than by chain, unlike the three
-                // above. The registry carries eight tickers across three
-                // chains; listing those as chain/asset pairs would be nineteen
-                // rows for a menu that is meant to read as a wallet. One row
-                // covers it, and anything the user already holds is promoted
-                // beside it because that is a deposit they can act on now.
-                {
-                  chain: "Tokenized stocks",
-                  chainLogo: "/logos/ondo.png",
-                  options: [
-                    ...scan.held.map((h) => ({
-                      id: `equiv-${h.source.chain}-${h.source.token}`,
-                      label: `${h.source.symbol} on ${h.source.chainLabel}`,
-                      hint: `${formatEquivalentAmount(
-                        h.balanceAtomic,
-                        h.source.decimals,
-                      )} ready to convert`,
-                      logo: equivalentLogo(h.source.symbol),
-                      onSelect: () => setDepositingStocks(true),
-                    })),
-                    {
-                      id: "stocks-deposit",
-                      label: scan.held.length
-                        ? "Deposit another"
-                        : "Deposit tokenized stocks",
-                      hint: depositableChains()
-                        .map((c) => c.chainLabel)
-                        .join(", "),
-                      onSelect: () => setDepositingStocks(true),
                     },
                   ],
                 },
@@ -621,9 +769,8 @@ export function WalletPanel({
               </SheetHeader>
               <div className="space-y-3 overflow-y-auto px-4 py-4">
                 <ReceiveAddress
-                  label="Solana"
+                  chains={SOLANA_RECEIVE_CHAINS}
                   address={walletAddress}
-                  accepts="SOL, USDC, xStocks, and Ondo's Solana tokens."
                 />
                 <EvmReceiveAddress />
               </div>
@@ -791,6 +938,28 @@ export function WalletPanel({
             </SheetContent>
           </Sheet>
 
+          <Sheet open={movingBase} onOpenChange={setMovingBase}>
+            <SheetContent side="right" className="w-full sm:max-w-md">
+              <SheetHeader className="border-b border-white/10">
+                <SheetTitle>Move USDC to Solana</SheetTitle>
+                <SheetDescription>
+                  Base holds no position and earns nothing here. This brings the
+                  balance to Solana, where it can be lent or spent.
+                </SheetDescription>
+              </SheetHeader>
+              <div className="overflow-y-auto px-4 py-4">
+                <BaseReturnForm
+                  solanaAddress={walletAddress}
+                  baseUsdcAtomic={baseUsdcAtomic}
+                  baseEthWei={baseEthWei}
+                  onMoved={async () => {
+                    await Promise.all([onRefresh(), scan.refresh()]);
+                  }}
+                />
+              </div>
+            </SheetContent>
+          </Sheet>
+
           <Sheet open={sending} onOpenChange={setSending}>
             <SheetContent side="right" className="w-full sm:max-w-md">
               <SheetHeader className="border-b border-white/10">
@@ -885,7 +1054,6 @@ function BalanceRow({
   );
 }
 
-// One receiving address, with what it accepts and a way to copy it.
 // Logo for a convertible ticker. `collateralTicker` strips Ondo's "on" suffix;
 // Backed's xStocks carry a trailing "x" instead, so that comes off first. Both
 // are registry naming conventions, not guesses at arbitrary symbols.
@@ -906,15 +1074,71 @@ function formatEquivalentAmount(atomic: string, decimals: number): string {
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+// A chain an address can receive on.
+type ReceiveChain = {
+  name: string;
+  logo: string;
+};
+
+const SOLANA_RECEIVE_CHAINS: ReceiveChain[] = [
+  { name: "Solana", logo: "/logos/solana.png" },
+];
+
+// The three chains the embedded EVM wallet can spend on, which is why only
+// these three are named. Each is declared in Privy's supportedChains and
+// carries something the app uses: registered stock equivalents on the first
+// two, USDC and MON gas for Morpho earn on Monad.
+const EVM_RECEIVE_CHAINS: ReceiveChain[] = [
+  { name: "Ethereum", logo: "/logos/eth.png" },
+  { name: "BNB Chain", logo: "/logos/bnb.png" },
+  { name: "Base", logo: "/logos/base.svg" },
+  { name: "Monad", logo: "/logos/monad.png" },
+];
+
+// Which chains an address serves, as a logo row rather than a sentence.
+//
+// This is the whole header of a receive card. Naming three chains and what each
+// one is for ran to four lines a user had to read before doing the one thing
+// this panel is for, and the answer they actually need is which chains reach
+// this address.
+function ChainRow({ chains }: { chains: ReceiveChain[] }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      {chains.map((chain) => (
+        <span
+          key={chain.name}
+          className="flex items-center gap-1.5 text-[11px] leading-none text-white/60"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={chain.logo}
+            alt=""
+            aria-hidden="true"
+            className="h-4 w-4 shrink-0 rounded-full object-cover"
+          />
+          {chain.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// One receiving address: which chains reach it, the address, and a way to copy.
+//
+// `chains` draws the logo row; `label` is the plain-text header the deposit
+// panel uses, where each card already names a single chain and a row would only
+// repeat it.
 function ReceiveAddress({
   label,
+  chains,
   address,
   accepts,
   warning,
 }: {
-  label: string;
+  label?: string;
+  chains?: ReceiveChain[];
   address: string;
-  accepts: string;
+  accepts?: string;
   warning?: string;
 }) {
   const [copied, setCopied] = useState(false);
@@ -929,24 +1153,32 @@ function ReceiveAddress({
     }
   }
 
+  const copyButton = (
+    <button
+      type="button"
+      onClick={copy}
+      className="shrink-0 text-xs text-white/60 underline-offset-2 hover:text-white hover:underline"
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+
   return (
     <div className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-3">
-      <div className="flex items-baseline justify-between">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          {label}
-        </div>
-        <button
-          type="button"
-          onClick={copy}
-          className="text-xs text-white/60 underline-offset-2 hover:text-white hover:underline"
-        >
-          {copied ? "Copied" : "Copy"}
-        </button>
+      <div className="flex items-center justify-between gap-3">
+        {chains ? (
+          <ChainRow chains={chains} />
+        ) : (
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+            {label}
+          </div>
+        )}
+        {copyButton}
       </div>
       <div className="mt-1.5 break-all font-mono text-xs text-white">
         {address}
       </div>
-      <p className="mt-1.5 text-[11px] text-white/50">{accepts}</p>
+      {accepts && <p className="mt-1.5 text-[11px] text-white/50">{accepts}</p>}
       {warning && (
         <p className="mt-1 text-[11px] text-aeras-warning">{warning}</p>
       )}
@@ -961,27 +1193,12 @@ function ReceiveAddress({
 // cross-chain deposit path the borrow flow already supports had no way to be
 // funded.
 //
-// Only Ethereum, BNB Chain, and Monad are named, because those are the chains
-// the app can actually spend from: they are declared in Privy's
-// supportedChains, and each carries something the app uses (registered
-// equivalents on the first two, USDC and MON gas for Morpho earn on Monad).
+// Which chains it serves, and what each one is for, is EVM_RECEIVE_CHAINS.
 // Assets sent on any other EVM chain arrive at this same address and then
 // cannot be moved from here, so the warning says so rather than leaving it to
-// be discovered.
-// Copy is overridable because two panels need this same address with different
-// framing: the general Receive panel names every chain the wallet can spend on,
-// while the tokenized-stock deposit panel names only the chains that convert.
-// The create-on-demand flow below is the reason they share a component rather
-// than each rendering their own ReceiveAddress.
-function EvmReceiveAddress({
-  label = "Ethereum, BNB Chain, and Monad",
-  accepts = "Tokenized stocks on Ethereum or BNB Chain (Borrow converts them to the Solana version first), and USDC on Monad for Morpho earn deposits. Earn deposits also fund this wallet automatically from Solana USDC.",
-  warning = "Only these three chains. Assets sent on another EVM chain reach this address but cannot be used or moved.",
-}: {
-  label?: string;
-  accepts?: string;
-  warning?: string;
-} = {}) {
+// be discovered. That is the one thing the logo row cannot carry, because it is
+// about the chains that are absent from the row.
+function EvmReceiveAddress() {
   const { address, ready } = useEmbeddedEvmWallet();
   const { createWallet } = useCreateWallet();
   const [creating, setCreating] = useState(false);
@@ -992,10 +1209,8 @@ function EvmReceiveAddress({
     // EVM wallet simply does not have one, and Privy only provisions at login.
     return (
       <div className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-3">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          Ethereum, BNB Chain, and Monad
-        </div>
-        <p className="mt-1.5 text-[11px] text-white/50">
+        <ChainRow chains={EVM_RECEIVE_CHAINS} />
+        <p className="mt-2 text-[11px] text-white/50">
           This account has no Ethereum wallet yet. Creating one takes a moment
           and needs no signature.
         </p>
@@ -1026,10 +1241,9 @@ function EvmReceiveAddress({
 
   return (
     <ReceiveAddress
-      label={label}
+      chains={EVM_RECEIVE_CHAINS}
       address={address}
-      accepts={accepts}
-      warning={warning}
+      warning="Assets sent on any other chain reach this address but cannot be moved."
     />
   );
 }

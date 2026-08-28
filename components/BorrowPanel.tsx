@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { ChevronDown } from "lucide-react";
 import { PublicKey } from "@solana/web3.js";
@@ -377,7 +377,7 @@ function BorrowSummaryHero({
           onClick={onRepay}
           disabled={!loading && !hasDebt}
           title={!loading && !hasDebt ? "Nothing to repay yet" : undefined}
-          className="rounded-full bg-aeras-purple px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-purple-medium disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-full bg-aeras-repay px-6 py-2.5 text-sm font-medium text-aeras-repay-ink transition-colors hover:bg-aeras-repay-medium disabled:cursor-not-allowed disabled:opacity-40"
         >
           Repay
         </button>
@@ -1451,7 +1451,21 @@ function OperateForm({
               setBorrowInput(Number(e.target.value).toFixed(2));
               resetForm();
             }}
-            className="w-full accent-aeras-blue"
+            // Unitless 0-1 for .aeras-range, which uses it to keep the fill edge
+            // under the thumb's centre. Guarded on a zero maximum: a vault with
+            // nothing left to draw would divide by zero and blank the track.
+            style={
+              {
+                "--range-progress":
+                  maxNewBorrow > 0
+                    ? Math.min(
+                        1,
+                        Math.max(0, (borrowUi || 0) / maxNewBorrow),
+                      )
+                    : 0,
+              } as CSSProperties
+            }
+            className="aeras-range"
           />
           <div className="mt-1 flex justify-between text-[10px] uppercase tracking-wider text-white/50">
             <span>0</span>

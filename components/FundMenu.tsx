@@ -30,6 +30,9 @@ export interface FundOption {
   hint?: string;
   // Public path to the asset mark.
   logo?: string;
+  // Several marks, drawn as an overlapping fan, for a row that stands for a set
+  // of assets rather than one. Takes precedence over `logo`.
+  logos?: string[];
   disabled?: boolean;
   onSelect: () => void;
 }
@@ -194,14 +197,42 @@ export function FundMenu({
                       }}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-40"
                     >
-                      {o.logo && (
-                        /* eslint-disable-next-line @next/next/no-img-element */
-                        <img
-                          src={o.logo}
-                          alt=""
-                          aria-hidden="true"
-                          className="size-5 shrink-0 rounded-full object-cover"
-                        />
+                      {/* One icon column at a fixed width, so a fan of marks and
+                          a single mark leave their labels on the same line. The
+                          fan is sized to fill it: three 16px discs overlapping
+                          by 6px come to exactly 36px, and each disc still shows
+                          over half of itself, which is what keeps it reading as
+                          three assets rather than one smudge. */}
+                      {(o.logos?.length || o.logo) && (
+                        <span className="flex w-9 shrink-0 items-center justify-center">
+                          {o.logos?.length ? (
+                            o.logos.map((src, i) => (
+                              /* eslint-disable-next-line @next/next/no-img-element */
+                              <img
+                                key={src}
+                                src={src}
+                                alt=""
+                                aria-hidden="true"
+                                // Ringed in the menu's own background so the
+                                // discs stay separable where they overlap, and
+                                // stacked front to back so the fan reads left
+                                // to right.
+                                style={{ zIndex: o.logos!.length - i }}
+                                className={`relative size-4 shrink-0 rounded-full object-cover ring-1 ring-[#111415] ${
+                                  i > 0 ? "-ml-1.5" : ""
+                                }`}
+                              />
+                            ))
+                          ) : (
+                            /* eslint-disable-next-line @next/next/no-img-element */
+                            <img
+                              src={o.logo}
+                              alt=""
+                              aria-hidden="true"
+                              className="size-5 shrink-0 rounded-full object-cover"
+                            />
+                          )}
+                        </span>
                       )}
                       <span className="min-w-0">
                         <span className="block truncate text-sm text-white">

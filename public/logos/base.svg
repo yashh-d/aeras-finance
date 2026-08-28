@@ -1,0 +1,12 @@
+<!-- Base chain mark. Drawn rather than downloaded, since every other logo in
+     this directory is a self-hosted file and there was none for Base: a disc in
+     Base blue (#0052FF) carrying the flat-sided circle of the Base logotype.
+
+     The inner path is a circle of radius 10 about the centre, closed by a
+     vertical chord at x=22, which is where that circle crosses y=8 and y=24.
+     Sized to fill the badge: at radius 7 it read as a dot at the 14px the
+     chain-header slot renders it. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Base">
+  <circle cx="16" cy="16" r="16" fill="#0052FF" />
+  <path d="M22 8 A10 10 0 1 0 22 24 Z" fill="#fff" />
+</svg>

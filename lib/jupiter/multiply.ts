@@ -24,6 +24,66 @@ import { toAtomicBN, type XStockBorrowVault } from "./borrow";
 // so the transaction never dies on the default 200k CU limit.
 const COMPUTE_UNIT_LIMIT = 1_400_000;
 
+// Solana's MAX_TX_ACCOUNT_LOCKS. A transaction may lock at most 64 accounts,
+// and **address lookup tables do not help here**: an ALT compresses the message
+// bytes, but every address it resolves still gets locked. Passing more ALTs was
+// the obvious first thing to try and it cannot work, which is worth stating so
+// nobody tries it again.
+//
+// A loop transaction is a flashloan borrow + a Jupiter swap + a vault operate +
+// a flashloan payback. Left alone, Jupiter will happily spend the entire budget
+// on the swap route by itself (its own `maxAccounts` default is 64), and the
+// Lend instructions then push the total past the limit. The runtime rejects it
+// at simulation with "Transaction locked too many accounts", which names no
+// instruction and carries empty logs.
+const MAX_TX_ACCOUNT_LOCKS = 64;
+
+// Opening bid for the swap's share of that budget.
+//
+// Measured on mainnet by scripts/jupiter-loop-accounts-check.mts (TSLAx/USDC,
+// 2026-08-28): the Lend half — flashloan borrow, vault operate, flashloan
+// payback — locks 44 accounts on its own, a single-hop swap route locks 18, and
+// the two share 10, for 52 total. So the swap has only about 20 net-new
+// accounts of headroom, and a route of roughly 30 accounts is the ceiling once
+// the overlap is credited back. 28 leaves a little margin under that.
+//
+// The Lend side taking 69% of the budget is the whole reason this is tight, and
+// it is not something this file can negotiate.
+//
+// Not a hard cap either way: Jupiter documents `maxAccounts` as a rough
+// estimate, so the real count is measured on the compiled message below and the
+// budget is walked down from here if it still does not fit.
+// Exported so the panel can preview on the same terms it will execute on. A
+// preview quoted without the budget prices a route the transaction will not
+// use, and the exposure, LTV and liquidation figures drawn from it would be
+// numbers no one is going to get.
+export const SWAP_ACCOUNT_BUDGET = 28;
+
+// Floor for that walk. Jupiter's own docs warn that below ~50 routing quality
+// degrades and very low values return no route at all, so there is a point
+// where refusing beats sending a quote nobody would accept.
+const MIN_SWAP_ACCOUNT_BUDGET = 16;
+
+// Shed this much beyond the measured overshoot on a retry. The swap route and
+// the Lend instructions share accounts (the signer, both mints, the token
+// programs), so dropping N accounts from the route does not always drop N from
+// the total, and a retry that lands exactly on 64 would still be at the mercy
+// of a route change between quote and send.
+const ACCOUNT_BUDGET_SAFETY = 3;
+
+// What the runtime will actually lock: every static key, plus every address
+// resolved through a lookup table.
+function countLockedAccounts(message: {
+  staticAccountKeys: unknown[];
+  addressTableLookups: { writableIndexes: number[]; readonlyIndexes: number[] }[];
+}): number {
+  return message.addressTableLookups.reduce(
+    (total, lookup) =>
+      total + lookup.writableIndexes.length + lookup.readonlyIndexes.length,
+    message.staticAccountKeys.length,
+  );
+}
+
 // ── Swap quote / instructions (Jupiter Lite via our proxy) ──────────────────
 
 export interface SwapRoutePlanStep {
@@ -63,12 +123,16 @@ export async function fetchSwapQuoteViaProxy(args: {
   outputMint: string;
   amountAtomic: string;
   slippageBps: number;
+  maxAccounts?: number;
 }): Promise<SwapQuote> {
   const url = new URL("/api/jupiter/swap/quote", window.location.origin);
   url.searchParams.set("inputMint", args.inputMint);
   url.searchParams.set("outputMint", args.outputMint);
   url.searchParams.set("amount", args.amountAtomic);
   url.searchParams.set("slippageBps", String(args.slippageBps));
+  if (args.maxAccounts != null) {
+    url.searchParams.set("maxAccounts", String(args.maxAccounts));
+  }
 
   const res = await fetch(url.toString(), { cache: "no-store" });
   const body = await res.json();
@@ -197,67 +261,91 @@ export async function buildMultiplyTx({
     asset: usdc,
     amount: borrowUsdcAtomic,
   };
-  const [flashBorrowIx, flashPaybackIx, quote] = await Promise.all([
+  // Fetched once, outside the fitting loop below: both depend only on the
+  // borrow amount, which a re-quote does not change.
+  const [flashBorrowIx, flashPaybackIx] = await Promise.all([
     getFlashBorrowIx(flashParams),
     getFlashPaybackIx(flashParams),
-    fetchSwapQuoteViaProxy({
+  ]);
+
+  let budget = SWAP_ACCOUNT_BUDGET;
+
+  // Quote, build, count, and shrink the route's account budget until the
+  // transaction fits under the lock limit. Usually one pass: the retry exists
+  // because `maxAccounts` steers the router rather than binding it, and because
+  // how much the route overlaps the Lend instructions is not knowable up front.
+  for (;;) {
+    const quote = await fetchSwapQuoteViaProxy({
       inputMint: vault.borrowMint,
       outputMint: vault.collateralMint,
       amountAtomic: borrowUsdcAtomic.toString(),
       slippageBps,
-    }),
-  ]);
-
-  // Deposit the swap's guaranteed minimum, not the expected out, so the vault
-  // deposit can never ask the ATA for more collateral than the swap delivered.
-  const swapMinOut = new BN(quote.otherAmountThreshold);
-  const supplyAmount = initialCollateralAtomic.add(swapMinOut);
-
-  const swapRes = await fetchSwapInstructionsViaProxy(quote, signerAddress);
-  const swapIx = jupIxToTransactionInstruction(swapRes.swapInstruction);
-  const setupIxs = (swapRes.setupInstructions ?? []).map(
-    jupIxToTransactionInstruction,
-  );
-
-  const { ixs: operateIxs, addressLookupTableAccounts, nftId } =
-    await getOperateIx({
-      vaultId: vault.vaultId,
-      positionId,
-      colAmount: supplyAmount,
-      debtAmount: borrowUsdcAtomic,
-      connection,
-      signer,
+      maxAccounts: budget,
     });
-  if (!operateIxs?.length) {
-    throw new Error("Jupiter Lend SDK returned no operate instructions");
+
+    // Deposit the swap's guaranteed minimum, not the expected out, so the vault
+    // deposit can never ask the ATA for more collateral than the swap delivered.
+    const swapMinOut = new BN(quote.otherAmountThreshold);
+    const supplyAmount = initialCollateralAtomic.add(swapMinOut);
+
+    const swapRes = await fetchSwapInstructionsViaProxy(quote, signerAddress);
+    const swapIx = jupIxToTransactionInstruction(swapRes.swapInstruction);
+    const setupIxs = (swapRes.setupInstructions ?? []).map(
+      jupIxToTransactionInstruction,
+    );
+
+    const { ixs: operateIxs, addressLookupTableAccounts, nftId } =
+      await getOperateIx({
+        vaultId: vault.vaultId,
+        positionId,
+        colAmount: supplyAmount,
+        debtAmount: borrowUsdcAtomic,
+        connection,
+        signer,
+      });
+    if (!operateIxs?.length) {
+      throw new Error("Jupiter Lend SDK returned no operate instructions");
+    }
+
+    const swapAlts = await getAddressLookupTableAccounts(
+      connection,
+      swapRes.addressLookupTableAddresses ?? [],
+    );
+    const allAlts = [...(addressLookupTableAccounts ?? []), ...swapAlts];
+
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    const message = new TransactionMessage({
+      payerKey: signer,
+      recentBlockhash: blockhash,
+      instructions: [
+        ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNIT_LIMIT }),
+        flashBorrowIx,
+        ...setupIxs,
+        swapIx,
+        ...operateIxs,
+        flashPaybackIx,
+      ],
+    }).compileToV0Message(allAlts);
+
+    const locked = countLockedAccounts(message);
+    if (locked <= MAX_TX_ACCOUNT_LOCKS) {
+      const tx = new VersionedTransaction(message);
+      return {
+        base64Tx: Buffer.from(tx.serialize()).toString("base64"),
+        nftId,
+        quote,
+      };
+    }
+
+    const next = budget - (locked - MAX_TX_ACCOUNT_LOCKS) - ACCOUNT_BUDGET_SAFETY;
+    if (next < MIN_SWAP_ACCOUNT_BUDGET) {
+      throw new Error(
+        `No route for this loop fits in one transaction (${locked} accounts, limit ${MAX_TX_ACCOUNT_LOCKS}). ` +
+          `${vault.collateralSymbol} liquidity is split across too many pools right now. Try a smaller amount or lower leverage.`,
+      );
+    }
+    budget = next;
   }
-
-  const swapAlts = await getAddressLookupTableAccounts(
-    connection,
-    swapRes.addressLookupTableAddresses ?? [],
-  );
-  const allAlts = [...(addressLookupTableAccounts ?? []), ...swapAlts];
-
-  const { blockhash } = await connection.getLatestBlockhash("confirmed");
-  const message = new TransactionMessage({
-    payerKey: signer,
-    recentBlockhash: blockhash,
-    instructions: [
-      ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNIT_LIMIT }),
-      flashBorrowIx,
-      ...setupIxs,
-      swapIx,
-      ...operateIxs,
-      flashPaybackIx,
-    ],
-  }).compileToV0Message(allAlts);
-
-  const tx = new VersionedTransaction(message);
-  return {
-    base64Tx: Buffer.from(tx.serialize()).toString("base64"),
-    nftId,
-    quote,
-  };
 }
 
 // ── Unwind (full close) ──────────────────────────────────────────────────────
@@ -314,92 +402,114 @@ export async function buildUnwindTx({
   // debt / price with a buffer, then confirm the quote's guaranteed minimum out
   // clears the debt, scaling up (capped at total collateral) if it does not.
   const debtUi = Number(debtAtomic.toString()) / 10 ** vault.borrowDecimals;
-  let flashCollateralUi = (debtUi / oraclePriceUsd) * UNWIND_COVER_BUFFER;
-  let flashCollateralAtomic = clampBN(
-    toAtomicBN(flashCollateralUi, vault.collateralDecimals),
-    new BN(1),
-    collateralAtomic,
-  );
 
-  let quote: SwapQuote | null = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    quote = await fetchSwapQuoteViaProxy({
-      inputMint: vault.collateralMint,
-      outputMint: vault.borrowMint,
-      amountAtomic: flashCollateralAtomic.toString(),
-      slippageBps,
-    });
-    const minUsdcOut = new BN(quote.otherAmountThreshold);
-    if (minUsdcOut.gte(debtAtomic) || flashCollateralAtomic.eq(collateralAtomic)) {
-      break;
-    }
-    // Guaranteed out fell short. Scale the input up proportionally, capped at the
-    // full collateral balance.
-    const shortfall = debtAtomic.mul(new BN(1000)).div(minUsdcOut).toNumber() / 1000;
-    flashCollateralUi = flashCollateralUi * Math.max(shortfall, 1.02);
-    flashCollateralAtomic = clampBN(
+  // Same account-lock budget as the multiply path, and for the same reason: an
+  // unwind is also flashloan + swap + operate in one transaction. The sizing
+  // loop below sits inside the fitting loop because a smaller route can return
+  // a worse guaranteed out, which changes how much collateral has to be sold.
+  let budget = SWAP_ACCOUNT_BUDGET;
+
+  for (;;) {
+    let flashCollateralUi = (debtUi / oraclePriceUsd) * UNWIND_COVER_BUFFER;
+    let flashCollateralAtomic = clampBN(
       toAtomicBN(flashCollateralUi, vault.collateralDecimals),
       new BN(1),
       collateralAtomic,
     );
+
+    let quote: SwapQuote | null = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      quote = await fetchSwapQuoteViaProxy({
+        inputMint: vault.collateralMint,
+        outputMint: vault.borrowMint,
+        amountAtomic: flashCollateralAtomic.toString(),
+        slippageBps,
+        maxAccounts: budget,
+      });
+      const minUsdcOut = new BN(quote.otherAmountThreshold);
+      if (minUsdcOut.gte(debtAtomic) || flashCollateralAtomic.eq(collateralAtomic)) {
+        break;
+      }
+      // Guaranteed out fell short. Scale the input up proportionally, capped at the
+      // full collateral balance.
+      const shortfall = debtAtomic.mul(new BN(1000)).div(minUsdcOut).toNumber() / 1000;
+      flashCollateralUi = flashCollateralUi * Math.max(shortfall, 1.02);
+      flashCollateralAtomic = clampBN(
+        toAtomicBN(flashCollateralUi, vault.collateralDecimals),
+        new BN(1),
+        collateralAtomic,
+      );
+    }
+    if (!quote) throw new Error("Could not price the unwind swap");
+
+    const flashParams = {
+      connection,
+      signer,
+      asset: collateral,
+      amount: flashCollateralAtomic,
+    };
+    const [flashBorrowIx, flashPaybackIx] = await Promise.all([
+      getFlashBorrowIx(flashParams),
+      getFlashPaybackIx(flashParams),
+    ]);
+
+    const swapRes = await fetchSwapInstructionsViaProxy(quote, signerAddress);
+    const swapIx = jupIxToTransactionInstruction(swapRes.swapInstruction);
+    const setupIxs = (swapRes.setupInstructions ?? []).map(
+      jupIxToTransactionInstruction,
+    );
+
+    const { ixs: operateIxs, addressLookupTableAccounts } = await getOperateIx({
+      vaultId: vault.vaultId,
+      positionId,
+      colAmount: MAX_WITHDRAW_AMOUNT,
+      debtAmount: MAX_REPAY_AMOUNT,
+      connection,
+      signer,
+    });
+    if (!operateIxs?.length) {
+      throw new Error("Jupiter Lend SDK returned no operate instructions");
+    }
+
+    const swapAlts = await getAddressLookupTableAccounts(
+      connection,
+      swapRes.addressLookupTableAddresses ?? [],
+    );
+    const allAlts = [...(addressLookupTableAccounts ?? []), ...swapAlts];
+
+    const { blockhash } = await connection.getLatestBlockhash("confirmed");
+    const message = new TransactionMessage({
+      payerKey: signer,
+      recentBlockhash: blockhash,
+      instructions: [
+        ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNIT_LIMIT }),
+        flashBorrowIx,
+        ...setupIxs,
+        swapIx,
+        ...operateIxs,
+        flashPaybackIx,
+      ],
+    }).compileToV0Message(allAlts);
+
+    const locked = countLockedAccounts(message);
+    if (locked <= MAX_TX_ACCOUNT_LOCKS) {
+      const tx = new VersionedTransaction(message);
+      return {
+        base64Tx: Buffer.from(tx.serialize()).toString("base64"),
+        quote,
+        flashCollateralAtomic,
+      };
+    }
+
+    const next = budget - (locked - MAX_TX_ACCOUNT_LOCKS) - ACCOUNT_BUDGET_SAFETY;
+    if (next < MIN_SWAP_ACCOUNT_BUDGET) {
+      throw new Error(
+        `No route for this unwind fits in one transaction (${locked} accounts, limit ${MAX_TX_ACCOUNT_LOCKS}). ` +
+          `${vault.collateralSymbol} liquidity is split across too many pools right now. Try again shortly.`,
+      );
+    }
+    budget = next;
   }
-  if (!quote) throw new Error("Could not price the unwind swap");
-
-  const flashParams = {
-    connection,
-    signer,
-    asset: collateral,
-    amount: flashCollateralAtomic,
-  };
-  const [flashBorrowIx, flashPaybackIx] = await Promise.all([
-    getFlashBorrowIx(flashParams),
-    getFlashPaybackIx(flashParams),
-  ]);
-
-  const swapRes = await fetchSwapInstructionsViaProxy(quote, signerAddress);
-  const swapIx = jupIxToTransactionInstruction(swapRes.swapInstruction);
-  const setupIxs = (swapRes.setupInstructions ?? []).map(
-    jupIxToTransactionInstruction,
-  );
-
-  const { ixs: operateIxs, addressLookupTableAccounts } = await getOperateIx({
-    vaultId: vault.vaultId,
-    positionId,
-    colAmount: MAX_WITHDRAW_AMOUNT,
-    debtAmount: MAX_REPAY_AMOUNT,
-    connection,
-    signer,
-  });
-  if (!operateIxs?.length) {
-    throw new Error("Jupiter Lend SDK returned no operate instructions");
-  }
-
-  const swapAlts = await getAddressLookupTableAccounts(
-    connection,
-    swapRes.addressLookupTableAddresses ?? [],
-  );
-  const allAlts = [...(addressLookupTableAccounts ?? []), ...swapAlts];
-
-  const { blockhash } = await connection.getLatestBlockhash("confirmed");
-  const message = new TransactionMessage({
-    payerKey: signer,
-    recentBlockhash: blockhash,
-    instructions: [
-      ComputeBudgetProgram.setComputeUnitLimit({ units: COMPUTE_UNIT_LIMIT }),
-      flashBorrowIx,
-      ...setupIxs,
-      swapIx,
-      ...operateIxs,
-      flashPaybackIx,
-    ],
-  }).compileToV0Message(allAlts);
-
-  const tx = new VersionedTransaction(message);
-  return {
-    base64Tx: Buffer.from(tx.serialize()).toString("base64"),
-    quote,
-    flashCollateralAtomic,
-  };
 }
 
 function clampBN(value: BN, min: BN, max: BN): BN {

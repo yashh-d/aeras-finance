@@ -13,7 +13,7 @@
 // (lib/morpho/fund.ts's return leg) before the repay transaction runs, the
 // same way an earn deposit funds itself in the other direction.
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 
 import { useFundWallet } from "@privy-io/react-auth/solana";
 
@@ -462,7 +462,17 @@ function RepayForm({
                 const v = Number(e.target.value);
                 setAmount(v, v >= maxRepayable && maxRepayable >= debtUi);
               }}
-              className="w-full accent-aeras-blue"
+              // Unitless 0-1 for .aeras-range. This block only renders when
+              // maxRepayable > 0, so the divide is safe here.
+              style={
+                {
+                  "--range-progress": Math.min(
+                    1,
+                    Math.max(0, amount / maxRepayable),
+                  ),
+                } as CSSProperties
+              }
+              className="aeras-range"
             />
             <div className="mt-1 flex justify-between text-[10px] uppercase tracking-wider text-white/50">
               <span>0</span>

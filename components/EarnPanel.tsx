@@ -83,6 +83,8 @@ import {
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { assetIdentity } from "@/lib/jupiter/xstocks";
 import { VENUE_LOGOS } from "@/lib/tokens/logos";
+import { ChevronDown } from "lucide-react";
+
 import { AssetLogo, VenueMark } from "@/components/AssetLogo";
 import { LoopingCard } from "@/components/LoopingPanel";
 import { RyskOptionsCard } from "@/components/RyskOptionsPanel";
@@ -566,8 +568,23 @@ function VaultRow({
         : (morphoVault?.name ?? "Morpho");
 
   return (
-    <div className="py-2.5">
-      <div className="grid grid-cols-12 items-center gap-2 text-sm">
+    <div>
+      {/* The whole row is the control, as on Markets and Borrow. It used to be
+          a 7x7 button holding a "⌄" glyph off at the right edge: a small target
+          in a wide row where every part of the row looked like it should open
+          the thing it describes. The expanded form stays a sibling below, since
+          a button cannot contain one. */}
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={!canOpen}
+        aria-expanded={open}
+        aria-label={open ? `Close ${meta.symbol}` : `Manage ${meta.symbol}`}
+        title={!walletAddress ? "Waiting for wallet" : undefined}
+        className={`group grid w-full grid-cols-12 items-center gap-2 py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed ${
+          open ? "bg-white/[0.03]" : "enabled:hover:bg-white/5"
+        }`}
+      >
         <div className="col-span-3 flex items-center gap-2.5">
           <AssetLogo
             xstock={assetIdentity(meta.assetMint, meta.symbol)}
@@ -629,28 +646,17 @@ function VaultRow({
           )}
         </div>
 
-        <div className="col-span-1 text-right">
-          <button
-            type="button"
-            onClick={onToggle}
-            disabled={!canOpen}
-            aria-expanded={open}
-            aria-label={open ? `Close ${meta.symbol}` : `Manage ${meta.symbol}`}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/15 bg-white/10 text-xs text-white transition-colors hover:border-white/25 hover:bg-white/15 disabled:cursor-not-allowed disabled:text-white/30"
-            title={!walletAddress ? "Waiting for wallet" : undefined}
-          >
-            <span
-              className={`transition-transform ${open ? "rotate-180" : ""}`}
-              aria-hidden
-            >
-              ⌄
-            </span>
-          </button>
+        <div className="col-span-1 flex justify-end">
+          <ChevronDown
+            className={`size-4 transition-transform ${
+              canOpen ? "text-white/40 group-hover:text-white/70" : "text-white/20"
+            } ${open ? "rotate-180" : ""}`}
+          />
         </div>
-      </div>
+      </button>
 
       {open && walletAddress && (
-        <div className="mt-3 space-y-5">
+        <div className="space-y-5 pb-3">
           <VaultDetailHeader
             mint={meta.assetMint}
             symbol={meta.symbol}

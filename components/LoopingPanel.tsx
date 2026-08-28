@@ -5,13 +5,26 @@
 // preview block shows the resulting leverage, exposure, LTV, liquidation price,
 // borrow carry, and live swap price impact before the user signs.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import BN from "bn.js";
 
+import { usePrivy } from "@privy-io/react-auth";
+
+import { AssetLogo } from "@/components/AssetLogo";
 import { PriceChart } from "@/components/PriceChart";
+import {
+  clearLoopRecord,
+  EMPTY_LOOP_RECORD,
+  fetchLoopRecord,
+  loopStorageKey,
+  readCachedLoopRecord,
+  saveLoopRecord,
+  writeCachedLoopRecord,
+  type LoopRecord,
+} from "@/lib/loops-client";
 import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
-import { xstockByMint } from "@/lib/jupiter/xstocks";
+import { assetIdentity, xstockByMint } from "@/lib/jupiter/xstocks";
 import {
   fetchLiveVaultStateViaProxy,
   fetchPositionState,
@@ -29,6 +42,7 @@ import {
   buildUnwindTx,
   fetchSwapQuoteViaProxy,
   maxLeverageForVault,
+  SWAP_ACCOUNT_BUDGET,
   type SwapQuote,
 } from "@/lib/jupiter/multiply";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
@@ -38,6 +52,10 @@ import {
   type AccountBalances,
 } from "@/lib/solana/balances";
 import { SolanaSendError, sendAndConfirm } from "@/lib/solana/send-confirm";
+
+// Floor of the leverage slider. 1.0x is not a loop, and the step below it would
+// borrow nothing.
+const LEVERAGE_MIN = 1.1;
 
 const MULTIPLY_SLIPPAGE_BPS = 100;
 const UNWIND_SLIPPAGE_BPS = 150;
@@ -71,7 +89,10 @@ export function LoopingCard({
     if (typeof window === "undefined" || !walletAddress) return;
     const ids = new Set<number>();
     for (const v of XSTOCK_BORROW_VAULTS) {
-      if (localStorage.getItem(`aeras:loop:${walletAddress}:${v.vaultId}`) === "1") {
+      // Via the shared reader, not a literal "1": the cached record is JSON now,
+      // and a string compare here silently dropped open loops off this list once
+      // their wallet balance had been deposited.
+      if (readCachedLoopRecord(loopStorageKey(walletAddress, v.vaultId)).managed) {
         ids.add(v.vaultId);
       }
     }
@@ -91,14 +112,11 @@ export function LoopingCard({
 
   return (
     <div className={`space-y-4 ${GLASS_SURFACE} p-5 lg:p-6`}>
+      {/* Section label only. "Leveraged exposure" was the title here and is now
+          the hero's label further down, where it sits on the number it names. */}
       <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-            Looping
-          </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-white">
-            Leveraged exposure
-          </div>
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+          Looping
         </div>
         <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-warning">
           Medium risk
@@ -172,6 +190,18 @@ type TxState =
   | { kind: "done"; signature: string }
   | { kind: "error"; message: string };
 
+// Loop bookkeeping — whether a vault is leverage-managed, and the equity that
+// went in — lives in Supabase. See lib/loops-client.ts and lib/loops.ts.
+//
+// **Cost basis is not on chain.** Jupiter Lend's position carries collateral,
+// debt and liquidation status and nothing else, so the basis has to be recorded
+// when the loop opens or it does not exist. It used to be recorded in
+// localStorage, which meant it died with the browser: a position opened on a
+// phone showed no P&L on a laptop, and read as a plain borrow besides.
+//
+// localStorage is still read for the first paint and still written as a cache,
+// but the server is authoritative and overwrites it on load.
+
 function LoopController({
   vault,
   walletAddress,
@@ -188,12 +218,19 @@ function LoopController({
   onRefresh: () => Promise<void> | void;
 }) {
   const signTxBase64 = useSignSolanaTxBase64();
+  const { getAccessToken } = usePrivy();
   const [live, setLive] = useState<LiveVaultState | null>(null);
   const [position, setPosition] = useState<UserPositionState | null>(null);
   const [nftId, setNftId] = useState<number | null>(null);
   const [recovering, setRecovering] = useState(true);
 
   const maxLeverage = maxLeverageForVault(vault);
+  // The slider's own ceiling: the vault max, floored to a whole step, and never
+  // below one step above the minimum so the track cannot collapse to zero width.
+  const leverageMax = Math.max(
+    LEVERAGE_MIN + 0.1,
+    Math.floor(maxLeverage * 10) / 10,
+  );
   const [leverage, setLeverage] = useState(() => Math.min(2, maxLeverage));
   const [baseInput, setBaseInput] = useState<string>(() =>
     collateralBalance > 0 ? collateralBalance.toFixed(4) : "0",
@@ -219,27 +256,80 @@ function LoopController({
   // distinguishes a loop from a plain borrow. Absence is treated as a plain
   // borrow, which under-labels a loop whose localStorage was cleared but never
   // presents an unchosen leverage figure as if the user had picked it.
-  const loopKey = `aeras:loop:${walletAddress}:${vault.vaultId}`;
-  const [loopManaged, setLoopManaged] = useState(() => {
-    if (typeof window === "undefined") return false;
+  const loopKey = loopStorageKey(walletAddress, vault.vaultId);
+  const [loopRecord, setLoopRecord] = useState<LoopRecord>(() =>
+    readCachedLoopRecord(loopKey),
+  );
+  const loopManaged = loopRecord.managed;
+
+  // Reconcile the cached hint with the server, and carry a pre-Supabase local
+  // record up on the way past. A failure here is not surfaced: the cache is a
+  // usable answer, and a banner about bookkeeping sync would be noise on a
+  // screen about money.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await fetchLoopRecord(getAccessToken, vault.vaultId);
+        if (cancelled) return;
+        const cached = readCachedLoopRecord(loopKey);
+        // Local knows something the server does not: a loop opened before this
+        // table existed. Push it up once, then adopt the server's answer.
+        if (!remote.managed && cached.managed) {
+          const saved = await saveLoopRecord(
+            getAccessToken,
+            vault.vaultId,
+            cached.basisUsd,
+            "seed",
+          );
+          if (cancelled) return;
+          setLoopRecord(saved);
+          writeCachedLoopRecord(loopKey, saved);
+          return;
+        }
+        setLoopRecord(remote);
+        writeCachedLoopRecord(loopKey, remote);
+      } catch {
+        // Keep the cached value.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getAccessToken, loopKey, vault.vaultId]);
+
+  const markLoopManaged = useCallback(
+    async (basisUsd: number | null) => {
+      const optimistic: LoopRecord = {
+        managed: true,
+        basisUsd: basisUsd != null && basisUsd > 0 ? basisUsd : null,
+      };
+      setLoopRecord(optimistic);
+      writeCachedLoopRecord(loopKey, optimistic);
+      try {
+        const saved = await saveLoopRecord(
+          getAccessToken,
+          vault.vaultId,
+          optimistic.basisUsd,
+          "add",
+        );
+        setLoopRecord(saved);
+        writeCachedLoopRecord(loopKey, saved);
+      } catch {
+        // The loop is open either way. The cache carries it until the next load
+        // reconciles, which is better than failing a successful transaction.
+      }
+    },
+    [getAccessToken, loopKey, vault.vaultId],
+  );
+
+  const clearLoopManaged = useCallback(async () => {
+    setLoopRecord(EMPTY_LOOP_RECORD);
+    writeCachedLoopRecord(loopKey, EMPTY_LOOP_RECORD);
     try {
-      return localStorage.getItem(loopKey) === "1";
-    } catch {
-      return false;
-    }
-  });
-  const markLoopManaged = useCallback(() => {
-    try {
-      localStorage.setItem(loopKey, "1");
+      await clearLoopRecord(getAccessToken, vault.vaultId);
     } catch {}
-    setLoopManaged(true);
-  }, [loopKey]);
-  const clearLoopManaged = useCallback(() => {
-    try {
-      localStorage.removeItem(loopKey);
-    } catch {}
-    setLoopManaged(false);
-  }, [loopKey]);
+  }, [getAccessToken, loopKey, vault.vaultId]);
 
   // Discover an existing position NFT (shared with the plain-borrow flow).
   useEffect(() => {
@@ -323,6 +413,9 @@ function LoopController({
           outputMint: vault.collateralMint,
           amountAtomic: toAtomicBN(borrowUsd, vault.borrowDecimals).toString(),
           slippageBps: MULTIPLY_SLIPPAGE_BPS,
+          // Same account budget the open path quotes with, so the figures below
+          // describe the route that will actually be sent.
+          maxAccounts: SWAP_ACCOUNT_BUDGET,
         });
         if (seq !== previewSeq.current) return;
         setPreview(quote);
@@ -393,7 +486,11 @@ function LoopController({
       const sig = await sendAndConfirm(conn, base64ToBytes(signed));
       const finalNft = newNft ?? nftId;
       if (finalNft) persistNftId(finalNft);
-      markLoopManaged();
+      // The basis is what the user put in, not what the position is worth a
+      // moment later. Swap cost, price impact and fees land between the two, and
+      // they are real money spent — counting them as an immediate small loss is
+      // correct, not an artefact.
+      markLoopManaged(baseUsd);
       setOpenState({ kind: "done", signature: sig });
       await onRefresh();
       await Promise.all([refreshLive(), refreshPosition()]);
@@ -442,6 +539,54 @@ function LoopController({
 
   return (
     <div className="space-y-4">
+      {/* Hero, matching the borrow market header in components/BorrowMarketDetail.
+          Exposure is the figure the leverage slider exists to move, and it used
+          to be the first of six small preview rows that appeared only once an
+          amount had been typed. Borrow leads with its headline number; this now
+          does the same. */}
+      <div className="flex flex-col items-center gap-3 text-center">
+        <AssetLogo
+          xstock={assetIdentity(vault.collateralMint, vault.collateralSymbol)}
+          size={44}
+        />
+        <div className="font-light text-xl tracking-tight text-white">
+          {vault.collateralSymbol}
+        </div>
+      </div>
+
+      <div className="space-y-1 text-center">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+          Leveraged exposure
+        </div>
+        <div className="font-mono text-[2.25rem] font-light leading-none tracking-tight tabular-nums text-white">
+          {/* The quote's figure, not base × leverage. Exposure is sized from the
+              swap's guaranteed minimum out, so the headline is what the position
+              will actually be worth rather than what was asked for. That is why
+              it waits for the route instead of showing an idealised number and
+              correcting it a beat later. */}
+          {exposureUsd != null
+            ? `$${exposureUsd.toFixed(2)}`
+            : previewing
+              ? "…"
+              : "—"}
+        </div>
+        <div className="text-xs text-white/50">
+          {baseValid ? (
+            <>
+              <span className="font-mono tabular-nums text-white">
+                {baseUi.toFixed(4)}
+              </span>{" "}
+              {vault.collateralSymbol} at{" "}
+              <span className="font-mono tabular-nums text-white">
+                {leverage.toFixed(1)}×
+              </span>
+            </>
+          ) : (
+            <>Set an amount and leverage below</>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Stat
           label="Oracle price"
@@ -458,6 +603,7 @@ function LoopController({
           vault={vault}
           position={position}
           oraclePrice={oraclePrice}
+          basisUsd={loopRecord.basisUsd}
           state={closeState}
           onClose={handleClose}
           onReset={() => setCloseState({ kind: "idle" })}
@@ -518,18 +664,33 @@ function LoopController({
         </div>
         <input
           type="range"
-          min={1.1}
-          max={Math.max(1.2, Math.floor(maxLeverage * 10) / 10)}
+          min={LEVERAGE_MIN}
+          max={leverageMax}
           step={0.1}
           value={leverage}
           onChange={(e) => {
             setLeverage(Number(e.target.value));
             if (openState.kind !== "idle") setOpenState({ kind: "idle" });
           }}
-          className="w-full accent-aeras-blue"
+          // Unitless 0-1, read by .aeras-range to place the fill edge under the
+          // thumb's centre. Clamped because `leverage` is state and a cap that
+          // drops (the vault's max moves with its collateral factor) can leave it
+          // briefly above the current maximum.
+          style={
+            {
+              "--range-progress": Math.min(
+                1,
+                Math.max(
+                  0,
+                  (leverage - LEVERAGE_MIN) / (leverageMax - LEVERAGE_MIN),
+                ),
+              ),
+            } as CSSProperties
+          }
+          className="aeras-range"
         />
         <div className="mt-1 flex justify-between text-[10px] uppercase tracking-wider text-white/50">
-          <span>1.1×</span>
+          <span>{LEVERAGE_MIN.toFixed(1)}×</span>
           <span>Max {maxLeverage.toFixed(1)}×</span>
         </div>
       </div>
@@ -546,11 +707,13 @@ function LoopController({
             </div>
           )}
 
+          {/* Quantity only. The dollar value of the same exposure is the
+              headline above, and printing it twice invites the two to drift. */}
           <PreviewRow
             label="Exposure"
             value={
-              exposureUi != null && exposureUsd != null
-                ? `${exposureUi.toFixed(4)} ${vault.collateralSymbol} · $${exposureUsd.toFixed(2)}`
+              exposureUi != null
+                ? `${exposureUi.toFixed(4)} ${vault.collateralSymbol}`
                 : previewing
                   ? "…"
                   : "—"
@@ -630,6 +793,7 @@ function OpenPositionCard({
   vault,
   position,
   oraclePrice,
+  basisUsd,
   state,
   onClose,
   onReset,
@@ -637,6 +801,9 @@ function OpenPositionCard({
   vault: XStockBorrowVault;
   position: UserPositionState;
   oraclePrice: number | null;
+  // Equity put in at open. Null when it was never recorded, in which case no
+  // P&L is shown at all. See LoopRecord.
+  basisUsd: number | null;
   state: TxState;
   onClose: () => void;
   onReset: () => void;
@@ -666,43 +833,101 @@ function OpenPositionCard({
       ? ((oraclePrice - liquidationPrice) / oraclePrice) * 100
       : null;
 
+  // P&L against what went in. Only when a basis was recorded: without one the
+  // card shows the net value and stops there.
+  const pnlUsd =
+    equityUsd != null && basisUsd != null ? equityUsd - basisUsd : null;
+  const pnlPct =
+    pnlUsd != null && basisUsd != null && basisUsd > 0
+      ? (pnlUsd / basisUsd) * 100
+      : null;
+  // Zero is not a gain. Below half a cent the sign is noise, so it reads flat
+  // rather than picking a colour a rounding error chose.
+  const pnlFlat = pnlUsd != null && Math.abs(pnlUsd) < 0.005;
+
   return (
-    <div className="space-y-3 rounded-xl border border-aeras-blue/30 bg-aeras-blue/15 p-3.5">
-      <div className="flex items-baseline justify-between">
-        <span className="font-mono text-[11px] text-white/50">
-          Open loop · #{position.nftId}
-        </span>
-        <span className="rounded-md bg-aeras-blue/20 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-aeras-blue-medium">
-          {currentLeverage != null ? `${currentLeverage.toFixed(2)}×` : "—"}
-        </span>
+    // Neutral surface, matching the asset panel on Home. The blue wash used to
+    // mark this card as special, but "you are leveraged" is not a state the UI
+    // should be cheerful about, and it fought the chart's own colour.
+    <div className="space-y-4 rounded-xl border border-white/10 bg-white/5 p-4">
+      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+        Open loop · #{position.nftId}
       </div>
 
-      {ticker && (
-        <div className="rounded-lg border border-white/10 bg-black/20 p-2.5">
-          <PriceChart
-            ticker={ticker}
-            marker={
-              liquidationPrice != null
-                ? { price: liquidationPrice, label: "Liquidation" }
-                : undefined
-            }
-          />
-          <div className="mt-2 flex items-baseline justify-between text-[11px]">
-            <span className="text-white/50">
-              Position value · {colUi.toFixed(4)} {vault.collateralSymbol}
-            </span>
-            <span className="font-mono tabular-nums text-white">
-              {colUsd != null ? `$${colUsd.toFixed(2)}` : "—"}
-            </span>
-          </div>
-          {liquidationPrice != null && drawdownPct != null && (
-            <div className="mt-1 flex items-baseline justify-between text-[11px]">
-              <span className="text-white/50">Liquidation price</span>
-              <span className="font-mono tabular-nums text-aeras-warning">
-                ${liquidationPrice.toFixed(2)} · {drawdownPct.toFixed(1)}% below
-              </span>
+      {/* Identity left, the two numbers right — the same header row the asset
+          panel on Home uses above its chart. Price/change maps cleanly onto net
+          value/P&L: a current figure and how far it has moved.
+
+          The one deviation is the "Net value" label. An unlabelled figure works
+          on Home because a number above a price chart reads as the price; here
+          it is the position's equity while the chart below plots the asset, and
+          leaving those two to be told apart by context is not a risk worth
+          taking on a screen about money. */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          {ticker && <AssetLogo xstock={ticker} size={32} />}
+          <div>
+            <div className="text-sm font-medium tracking-tight text-white">
+              {ticker?.name ?? vault.collateralSymbol}
             </div>
+            <div className="text-xs text-white/50">
+              {vault.collateralSymbol}
+              {currentLeverage != null && ` · ${currentLeverage.toFixed(2)}×`}
+            </div>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+            Net value
+          </div>
+          <div className="font-mono text-sm tabular-nums text-white">
+            {equityUsd != null ? `$${equityUsd.toFixed(2)}` : "—"}
+          </div>
+          {pnlUsd != null ? (
+            <div
+              className={`font-mono text-xs tabular-nums ${
+                pnlFlat
+                  ? "text-white/50"
+                  : pnlUsd > 0
+                    ? "text-aeras-positive"
+                    : "text-aeras-negative"
+              }`}
+            >
+              {pnlFlat ? "" : pnlUsd > 0 ? "+" : "−"}$
+              {Math.abs(pnlUsd).toFixed(2)}
+              {pnlPct != null &&
+                ` (${Math.abs(pnlPct).toFixed(1)}%)`}
+            </div>
+          ) : (
+            <div className="text-xs text-white/50">No entry recorded</div>
           )}
+        </div>
+      </div>
+
+      {/* Unboxed and headingless, as on Home: the row above already names the
+          asset, and the card around this is border enough. */}
+      {ticker && (
+        <PriceChart
+          ticker={ticker}
+          heightClass="h-40"
+          showHeading={false}
+          marker={
+            liquidationPrice != null
+              ? { price: liquidationPrice, label: "Liquidation" }
+              : undefined
+          }
+        />
+      )}
+
+      {/* Liquidation keeps its own full-width row rather than joining the grid.
+          It is the number that decides whether the position survives, and it
+          reads as one more statistic when it sits among them. */}
+      {liquidationPrice != null && drawdownPct != null && (
+        <div className="flex items-baseline justify-between rounded-lg bg-white/5 px-3 py-2 text-[11px]">
+          <span className="text-white/50">Liquidation price</span>
+          <span className="font-mono tabular-nums text-aeras-warning">
+            ${liquidationPrice.toFixed(2)} · {drawdownPct.toFixed(1)}% below
+          </span>
         </div>
       )}
 
@@ -717,9 +942,12 @@ function OpenPositionCard({
           label="LTV"
           value={`${ltvPct.toFixed(1)}% / LT ${ltPct.toFixed(0)}%`}
         />
+        {/* Equity is the headline. Its counterpart — what went in — is the
+            useful thing to sit beside it, since the two are what the P&L is the
+            difference of. */}
         <Stat
-          label="Equity"
-          value={equityUsd != null ? `$${equityUsd.toFixed(2)}` : "—"}
+          label="Entry"
+          value={basisUsd != null ? `$${basisUsd.toFixed(2)}` : "—"}
         />
       </div>
 
