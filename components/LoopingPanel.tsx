@@ -116,7 +116,7 @@ export function LoopingCard({
           the hero's label further down, where it sits on the number it names. */}
       <div className="flex items-baseline justify-between">
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          Looping
+          Leveraged Looping
         </div>
         <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-warning">
           Medium risk
@@ -651,7 +651,7 @@ function LoopController({
       {/* Leverage slider. */}
       <div>
         <div className="mb-2 flex items-baseline justify-between text-xs">
-          <span className="text-white/50">Target leverage</span>
+          <span className="text-white/50">Leverage</span>
           <span className="font-mono tabular-nums text-white">
             {leverage.toFixed(1)}×
           </span>

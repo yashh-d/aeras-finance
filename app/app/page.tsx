@@ -1016,6 +1016,11 @@ function MarketsRowExpanded({
         <PriceChart ticker={xstock} heightClass="h-72" />
 
         <div className="space-y-4">
+          {/* Opening a market is a decision to trade it, so the amount field
+              takes focus with the cursor waiting, the same as Home's asset
+              view. The row mounts this fresh on expand, so the focus effect
+              fires each time; AmountField focuses with preventScroll, so the
+              page does not jump out from under the row that was just clicked. */}
           <AssetTradePanel
             xstock={xstock}
             prices={prices}
@@ -1023,6 +1028,7 @@ function MarketsRowExpanded({
             walletAddress={walletAddress}
             auth={auth}
             onRefresh={onRefresh}
+            autoFocus
           />
         </div>
       </div>
