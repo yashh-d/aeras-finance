@@ -206,6 +206,13 @@
     0 1px 3px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.28),
     inset 0 1px 0.5px rgba(255, 255, 255, 0.95),
     inset 0 -1px 1px rgba(0, 0, 0, 0.22);
+  /* The raised state. A bigger, softer, further-offset drop is what actually
+     reads as "lifted"; scaling alone just looks like a bigger disc. The inset
+     lighting is unchanged, since the light source has not moved. */
+  --range-thumb-shadow-lift:
+    0 4px 10px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0.5px rgba(255, 255, 255, 0.95),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.22);
   /* Where the thumb's centre actually is, in track coordinates. */
   --range-fill: calc(
     (var(--range-thumb-w) / 2) +
@@ -252,14 +259,26 @@
   border-radius: 50%;
   background: var(--range-thumb-face);
   box-shadow: var(--range-thumb-shadow);
-  transition: filter 100ms ease;
+  /* Scaling the thumb is safe for the fill maths: `transform` is a paint-time
+     effect and does not change the element's box, so --range-thumb-w still
+     describes the travel the gradient is aligned against. */
+  transition:
+    transform 130ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 130ms ease,
+    filter 130ms ease;
 }
 
 .aeras-range:hover::-webkit-slider-thumb {
-  filter: brightness(1.06);
+  transform: scale(1.12);
+  box-shadow: var(--range-thumb-shadow-lift);
+  filter: brightness(1.05);
 }
+/* Grabbed: lifts further rather than pressing in. The thumb is being picked up
+   and carried, not pushed, so a recessed active state fights the gesture. */
 .aeras-range:active::-webkit-slider-thumb {
-  filter: brightness(0.94);
+  transform: scale(1.2);
+  box-shadow: var(--range-thumb-shadow-lift);
+  filter: brightness(1.08);
 }
 
 .aeras-range::-moz-range-track {
@@ -275,14 +294,21 @@
   border-radius: 50%;
   background: var(--range-thumb-face);
   box-shadow: var(--range-thumb-shadow);
-  transition: filter 100ms ease;
+  transition:
+    transform 130ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 130ms ease,
+    filter 130ms ease;
 }
 
 .aeras-range:hover::-moz-range-thumb {
-  filter: brightness(1.06);
+  transform: scale(1.12);
+  box-shadow: var(--range-thumb-shadow-lift);
+  filter: brightness(1.05);
 }
 .aeras-range:active::-moz-range-thumb {
-  filter: brightness(0.94);
+  transform: scale(1.2);
+  box-shadow: var(--range-thumb-shadow-lift);
+  filter: brightness(1.08);
 }
 
 /* Keyboard focus only. The thumb is already obvious under a mouse, and a ring
@@ -295,4 +321,19 @@
 }
 .aeras-range:focus-visible::-moz-range-thumb {
   box-shadow: var(--range-thumb-shadow), 0 0 0 3px rgba(41, 115, 255, 0.55);
+}
+
+/* The lift is decoration. Users who ask for less motion still get the brightness
+   and shadow change, just without the travel. */
+@media (prefers-reduced-motion: reduce) {
+  .aeras-range::-webkit-slider-thumb,
+  .aeras-range::-moz-range-thumb {
+    transition: none;
+  }
+  .aeras-range:hover::-webkit-slider-thumb,
+  .aeras-range:active::-webkit-slider-thumb,
+  .aeras-range:hover::-moz-range-thumb,
+  .aeras-range:active::-moz-range-thumb {
+    transform: none;
+  }
 }

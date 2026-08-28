@@ -1009,9 +1009,11 @@ function MarketsRowExpanded({
   return (
     <div className="border-t border-white/10 px-1 py-5">
       <div className="grid gap-6 lg:grid-cols-2">
-        <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-          <PriceChart ticker={xstock} heightClass="h-72" />
-        </div>
+        {/* No card around the chart. It sits flush the way Home's asset view
+            draws it, and the trade panel beside it has no card either, so the
+            grey box was the only thing on this row pretending to be a surface
+            inside a row that is already inside one. */}
+        <PriceChart ticker={xstock} heightClass="h-72" />
 
         <div className="space-y-4">
           <AssetTradePanel

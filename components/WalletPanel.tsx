@@ -268,12 +268,37 @@ export function WalletPanel({
     scan.stables.find((s) => s.chain === "8453")?.balanceAtomic ?? "0";
   const baseEthWei =
     scan.native.find((n) => n.chain === "8453")?.balanceAtomic ?? "0";
+  // The scan's real rows, with a zero row standing in for any gas chain it
+  // returned nothing for. See GAS_ROW_FALLBACKS.
   const nativeRows = useMemo<NativeHolding[]>(() => {
     const missing = GAS_ROW_FALLBACKS.filter(
       (f) => !scan.native.some((n) => n.chain === f.chain),
     );
     return missing.length ? [...scan.native, ...missing] : scan.native;
   }, [scan.native]);
+  // One row per gas asset rather than per chain. ETH is the gas token on both
+  // Ethereum and Base, and two rows both labelled ETH read as a duplicate
+  // rather than as one holding in two places. The same treatment USDC already
+  // gets, and correct for the same reason: the parts are one asset at one
+  // price, so they sum. Keyed by symbol, because a symbol is what the duplicate
+  // row shows.
+  const nativeGroups = useMemo(() => {
+    const bySymbol = new Map<string, NativeGroup>();
+    for (const n of nativeRows) {
+      const entry = bySymbol.get(n.symbol) ?? {
+        symbol: n.symbol,
+        priceId: n.priceId,
+        parts: [],
+      };
+      entry.parts.push({
+        key: `${n.chain}:${n.symbol}`,
+        chainLabel: n.chainLabel,
+        amount: nativeUiAmount(n),
+      });
+      bySymbol.set(n.symbol, entry);
+    }
+    return [...bySymbol.values()];
+  }, [nativeRows]);
 
   async function handleFund(asset: "native-currency" | "USDC") {
     setFundError(null);
@@ -333,16 +358,21 @@ export function WalletPanel({
   //
   // A deposit address does not care which token arrives: TSLAx, QQQx and XAUt0
   // land at the same address USDC does, and the only thing the user has to get
-  // right is the chain. So the row sits with that chain's other assets and
-  // opens the same destination they do, and the fan of marks says which kind of
-  // asset it stands for without listing every ticker in the registry.
+  // right is the chain. So the row sits with that chain's other assets, and the
+  // fan of marks says which kind of asset it stands for without listing every
+  // ticker in the registry.
+  //
+  // It opens the deposit sheet, NOT the Privy funding widget the USDC and ETH
+  // rows open. Those rows name an asset Privy can actually sell or transfer;
+  // Privy has no idea what a TSLAon is, so pointing this row at the widget gave
+  // the user an onramp offering to buy ETH when they came to deposit a stock.
+  // The address is the same either way, which is what made the mistake easy;
+  // what differs is that the sheet names the tokens each chain accepts and says
+  // they convert on deposit.
   //
   // Anything already held on that chain is promoted above it, because that is a
   // deposit the user can act on now rather than one they have to go and fund.
-  function tokenizedAssetOptions(
-    chainLabel: string,
-    onSelect: () => void,
-  ): FundOption[] {
+  function tokenizedAssetOptions(chainLabel: string): FundOption[] {
     return [
       ...scan.held
         .filter((h) => h.source.chainLabel === chainLabel)
@@ -359,9 +389,9 @@ export function WalletPanel({
       {
         id: `stocks-${chainLabel}`,
         label: "Tokenized assets",
-        hint: "Stocks, ETFs, and gold",
+        hint: "Stocks, commodities, and more",
         logos: TOKENIZED_ASSET_MARKS,
-        onSelect,
+        onSelect: () => setDepositingStocks(true),
       },
     ];
   }
@@ -516,35 +546,21 @@ export function WalletPanel({
               />
             ))}
             {!monLeads && monRow}
-            {nativeRows.map((n) => {
-              const amount = nativeUiAmount(n);
-              const price = scan.nativePrices[n.priceId];
-              return (
-                <BalanceRow
-                  key={`${n.chain}:${n.symbol}`}
-                  label={n.symbol}
-                  sublabel={n.chainLabel}
-                  amount={amount}
-                  decimals={6}
-                  usd={price ? amount * price : null}
-                  icon={
-                    <AssetLogo
-                      xstock={{
-                        symbol: n.symbol,
-                        name: n.chainLabel,
-                        logo: NATIVE_LOGOS[n.symbol],
-                      }}
-                      size={30}
-                    />
-                  }
-                  badge={
-                    <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
-                      Gas
-                    </span>
-                  }
-                />
-              );
-            })}
+            {nativeGroups.map((g) => (
+              <NativeRow
+                key={g.symbol}
+                group={g}
+                price={scan.nativePrices[g.priceId]}
+                expanded={expandedKey === `native-${g.symbol}`}
+                onToggle={() =>
+                  setExpandedKey(
+                    expandedKey === `native-${g.symbol}`
+                      ? null
+                      : `native-${g.symbol}`,
+                  )
+                }
+              />
+            ))}
             {/* Ondo collateral withdrawn to the Ethereum wallet.
                 Priced off the matching xStock, since SPCXon and SPCXx track the
                 same underlying and the Solana mint is what this app has a price
@@ -630,9 +646,7 @@ export function WalletPanel({
                     // or 'USDC' and cannot name an SPL mint, so this one opens
                     // the receive address instead of the widget the two rows
                     // above use. Same destination either way.
-                    ...tokenizedAssetOptions("Solana", () =>
-                      setReceiving(true),
-                    ),
+                    ...tokenizedAssetOptions("Solana"),
                   ],
                 },
                 {
@@ -667,9 +681,7 @@ export function WalletPanel({
                           },
                         ]
                       : []),
-                    ...tokenizedAssetOptions("Ethereum", () =>
-                      handleFundEvmChain("1", "Ethereum"),
-                    ),
+                    ...tokenizedAssetOptions("Ethereum"),
                   ],
                 },
                 {
@@ -687,9 +699,7 @@ export function WalletPanel({
                       disabled: creatingEvm,
                       onSelect: () => handleFundEvm("native-currency", bsc),
                     },
-                    ...tokenizedAssetOptions("BNB Chain", () =>
-                      handleFundEvmChain("56", "BNB Chain"),
-                    ),
+                    ...tokenizedAssetOptions("BNB Chain"),
                   ],
                 },
                 {
@@ -739,7 +749,6 @@ export function WalletPanel({
                     {
                       id: "monad-usdc",
                       label: "USDC",
-                      hint: "Moved from Solana",
                       logo: "/logos/usdc.png",
                       onSelect: () => setFundingMonad(true),
                     },
@@ -786,7 +795,7 @@ export function WalletPanel({
           <Sheet open={depositingStocks} onOpenChange={setDepositingStocks}>
             <SheetContent side="right" className="w-full sm:max-w-md">
               <SheetHeader className="border-b border-white/10">
-                <SheetTitle>Deposit tokenized stocks</SheetTitle>
+                <SheetTitle>Deposit tokenized assets</SheetTitle>
                 <SheetDescription>
                   Pick what you are sending. It arrives in the wallet you
                   already have, and converts to the Solana version when you
@@ -1335,6 +1344,137 @@ function UsdcRow({
                 <span className="ml-1.5 text-white/50">
                   ${part.amount.toFixed(2)}
                 </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// A gas asset and the chains it sits on. ETH carries two parts once Base is in
+// play; BNB and MON carry one each.
+interface NativeGroup {
+  symbol: string;
+  // Coingecko id, shared by every part: it is the same asset either way.
+  priceId: string;
+  parts: { key: string; chainLabel: string; amount: number }[];
+}
+
+// One gas asset. Held on a single chain it renders as a plain row; held on
+// several it shows the total and opens to the per-chain breakdown, the way
+// UsdcRow does. The badge stays on the collapsed row, because "this is gas" is
+// true of the whole group and is the reason the row is in the list at all.
+function NativeRow({
+  group,
+  price,
+  expanded,
+  onToggle,
+}: {
+  group: NativeGroup;
+  price: number | undefined;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const total = group.parts.reduce((sum, p) => sum + p.amount, 0);
+  const icon = (
+    <AssetLogo
+      xstock={{
+        symbol: group.symbol,
+        name: group.symbol,
+        logo: NATIVE_LOGOS[group.symbol],
+      }}
+      size={30}
+    />
+  );
+  const badge = (
+    <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+      Gas
+    </span>
+  );
+
+  if (group.parts.length === 1) {
+    return (
+      <BalanceRow
+        label={group.symbol}
+        sublabel={group.parts[0].chainLabel}
+        amount={group.parts[0].amount}
+        decimals={6}
+        usd={price ? group.parts[0].amount * price : null}
+        icon={icon}
+        badge={badge}
+      />
+    );
+  }
+
+  return (
+    <div className="border-b border-white/10 last:border-b-0">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between px-3.5 py-2.5 text-left transition-colors hover:bg-white/5"
+      >
+        <div className="flex items-center gap-2.5">
+          {icon}
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium tracking-tight text-white">
+                {group.symbol}
+              </span>
+              {badge}
+            </div>
+            {/* The chains by name rather than a count. There are two, they are
+                short, and naming them answers the question the row raises
+                without making the user open it. */}
+            <div className="text-xs text-white/50">
+              {group.parts.map((p) => p.chainLabel).join(", ")}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="text-right">
+            <div className="font-mono text-sm tabular-nums text-white">
+              {total.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+            </div>
+            {price != null && (
+              <div className="font-mono text-xs text-white/50">
+                ${(total * price).toFixed(2)}
+              </div>
+            )}
+          </div>
+          <ChevronDown
+            className={`size-4 shrink-0 text-white/40 transition-transform ${
+              expanded ? "rotate-180" : ""
+            }`}
+          />
+        </div>
+      </button>
+      {expanded && (
+        <div className="border-t border-white/5 bg-black/20 px-3.5 py-1">
+          {group.parts.map((part) => (
+            <div
+              key={part.key}
+              className="flex items-center justify-between py-2"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-white">
+                  {group.symbol}
+                </span>
+                <span className="text-[10px] text-white/40">
+                  {part.chainLabel}
+                </span>
+              </div>
+              <span className="font-mono text-xs tabular-nums text-white">
+                {part.amount.toLocaleString(undefined, {
+                  maximumFractionDigits: 6,
+                })}
+                {price != null && (
+                  <span className="ml-1.5 text-white/50">
+                    ${(part.amount * price).toFixed(2)}
+                  </span>
+                )}
               </span>
             </div>
           ))}
