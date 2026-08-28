@@ -173,10 +173,18 @@ function RepayForm({
   // cannot name an exact number, since interest accrues every slot, so each
   // venue gets its own max path instead of the typed figure.
   const [payoffAll, setPayoffAll] = useState(false);
+  // Repaying in full is what almost everyone opening this panel wants, and it
+  // is the only amount that actually closes the position and releases the
+  // collateral. So the default is a single confirm, and the amount field plus
+  // slider stay behind an explicit "custom amount" choice rather than being the
+  // first thing to solve.
+  const [custom, setCustom] = useState(false);
   const [state, setState] = useState<RepayState>({ kind: "idle" });
 
-  const amount = Number(input) || 0;
   const debtUi = position.debtUi;
+  const typedAmount = Number(input) || 0;
+  // Outside custom mode there is no field to read: the amount is the whole debt.
+  const amount = custom ? typedAmount : debtUi;
   // Everything a repay can draw on: Solana USDC directly, spare SOL swapped,
   // and Monad USDC bridged home. Sources read as zero until their balance
   // lands, so the ceiling can only grow, never overpromise.
@@ -198,12 +206,13 @@ function RepayForm({
   // number in the field. The sentinel clears the exact on-chain balance,
   // interest included. So the typed figure being a hair over a rounded display
   // value is not a reason to block anything.
-  const isPayoff = payoffAll || (amount > 0 && amount >= debtUi - PAYOFF_EPSILON_UI);
+  const isPayoff =
+    !custom || payoffAll || (amount > 0 && amount >= debtUi - PAYOFF_EPSILON_UI);
   // Only meaningful when this is genuinely a partial repay. Gating on the raw
   // comparison disabled Repay the instant Max filled the field: the display
   // rounds the debt up to the cent, so Max wrote a value a cent above the true
   // debt and the panel rejected its own button.
-  const overDebt = !isPayoff && amount > debtUi + 1e-9;
+  const overDebt = custom && !isPayoff && amount > debtUi + 1e-9;
   // The part the Solana USDC cannot cover, funded on submit. Monad
   // contributes first (it holds the bulk), SOL swaps for the remainder —
   // mirroring lib/borrow/fund-repay.ts so the copy matches what runs.
@@ -357,6 +366,8 @@ function RepayForm({
       onBack={onBack}
     >
       <div className="space-y-4">
+        {custom && (
+        <>
         <div>
           <div className="mb-1 flex items-baseline justify-between">
             <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
@@ -419,31 +430,36 @@ function RepayForm({
             </div>
           </div>
         )}
+        </>
+        )}
 
-        <div className="space-y-2 rounded-lg border border-white/10 bg-white/5 px-3 py-3 text-xs">
-          <div className="flex justify-between">
-            <span className="text-white/50">Debt after repay</span>
-            <span className="font-mono tabular-nums text-white">
-              {isPayoff
-                ? `0.00 ${position.debtSymbol}`
-                : `${Math.max(0, debtUi - amount).toFixed(2)} ${position.debtSymbol}`}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-white/50">Collateral</span>
-            <span className="font-mono tabular-nums text-white">
-              {position.collateralUi.toFixed(4)} {position.collateralSymbol}
-            </span>
-          </div>
-          <p className="text-[11px] text-white/50">
-            {payoffAll
-              ? `Repaying in full closes the position and returns your ${position.collateralSymbol} to your wallet.` +
-                (position.ref.venue === "kamino"
-                  ? " Kamino needs two signatures for this: the repay, then the withdrawal."
-                  : "")
-              : `Your collateral stays deposited and can be borrowed against again. Withdraw it from the ${position.collateralSymbol} market when you want it back in your wallet.`}
-          </p>
+        <div className="divide-y divide-white/[0.06] border-y border-white/[0.06] text-xs">
+          <Row label="Debt" value={`${debtUi.toFixed(4)} ${position.debtSymbol}`} />
+          <Row
+            label="Collateral"
+            value={`${position.collateralUi.toFixed(4)} ${position.collateralSymbol}`}
+          />
+          <Row label="Venue" value={position.venueLabel} />
+          {custom && (
+            <Row
+              label="Debt after repay"
+              value={
+                isPayoff
+                  ? `0.00 ${position.debtSymbol}`
+                  : `${Math.max(0, debtUi - amount).toFixed(4)} ${position.debtSymbol}`
+              }
+            />
+          )}
         </div>
+
+        <p className="text-[11px] text-white/50">
+          {isPayoff
+            ? `Repaying in full closes the position and returns your ${position.collateralSymbol} to your wallet.` +
+              (position.ref.venue === "kamino"
+                ? " Kamino needs two signatures for this: the repay, then the withdrawal."
+                : "")
+            : `Your collateral stays deposited and can be borrowed against again. Withdraw it from the ${position.collateralSymbol} market when you want it back in your wallet.`}
+        </p>
 
         {needsFunding && (
           <p className="text-[11px] text-white/60">
@@ -541,12 +557,40 @@ function RepayForm({
         >
           {submitting
             ? (state.message ?? "Signing and submitting…")
-            : payoffAll || amount > 0
-              ? "Repay"
-              : "Enter an amount"}
+            : !custom
+              ? `Close · repay ${debtUi.toFixed(4)} ${position.debtSymbol} + withdraw ${position.collateralUi.toFixed(4)} ${position.collateralSymbol}`
+              : amount > 0
+                ? isPayoff
+                  ? "Repay in full"
+                  : `Repay ${amount.toFixed(2)} ${position.debtSymbol}`
+                : "Enter an amount"}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setCustom((on) => !on);
+            setInput("");
+            setPayoffAll(false);
+            reset();
+          }}
+          className="w-full text-center text-[11px] text-white/50 underline-offset-2 transition-colors hover:text-white hover:underline"
+        >
+          {custom ? "Repay the full balance instead" : "Repay a custom amount"}
         </button>
       </div>
     </PanelShell>
+  );
+}
+
+// One label/value line. Matches the Assets list: hairline rule, muted label,
+// mono figure, no filled card around it.
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between py-2.5">
+      <span className="text-white/50">{label}</span>
+      <span className="font-mono tabular-nums text-white">{value}</span>
+    </div>
   );
 }
 
