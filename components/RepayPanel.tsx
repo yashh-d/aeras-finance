@@ -39,7 +39,11 @@ import type { OpenBorrowPosition } from "@/lib/borrow/use-borrow-summary";
 type RepayState =
   | { kind: "idle" }
   | { kind: "submitting"; message?: string }
-  | { kind: "done"; signature: string }
+  // `closed` marks a repay that cleared the debt and pulled the collateral. The
+  // panel has to know, because a closed position disappears from the summary and
+  // the form then falls back to a stale copy of it: after a successful payoff it
+  // went on showing the old debt and still offered to repay it again.
+  | { kind: "done"; signature: string; closed: boolean }
   | { kind: "error"; message: string };
 
 // How close to the debt counts as paying it off. The debt is displayed to the
@@ -332,7 +336,7 @@ function RepayForm({
           await onSettled();
           return;
         }
-        setState({ kind: "done", signature: sig });
+        setState({ kind: "done", signature: sig, closed: true });
         await onSettled();
         return;
       } else {
@@ -350,12 +354,50 @@ function RepayForm({
           );
         } catch {}
       }
-      setState({ kind: "done", signature: sig });
+      setState({ kind: "done", signature: sig, closed: isPayoff });
       await onSettled();
     } catch (err) {
       console.error("[repay]", err);
       setState({ kind: "error", message: readableError(err) });
     }
+  }
+
+  // The position is gone, so there is nothing left to act on and every figure
+  // the form would render is stale. Showing the receipt and a way out is the
+  // whole of it: leaving the live form up meant a closed loan still displayed
+  // its old debt and still offered "Close · repay ... + withdraw ...", which
+  // would have been submitted against a position that no longer exists.
+  if (state.kind === "done" && state.closed) {
+    return (
+      <PanelShell
+        title={`${position.collateralSymbol} loan closed`}
+        subtitle={`${position.venueLabel} · ${position.collateralUi.toFixed(4)} ${position.collateralSymbol} returned to your wallet`}
+        onClose={onClose}
+      >
+        <div className="space-y-4">
+          <a
+            href={`${SOLSCAN_TX_BASE}${state.signature}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs transition-colors hover:border-white/20"
+          >
+            <div className="font-medium text-aeras-positive">
+              Loan repaid and {position.collateralSymbol} withdrawn
+            </div>
+            <div className="mt-0.5 break-all font-mono text-[10px] text-white/50">
+              {state.signature}
+            </div>
+          </a>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full rounded-xl bg-aeras-blue px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium"
+          >
+            Done
+          </button>
+        </div>
+      </PanelShell>
+    );
   }
 
   return (
@@ -538,10 +580,10 @@ function RepayForm({
             rel="noopener noreferrer"
             className="block rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs"
           >
+            {/* Only a partial repay reaches this. A payoff closes the position
+                and returns above, where the receipt is the whole panel. */}
             <div className="font-medium text-aeras-positive">
-              {payoffAll
-                ? `Loan repaid and ${position.collateralSymbol} withdrawn`
-                : "Repay confirmed"}
+              Repay confirmed
             </div>
             <div className="mt-0.5 break-all font-mono text-[10px] text-white/50">
               {state.signature}

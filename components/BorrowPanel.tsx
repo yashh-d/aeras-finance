@@ -360,12 +360,12 @@ function BorrowSummaryHero({
             Add funds
           </button>
         )}
-        {/* Repay is always rendered, and green.
+        {/* Repay is always rendered, and carries its own colour.
             It used to appear only once a position existed, so the way out of a
             loan was invisible right up until you had one, and then arrived as a
             quiet grey outline beside a solid Add funds. That put all the visual
             encouragement on borrowing more. Paying down keeps a permanent slot
-            and the positive colour instead.
+            and a colour of its own instead.
             Disabled when nothing is owed, but never during the initial load:
             positions arrive a beat after the page, and gating on them alone
             made the button flick from dead to live on every visit. */}
@@ -374,7 +374,7 @@ function BorrowSummaryHero({
           onClick={onRepay}
           disabled={!loading && !hasDebt}
           title={!loading && !hasDebt ? "Nothing to repay yet" : undefined}
-          className="rounded-full bg-aeras-positive px-6 py-2.5 text-sm font-medium text-white transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded-full bg-aeras-purple px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-purple-medium disabled:cursor-not-allowed disabled:opacity-40"
         >
           Repay
         </button>

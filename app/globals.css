@@ -32,6 +32,11 @@
   --color-aeras-hero-from: #15181a;
   --color-aeras-hero-to: #222529;
   --color-aeras-positive: #119b62;
+  /* Repay. Its own colour rather than `positive`, which is reserved for gains
+     and confirmations: paying down a loan is neither, and it sits beside the
+     blue Add funds where a green read as "this is the good outcome". */
+  --color-aeras-purple: #6d4aff;
+  --color-aeras-purple-medium: #5c3ae0;
   --color-aeras-negative: #d93232;
   --color-aeras-warning: #c47b00;
   --color-sidebar-ring: var(--sidebar-ring);
