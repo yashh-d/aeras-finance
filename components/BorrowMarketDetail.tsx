@@ -16,6 +16,7 @@ export function MarketDetailHeader({
   mode,
   onModeChange,
   canRepay,
+  borrowActionSlot,
 }: {
   mint: string;
   symbol: string;
@@ -27,6 +28,15 @@ export function MarketDetailHeader({
   mode: BorrowMode;
   onModeChange: (mode: BorrowMode) => void;
   canRepay: boolean;
+  // Where the borrow form puts its submit button once borrow mode is open.
+  //
+  // The Borrow pill has two jobs: it opens the borrow form, and once there is
+  // an amount it IS the submit. Those two live in different components — the
+  // pill here, the amount and its validation in the form below — so rather than
+  // hoisting a money form's validation up into a header just to label a button,
+  // the form portals its own button into this slot. The button stays owned by
+  // the code that knows whether it should be enabled.
+  borrowActionSlot?: (el: HTMLDivElement | null) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -60,11 +70,18 @@ export function MarketDetailHeader({
           disabled={!canRepay}
           onClick={() => onModeChange("repay")}
         />
-        <ModeButton
-          label="Borrow"
-          active={mode === "borrow"}
-          onClick={() => onModeChange("borrow")}
-        />
+        {borrowActionSlot && mode === "borrow" ? (
+          // Borrow mode is already open, so the pill becomes the action. The
+          // form fills this in; until it mounts the cell is simply empty rather
+          // than briefly showing a second Borrow button that does nothing.
+          <div ref={borrowActionSlot} />
+        ) : (
+          <ModeButton
+            label="Borrow"
+            active={mode === "borrow"}
+            onClick={() => onModeChange("borrow")}
+          />
+        )}
       </div>
       {!canRepay && mode === "repay" && (
         <p className="text-center text-[11px] text-white/50">
@@ -74,6 +91,11 @@ export function MarketDetailHeader({
     </div>
   );
 }
+
+// The active-pill look, shared with the submit button that takes this slot so
+// the control does not change shape when it changes job.
+export const BORROW_PILL_CLASS =
+  "w-full rounded-full px-4 py-2.5 text-sm font-medium text-white transition-colors bg-aeras-blue hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-40";
 
 function ModeButton({
   label,

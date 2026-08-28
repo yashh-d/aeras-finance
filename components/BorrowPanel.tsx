@@ -40,7 +40,10 @@ import {
 } from "@/lib/borrow/use-market-stats";
 import { KAMINO_XSTOCK_COLLATERALS } from "@/lib/kamino/reserves";
 import { useBorrowSummary } from "@/lib/borrow/use-borrow-summary";
+import { createPortal } from "react-dom";
+
 import {
+  BORROW_PILL_CLASS,
   MarketDetailHeader,
   type BorrowMode,
 } from "@/components/BorrowMarketDetail";
@@ -690,6 +693,10 @@ function VaultCard({
   // Which of the two actions is on screen. Borrow first: a user opening a market
   // they have no position in is here to draw, not to repay.
   const [mode, setMode] = useState<BorrowMode>("borrow");
+  // The header cell the borrow form portals its submit button into. A ref
+  // callback rather than an effect, so the node is available on the same commit
+  // it mounts and the button is never a frame late.
+  const [borrowSlot, setBorrowSlot] = useState<HTMLDivElement | null>(null);
 
   // Everything convertible into this vault's collateral, summed as a 1:1
   // notional before fees. The deposit runs one conversion per source in
@@ -1020,6 +1027,7 @@ function VaultCard({
         mode={mode}
         onModeChange={setMode}
         canRepay={hasPosition}
+        borrowActionSlot={setBorrowSlot}
       />
 
       {positionLoading ? (
@@ -1072,6 +1080,7 @@ function VaultCard({
           formState={formState}
           resetForm={() => setFormState({ kind: "idle" })}
           recovering={recovering}
+          actionSlot={borrowSlot}
         />
       ) : null}
     </div>
@@ -1194,6 +1203,7 @@ function OperateForm({
   formState,
   resetForm,
   recovering,
+  actionSlot,
 }: {
   vault: XStockBorrowVault;
   existingPosition: UserPositionState | null;
@@ -1213,6 +1223,10 @@ function OperateForm({
   formState: FormState;
   resetForm: () => void;
   recovering: boolean;
+  // Header cell to render the submit into. Null until the header mounts it, in
+  // which case the button falls back to its old place at the foot of the form
+  // rather than disappearing.
+  actionSlot: HTMLElement | null;
 }) {
   // Everything the user can deposit: what is already on Solana plus what a
   // conversion would actually deliver from the rest.
@@ -1338,7 +1352,35 @@ function OperateForm({
     tooClose ||
     recovering ||
     Boolean(previewBlocked) ||
-    (collateralUi === 0 && borrowUi === 0);
+    // Was `collateralUi === 0 && borrowUi === 0`, which let a collateral-only
+    // submit through. The button says Borrow now, so it waits for an amount to
+    // borrow rather than quietly performing a deposit.
+    borrowUi <= 0;
+
+  const submitButton = (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onSubmit({ collateralUi, borrowUi })}
+      className={BORROW_PILL_CLASS}
+    >
+      {/* One word until there is an amount.
+          The collateral field opens pre-filled with the wallet balance, so the
+          old label read "Deposit 0.0622 TSLAx" the moment borrow mode opened —
+          naming an action the user had not asked for on a button they pressed
+          to borrow. The pill is a borrow button: it says Borrow, and it says
+          what it will borrow once that is known. */}
+      {recovering
+        ? "Checking for an existing position…"
+        : converting
+          ? "Converting…"
+          : submitting
+            ? "Signing and submitting…"
+            : borrowUi > 0
+              ? `Borrow $${borrowUi.toFixed(2)} against ${vault.collateralSymbol}`
+              : "Borrow"}
+    </button>
+  );
 
   return (
     <div className="space-y-3">
@@ -1528,26 +1570,13 @@ function OperateForm({
         </a>
       )}
 
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => onSubmit({ collateralUi, borrowUi })}
-        className="w-full rounded-xl bg-aeras-blue px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {recovering
-          ? "Checking for an existing position…"
-          : converting
-            ? "Converting…"
-            : submitting
-              ? "Signing and submitting…"
-              : borrowUi > 0
-              ? `Borrow $${borrowUi.toFixed(2)} against ${vault.collateralSymbol}`
-              : collateralUi > 0
-                ? `Deposit ${collateralUi.toFixed(4)} ${vault.collateralSymbol}`
-                : existingPosition
-                  ? "Update position"
-                  : "Open position"}
-      </button>
+      {/* The Borrow pill in the header. Rendered here because everything that
+          decides its label and whether it is enabled lives in this component;
+          only its position on screen belongs to the header. It used to sit at
+          the foot of the form, under the chart, which meant an expanded market
+          showed a solid "Borrow" pill and a solid "Borrow $14.12 against TSLAx"
+          button doing different things. */}
+      {actionSlot ? createPortal(submitButton, actionSlot) : submitButton}
     </div>
   );
 }

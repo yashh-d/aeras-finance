@@ -20,7 +20,10 @@ import {
 } from "@/lib/kamino/positions";
 import type { KaminoCollateralReserve } from "@/lib/kamino/reserves";
 import type { MarketStat } from "@/lib/borrow/use-market-stats";
+import { createPortal } from "react-dom";
+
 import {
+  BORROW_PILL_CLASS,
   MarketDetailHeader,
   type BorrowMode,
 } from "@/components/BorrowMarketDetail";
@@ -90,6 +93,8 @@ export function KaminoBorrowCard({
   // Which of the two actions is on screen. Borrow first: a user opening a market
   // they have no position in is here to draw, not to repay.
   const [mode, setMode] = useState<BorrowMode>("borrow");
+  // Header cell the borrow form portals its submit into. See BorrowMarketDetail.
+  const [borrowSlot, setBorrowSlot] = useState<HTMLDivElement | null>(null);
 
   const refreshPosition = useCallback(async () => {
     try {
@@ -276,6 +281,7 @@ export function KaminoBorrowCard({
         mode={mode}
         onModeChange={setMode}
         canRepay={hasPosition}
+        borrowActionSlot={setBorrowSlot}
       />
 
       {positionError ? (
@@ -312,6 +318,7 @@ export function KaminoBorrowCard({
           onSubmit={handleSubmit}
           formState={formState}
           resetForm={() => setFormState({ kind: "idle" })}
+          actionSlot={borrowSlot}
         />
       ) : null}
     </div>
@@ -435,6 +442,7 @@ function KaminoOperateForm({
   onSubmit,
   formState,
   resetForm,
+  actionSlot,
 }: {
   collateral: KaminoCollateralReserve;
   existingPosition: KaminoPosition | null;
@@ -447,6 +455,8 @@ function KaminoOperateForm({
   onSubmit: (args: { collateralUi: number; borrowUi: number }) => void;
   formState: FormState;
   resetForm: () => void;
+  // Header cell to render the submit into; falls back in place when absent.
+  actionSlot: HTMLElement | null;
 }) {
   const safeCFPct = collateral.maxLtvSnapshot * 100 * 0.6; // 60% of max LTV
   const [colInput, setColInput] = useState<string>(() =>
@@ -505,7 +515,25 @@ function KaminoOperateForm({
     !borrowValid ||
     submitting ||
     tooClose ||
-    (collateralUi === 0 && borrowUi === 0);
+    // The button borrows, so it waits for an amount to borrow. See the Jupiter
+    // card's matching change.
+    borrowUi <= 0;
+  const submitButton = (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onSubmit({ collateralUi, borrowUi })}
+      className={BORROW_PILL_CLASS}
+    >
+      {/* See the Jupiter card: one word until there is an amount to borrow. */}
+      {submitting
+        ? formState.step
+        : borrowUi > 0
+          ? `Borrow $${borrowUi.toFixed(2)} against ${collateral.symbol}`
+          : "Borrow"}
+    </button>
+  );
+
   const maxBorrowUsd = totalCollateralUsd
     ? totalCollateralUsd * (safeCFPct / 100)
     : 0;
@@ -670,24 +698,10 @@ function KaminoOperateForm({
         </a>
       )}
 
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => onSubmit({ collateralUi, borrowUi })}
-        className="w-full rounded-xl bg-aeras-blue px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {submitting
-          ? formState.step
-          : borrowUi > 0 && collateralUi > 0
-            ? `Deposit ${collateral.symbol} and borrow $${borrowUi.toFixed(2)}`
-            : borrowUi > 0
-              ? `Borrow $${borrowUi.toFixed(2)} against ${collateral.symbol}`
-              : collateralUi > 0
-                ? `Deposit ${collateralUi.toFixed(4)} ${collateral.symbol}`
-                : existingPosition
-                  ? "Update position"
-                  : "Open position"}
-      </button>
+      {/* Rendered here, shown in the header's Borrow pill. Same reasoning as
+          the Jupiter card: the label and the enabled state are decided by this
+          form, only the position on screen belongs to the header. */}
+      {actionSlot ? createPortal(submitButton, actionSlot) : submitButton}
     </div>
   );
 }
