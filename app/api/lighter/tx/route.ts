@@ -4,6 +4,7 @@ import {
   LIGHTER_TX_TYPE_CANCEL_ORDER,
   LIGHTER_TX_TYPE_CHANGE_PUBKEY,
   LIGHTER_TX_TYPE_CREATE_ORDER,
+  LIGHTER_TX_TYPE_WITHDRAW,
 } from "@/lib/lighter/constants";
 import { lighterSendTx } from "@/lib/lighter/server";
 
@@ -29,12 +30,17 @@ export const preferredRegion = "fra1";
 // transit invalidates it. What this route decides is only where the request
 // appears to originate.
 //
-// Transaction types are allowlisted to the three the product actually performs.
-// Without that this is a general purpose relay into Lighter, including for
-// withdrawals and transfers we do not offer, and a bug or an abusive caller
-// could reach operations the UI never exposes.
+// Transaction types are allowlisted to the four the product actually performs.
+// Without that this is a general purpose relay into Lighter, and a bug or an
+// abusive caller could reach operations the UI never exposes. Withdrawals were
+// deliberately excluded until the app offered them; it does now (the margin
+// panel's withdraw flow), and only the SECURE withdraw type is admitted: it can
+// pay nothing but the account's own L1 address, so the worst a hostile caller
+// can do with a stolen signature is send a user their own money. L2 transfers
+// (type 12) remain excluded, because those CAN name another account.
 const RELAYABLE_TX_TYPES = new Set([
   LIGHTER_TX_TYPE_CHANGE_PUBKEY,
+  LIGHTER_TX_TYPE_WITHDRAW,
   LIGHTER_TX_TYPE_CREATE_ORDER,
   LIGHTER_TX_TYPE_CANCEL_ORDER,
 ]);

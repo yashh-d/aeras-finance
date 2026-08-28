@@ -20,7 +20,10 @@
 // route to the Solana xStock is available; routability is confirmed lazily at
 // quote time via /api/trustware/quote.
 
-import { XSTOCK_BORROW_VAULTS, type XStockBorrowVault } from "@/lib/jupiter/borrow";
+import {
+  XSTOCK_BORROW_VAULTS,
+  type XStockBorrowVault,
+} from "@/lib/jupiter/borrow";
 import { TRUSTWARE_SOLANA_CHAIN } from "./constants";
 
 export type EquivalentIssuer = "ondo" | "xstock";
@@ -226,4 +229,51 @@ export function isConvertibleSource(chain: string, token: string): boolean {
 // Flat list of every convertible source, for the deposit-asset picker.
 export function allEquivalentSources(): EquivalentSource[] {
   return EQUIVALENCE.flatMap((e) => e.sources);
+}
+
+// What a deposit surface can honestly say it accepts, per chain.
+export interface DepositableChain {
+  chain: string;
+  chainLabel: string;
+  kind: SourceChainKind;
+  // Tickers accepted on this chain, sorted for a stable display order. The
+  // token address rides along because Privy's EVM funding flow takes the
+  // contract (`asset: { erc20 }`) to label the deposit, even though every one
+  // of them resolves to the same wallet address.
+  assets: { symbol: string; token: string }[];
+}
+
+// Derived from the registry rather than written out in the UI. The registry is
+// the only thing that decides what actually converts -- chains get held out
+// when Trustware's routes go down, and a hardcoded list in a component would
+// keep advertising a deposit that cannot be completed.
+export function depositableChains(): DepositableChain[] {
+  const byChain = new Map<string, DepositableChain>();
+  for (const source of allEquivalentSources()) {
+    let entry = byChain.get(source.chain);
+    if (!entry) {
+      entry = {
+        chain: source.chain,
+        chainLabel: source.chainLabel,
+        kind: source.kind,
+        assets: [],
+      };
+      byChain.set(source.chain, entry);
+    }
+    if (!entry.assets.some((a) => a.symbol === source.symbol)) {
+      entry.assets.push({ symbol: source.symbol, token: source.token });
+    }
+  }
+  for (const entry of byChain.values()) {
+    entry.assets.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  }
+  // EVM chains first, then Solana: the EVM side is where the bulk of the
+  // registry lives and where a user is most likely to be holding one already.
+  // Within EVM, by chain id rather than by name, so Ethereum leads BNB Chain
+  // the way it does everywhere else in the app (it is Privy's defaultChain).
+  return [...byChain.values()].sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "evm" ? -1 : 1;
+    if (a.kind === "evm") return Number(a.chain) - Number(b.chain);
+    return a.chainLabel.localeCompare(b.chainLabel);
+  });
 }

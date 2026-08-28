@@ -33,12 +33,15 @@ import { useMemo, useState } from "react";
 import { LighterChart } from "@/components/LighterChart";
 import { OndoMarketsCard } from "@/components/OndoMarketsCard";
 import { AssetLogo } from "@/components/AssetLogo";
-import { MarketLogo } from "@/components/MarketLogo";
-import { assetIdentity } from "@/lib/jupiter/xstocks";
+import { assetIdentity, XSTOCKS } from "@/lib/jupiter/xstocks";
 import { OndoHedgeSection } from "@/components/OndoHedgeSection";
+import { OneClickHedge } from "@/components/OneClickHedge";
+import { LighterWithdrawCard } from "@/components/LighterWithdrawCard";
 import { Sparkline } from "@/components/Sparkline";
 import { useOndoHedge } from "@/lib/ondo/use-ondo-hedge";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { useEmbeddedSolanaWallet } from "@/lib/privy/solana";
+import { useVaultCollateral } from "@/lib/borrow/use-vault-collateral";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { AccountBalances } from "@/lib/solana/balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
@@ -47,6 +50,7 @@ import { closeHedge, placeHedge } from "@/lib/lighter/order";
 import {
   estimateFundingFromInterest,
   liquidationDistance,
+  liquidationPrice,
   marginForLeverage,
 } from "@/lib/lighter/risk";
 import { computeHedgeSize } from "@/lib/lighter/sizing";
@@ -74,7 +78,9 @@ type Status =
   | { kind: "done"; symbol: string; txHash: string }
   | { kind: "error"; message: string };
 
-const PANEL = "rounded-xl border border-white/[0.07] bg-[#111415]";
+import { GLASS_SURFACE, INSET_PANEL } from "@/lib/ui/surface";
+
+const PANEL = INSET_PANEL;
 const LABEL =
   "text-[10px] font-medium uppercase tracking-[0.14em] text-white/35";
 
@@ -90,12 +96,40 @@ const VENUES: { id: Venue; label: string }[] = [
 
 export function HedgePanel({ balances, prices, scan }: Props) {
   const wallet = useEmbeddedEvmWallet();
-  const hedge = useHedge({ l1Address: wallet.address, balances, prices });
+  const { address: solanaAddress } = useEmbeddedSolanaWallet();
+
+  // Stock posted as Jupiter borrow collateral still counts as hedgeable
+  // exposure. Without this, the borrow-funded hedge removes its own row the
+  // moment it deposits the stock, and a user whose funding leg stalled has no
+  // surface left to finish the short from.
+  const vaultCollateral = useVaultCollateral(solanaAddress);
+  const vaultCollateralAtomic = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const [mint, c] of Object.entries(vaultCollateral.byMint)) {
+      out[mint] = c.atomic;
+    }
+    return out;
+  }, [vaultCollateral.byMint]);
+
+  const hedge = useHedge({
+    l1Address: wallet.address,
+    balances,
+    prices,
+    vaultCollateralAtomic,
+  });
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
-  // Ondo is the default venue: it is the one that can post the held stock as
-  // its own margin, which is the reason to hedge here rather than sell.
-  const [venue, setVenue] = useState<Venue>("ondo");
+  // Lighter is the default venue. Ondo held this slot while it was the venue
+  // that could post the stock as its own margin, but its API now answers 502
+  // and the borrow-funded flow gives Lighter the same self-funding property
+  // (borrow against the stock, margin with the proceeds), so defaulting to
+  // Ondo bought four failed requests per page load and nothing else.
+  const [venue, setVenue] = useState<Venue>("lighter");
+
+  // The margin deposit and withdraw forms, opened from the stat strip's Add
+  // and Withdraw buttons. One at a time: both describe the same balance.
+  const [marginOpen, setMarginOpen] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
 
   // Both hooks run, because hooks cannot be called conditionally, but the Ondo
   // one no-ops while another venue is selected rather than holding a session
@@ -219,7 +253,7 @@ export function HedgePanel({ balances, prices, scan }: Props) {
   }
 
   return (
-    <div className="rounded-2xl border border-white/[0.07] bg-[#0a0c0d] p-4 text-white lg:p-5">
+    <div className={`${GLASS_SURFACE} p-4 text-white lg:p-5`}>
       <TopBar
         venue={venue}
         onVenue={setVenue}
@@ -256,6 +290,25 @@ export function HedgePanel({ balances, prices, scan }: Props) {
         shortNotionalUsd={hedge.totals.shortNotionalUsd}
         coverageRatio={hedge.totals.coverageRatio}
         collateralUsd={collateralUsd}
+        walletUsd={margin.funding.readyUsd}
+        onAddMargin={
+          hedge.onboarding.status === "no-wallet"
+            ? undefined
+            : () => {
+                setWithdrawOpen(false);
+                setMarginOpen(true);
+              }
+        }
+        onWithdrawMargin={
+          // Withdrawing needs an account with margin in it; before that the
+          // button would only open a form that refuses.
+          hedge.state?.account && collateralUsd > 0
+            ? () => {
+                setMarginOpen(false);
+                setWithdrawOpen(true);
+              }
+            : undefined
+        }
       />
 
       <div className="mt-3 space-y-3">
@@ -281,8 +334,18 @@ export function HedgePanel({ balances, prices, scan }: Props) {
         ) : (
           <MarginCard
             margin={margin}
-            collateralUsd={collateralUsd}
             needsAccount={hedge.onboarding.status === "needs-deposit"}
+            open={marginOpen}
+            onClose={() => setMarginOpen(false)}
+          />
+        )}
+        {withdrawOpen && hedge.onboarding.status !== "no-wallet" && (
+          <LighterWithdrawCard
+            accountIndex={hedge.state?.account?.index}
+            availableUsd={collateralUsd}
+            solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+            onClose={() => setWithdrawOpen(false)}
+            onSettled={() => void hedge.refresh()}
           />
         )}
 
@@ -321,9 +384,8 @@ export function HedgePanel({ balances, prices, scan }: Props) {
               />
             )}
 
-            <div className={PANEL}>
+            <div className="@container divide-y divide-white/10 border-t border-white/10">
               <RowHeader />
-              <div className="divide-y divide-white/[0.06]">
                 {hedge.views.map((view) => (
                   <HedgeRow
                     key={view.holding.mint}
@@ -340,9 +402,32 @@ export function HedgePanel({ balances, prices, scan }: Props) {
                     onSelect={() => setSelectedMint(view.holding.mint)}
                     onOpen={(ratio) => onOpen(view, ratio)}
                     onClose={() => onClose(view)}
+                    depositAddress={hedge.state?.depositAddress}
+                    onBorrowed={() => {
+                      // The whole wallet holding just became vault collateral.
+                      // Registered synchronously so the next balance poll
+                      // cannot filter the row out from under the running flow.
+                      const x = XSTOCKS.find(
+                        (entry) => entry.mint === view.holding.mint,
+                      );
+                      const quantity =
+                        view.holding.walletQuantity ?? view.holding.quantity;
+                      if (x && Number(quantity) > 0) {
+                        vaultCollateral.noteDeposit(
+                          view.holding.mint,
+                          BigInt(
+                            Math.floor(Number(quantity) * 10 ** x.decimals),
+                          ).toString(),
+                          x.decimals,
+                        );
+                      }
+                    }}
+                    onFunded={() => {
+                      vaultCollateral.refresh();
+                      void hedge.refresh();
+                    }}
                   />
                 ))}
-              </div>
             </div>
           </>
         )}
@@ -405,11 +490,17 @@ function StatStrip({
   shortNotionalUsd,
   coverageRatio,
   collateralUsd,
+  walletUsd,
+  onAddMargin,
+  onWithdrawMargin,
 }: {
   exposureUsd: number;
   shortNotionalUsd: number;
   coverageRatio: number;
   collateralUsd: number;
+  walletUsd: number;
+  onAddMargin?: () => void;
+  onWithdrawMargin?: () => void;
 }) {
   return (
     <div className="grid grid-cols-2 gap-x-6 gap-y-3 border-b border-white/[0.07] py-3 lg:grid-cols-4">
@@ -419,11 +510,39 @@ function StatStrip({
         label="Coverage"
         value={exposureUsd > 0 ? percent(coverageRatio) : "—"}
       />
-      <Metric
-        label="Margin available"
-        value={usd(collateralUsd)}
-        hint="USDC on Lighter"
-      />
+      {/* The margin stat carries its own action. Funding used to be a separate
+          bar below this strip saying the same two numbers over again; the stat
+          is where the eye already goes when margin is short, so the button
+          belongs on it. */}
+      <div>
+        <div className={LABEL}>Margin available</div>
+        <div className="mt-1 flex items-center gap-2">
+          <span className="font-mono text-base tabular-nums text-white">
+            {usd(collateralUsd)}
+          </span>
+          {onAddMargin && (
+            <button
+              type="button"
+              onClick={onAddMargin}
+              className="rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-white/70 transition-colors hover:border-white/25 hover:text-white"
+            >
+              Add
+            </button>
+          )}
+          {onWithdrawMargin && (
+            <button
+              type="button"
+              onClick={onWithdrawMargin}
+              className="rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-white/70 transition-colors hover:border-white/25 hover:text-white"
+            >
+              Withdraw
+            </button>
+          )}
+        </div>
+        <div className="mt-0.5 text-[11px] text-white/30">
+          {usd(walletUsd)} USDC in wallet
+        </div>
+      </div>
     </div>
   );
 }
@@ -465,21 +584,22 @@ function Metric({
 // to make.
 function MarginCard({
   margin,
-  collateralUsd,
   needsAccount,
+  open,
+  onClose,
 }: {
   margin: ReturnType<typeof useMarginFunding>;
-  collateralUsd: number;
   needsAccount: boolean;
+  // Controlled by the Add button on the stat strip. The card renders nothing
+  // when closed: its two figures already live on the strip, and repeating them
+  // in a bar of their own pushed the hedge rows below the fold.
+  open: boolean;
+  onClose: () => void;
 }) {
   const [amount, setAmount] = useState("");
   const { funding, block, status } = margin;
 
-  // Nothing to say once the account is funded and the user has not asked to add
-  // more. Collapsing to a single line keeps the hedge rows at the top of the
-  // panel, which is what the tab is for.
-  const [expanded, setExpanded] = useState(false);
-  const showForm = needsAccount || expanded;
+  const showForm = needsAccount || open;
 
   const entered = Number(amount);
   const overBalance = entered > funding.readyUsd;
@@ -491,32 +611,7 @@ function MarginCard({
     !overBalance &&
     !underMinimum;
 
-  if (!showForm) {
-    return (
-      <div className={`${PANEL} flex flex-wrap items-center justify-between gap-3 px-4 py-3`}>
-        <div className="text-sm text-white/45">
-          <span className="font-mono tabular-nums text-white">
-            {usd(collateralUsd)}
-          </span>{" "}
-          margin on Lighter
-          {funding.readyUsd > 0 && (
-            <>
-              {" · "}
-              <span className="font-mono tabular-nums">{usd(funding.readyUsd)}</span>{" "}
-              USDC in your wallet
-            </>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 transition-colors hover:border-white/20 hover:text-white"
-        >
-          Add margin
-        </button>
-      </div>
-    );
-  }
+  if (!showForm) return null;
 
   return (
     <div className={`${PANEL} p-4`}>
@@ -534,7 +629,7 @@ function MarginCard({
         {!needsAccount && (
           <button
             type="button"
-            onClick={() => setExpanded(false)}
+            onClick={onClose}
             className="text-xs text-white/35 transition-colors hover:text-white/70"
           >
             Close
@@ -643,14 +738,33 @@ function MarginCard({
   );
 }
 
+// Fixed-width, right-aligned numeric columns shared by the header and every
+// row so the figures align down the list, exactly as the Borrow list does.
+// Drops are on CONTAINER width, not viewport, matching that precedent.
+const COL_EXPOSURE = "w-24 shrink-0 text-right";
+const COL_SHORT = "hidden w-24 shrink-0 text-right @md:block";
+const COL_PRICE = "hidden w-24 shrink-0 text-right @xl:block";
+
+// The action column, reserved at its WIDEST state: a hedged row shows Close
+// beside the action button, and the action button is at its longest while busy
+// ("Working…"). Sized to that rather than to the common case, because the
+// column is shrink-0 and right-aligned, so anything wider than the reserve
+// overflows leftward and lands on top of the Price figure.
+const COL_ACTIONS = "w-[11.5rem] shrink-0";
+// Fixed floor so the label going Hedge -> Working… -> Add does not resize the
+// button and shuffle the row under the cursor mid-click.
+const ACTION_BUTTON_MIN = "min-w-[6.5rem]";
+
 function RowHeader() {
   return (
-    <div className="hidden grid-cols-12 gap-4 border-b border-white/[0.07] px-4 py-2 lg:grid">
-      <div className={`${LABEL} col-span-3`}>Holding</div>
-      <div className={`${LABEL} col-span-2 text-right`}>Exposure</div>
-      <div className={`${LABEL} col-span-2 text-right`}>Short</div>
-      <div className={`${LABEL} col-span-2`}>Market</div>
-      <div className={`${LABEL} col-span-3 text-right`}>Coverage</div>
+    <div className="flex items-center gap-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+      <div className="size-8 shrink-0" />
+      <div className="min-w-0 flex-1">Holding</div>
+      <div className="hidden w-[60px] shrink-0 @3xl:block" />
+      <div className={COL_EXPOSURE}>Exposure</div>
+      <div className={COL_SHORT}>Short</div>
+      <div className={COL_PRICE}>Price</div>
+      <div className={COL_ACTIONS} />
     </div>
   );
 }
@@ -664,6 +778,9 @@ function HedgeRow({
   onSelect,
   onOpen,
   onClose,
+  depositAddress,
+  onFunded,
+  onBorrowed,
 }: {
   view: HedgeView;
   collateralUsd: number;
@@ -673,6 +790,9 @@ function HedgeRow({
   onSelect: () => void;
   onOpen: (ratio: number) => void;
   onClose: () => void;
+  depositAddress: string | undefined;
+  onFunded: () => void;
+  onBorrowed: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [ratio, setRatio] = useState<number>(1);
@@ -680,58 +800,82 @@ function HedgeRow({
   const { holding, market, position, route } = view;
 
   return (
-    <div className={`px-4 py-3 ${selected ? "bg-white/[0.03]" : ""}`}>
-      <div className="grid grid-cols-2 items-center gap-4 lg:grid-cols-12">
-        <button
-          type="button"
-          onClick={onSelect}
-          className="col-span-2 flex items-center gap-2.5 text-left lg:col-span-3"
-        >
-          <AssetLogo
-            xstock={assetIdentity(holding.mint, holding.xstockSymbol)}
-            size={28}
-          />
-          <div className="min-w-0">
-            <div
-              className={`truncate text-sm font-medium transition-colors ${
-                selected ? "text-white" : "text-white/80 hover:text-white"
+    <div className={selected ? "bg-white/[0.03]" : ""}>
+      {/* The whole row is the chart selector, with the Borrow list's hover
+          wash. The action pills sit inside it and stop propagation, because a
+          row that swaps the chart and a button that opens a ticket are
+          different intents that happen to share pixels. */}
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onSelect}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") onSelect();
+        }}
+        className="flex w-full cursor-pointer items-center gap-3 py-4 text-left transition-colors hover:bg-white/5"
+      >
+        <AssetLogo
+          xstock={assetIdentity(holding.mint, holding.xstockSymbol)}
+          size={32}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span
+              className={`truncate text-sm font-medium tracking-tight ${
+                selected ? "text-white" : "text-white/80"
               }`}
             >
               {holding.xstockSymbol}
-            </div>
-            <div className="mt-0.5 font-mono text-[11px] tabular-nums text-white/35">
-              {trim(holding.quantity)} tokens
-            </div>
+            </span>
+            <CoverageTag view={view} />
           </div>
-        </button>
-
-        <div className="font-mono text-sm tabular-nums text-white lg:col-span-2 lg:text-right">
-          {usd(holding.exposureUsd)}
+          <div className="mt-0.5 truncate text-[11px] text-white/50">
+            <span className="font-mono tabular-nums">
+              {trim(holding.quantity)}
+            </span>{" "}
+            tokens · {route.market}
+            {market ? "" : " · not tradeable"}
+          </div>
         </div>
 
-        <div className="font-mono text-sm tabular-nums text-white/70 lg:col-span-2 lg:text-right">
-          {position ? usd(Number(position.notionalUsd)) : "—"}
-        </div>
-
-        <div className="flex items-center gap-2 lg:col-span-2">
-          <MarketLogo market={route.market} size={18} />
-          <div className="min-w-0">
-            <div className="text-xs text-white/55">{route.market}</div>
-            <div className="mt-0.5 font-mono text-[11px] tabular-nums text-white/30">
-              {market ? usd(Number(market.markPrice)) : "not tradeable"}
-            </div>
-          </div>
+        <div className="hidden w-[60px] shrink-0 @3xl:block">
           <Sparkline values={sparkline} />
         </div>
 
-        <div className="col-span-2 flex items-center justify-end gap-2 lg:col-span-3">
-          <CoverageTag view={view} />
+        <div
+          className={`${COL_EXPOSURE} font-mono text-sm tabular-nums text-white`}
+        >
+          {usd(holding.exposureUsd)}
+        </div>
+
+        <div className={COL_SHORT}>
+          {position ? (
+            <span className="font-mono text-sm tabular-nums text-white/90">
+              {usd(Number(position.notionalUsd))}
+            </span>
+          ) : (
+            <span className="font-mono text-sm tabular-nums text-white/30">
+              —
+            </span>
+          )}
+        </div>
+
+        <div
+          className={`${COL_PRICE} font-mono text-sm tabular-nums text-white/90`}
+        >
+          {market ? usd(Number(market.markPrice)) : "—"}
+        </div>
+
+        <div className={`flex ${COL_ACTIONS} items-center justify-end gap-2`}>
           {position && (
             <button
               type="button"
-              onClick={onClose}
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose();
+              }}
               disabled={busy}
-              className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-white/70 transition-colors hover:border-white/20 hover:text-white disabled:opacity-40"
+              className="rounded-full border border-white/15 bg-white/5 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Close
             </button>
@@ -739,9 +883,13 @@ function HedgeRow({
           {market && (
             <button
               type="button"
-              onClick={() => setOpen((v) => !v)}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect();
+                setOpen((v) => !v);
+              }}
               disabled={busy}
-              className="rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-white/20 disabled:opacity-40"
+              className={`${ACTION_BUTTON_MIN} rounded-full bg-aeras-blue px-5 py-2 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-40`}
             >
               {busy ? "Working…" : position ? "Add" : "Hedge"}
             </button>
@@ -750,12 +898,30 @@ function HedgeRow({
       </div>
 
       {position && (
-        <div className="mt-3 grid grid-cols-2 gap-4 rounded-lg bg-black/30 px-3 py-2.5 lg:grid-cols-4">
+        <div className="mb-3 grid grid-cols-2 gap-4 rounded-lg border border-white/10 bg-white/5 px-3 py-2.5 lg:grid-cols-4">
           <Metric label="Short" value={`${trim(position.size)} ${route.market}`} />
           <Metric label="Entry" value={usd(Number(position.entryPriceUsd))} />
           <Metric
             label="Liquidation"
             value={usd(Number(position.liquidationPriceUsd))}
+            // Distance from the LIVE mark, not the entry: the entry is history,
+            // and what the user is sizing against is how far the market can
+            // still move before the hedge is taken out.
+            hint={
+              market && Number(market.markPrice) > 0
+                ? `${
+                    Number(position.liquidationPriceUsd) >=
+                    Number(market.markPrice)
+                      ? "rise"
+                      : "drop"
+                  } of ${percent(
+                    Math.abs(
+                      Number(position.liquidationPriceUsd) -
+                        Number(market.markPrice),
+                    ) / Number(market.markPrice),
+                  )} away`
+                : undefined
+            }
           />
           <Metric
             label="Unrealized"
@@ -774,6 +940,9 @@ function HedgeRow({
           onRatio={setRatio}
           collateralUsd={collateralUsd}
           busy={busy}
+          depositAddress={depositAddress}
+          onFunded={onFunded}
+          onBorrowed={onBorrowed}
           onConfirm={() => {
             setOpen(false);
             onOpen(ratio);
@@ -790,6 +959,9 @@ function HedgeForm({
   onRatio,
   collateralUsd,
   busy,
+  depositAddress,
+  onFunded,
+  onBorrowed,
   onConfirm,
 }: {
   view: HedgeView;
@@ -797,6 +969,9 @@ function HedgeForm({
   onRatio: (r: number) => void;
   collateralUsd: number;
   busy: boolean;
+  depositAddress: string | undefined;
+  onFunded: () => void;
+  onBorrowed: () => void;
   onConfirm: () => void;
 }) {
   const market = view.market;
@@ -817,19 +992,21 @@ function HedgeForm({
 
   const notionalUsd = Number(size.notionalUsd);
   const margin = marginForLeverage(notionalUsd, HEDGE_LEVERAGE, market);
-  const distance = liquidationDistance({
+  const liqInputs = {
     entryPriceUsd: Number(market.markPrice),
     size: Number(size.size),
     collateralUsd: margin.marginUsd,
     isShort: true,
     market,
-  });
+  };
+  const liqPrice = liquidationPrice(liqInputs);
+  const distance = liquidationDistance(liqInputs);
   const funding = estimateFundingFromInterest(notionalUsd, market, true);
   const affordable = margin.marginUsd <= collateralUsd;
   const tooSmall = size.baseAmount === "0";
 
   return (
-    <div className="mt-3 space-y-3 rounded-lg border border-white/[0.07] bg-black/40 p-4">
+    <div className="mb-4 space-y-4 rounded-xl border border-white/10 bg-white/5 p-5">
       <div>
         <div className={LABEL}>How much to offset</div>
         <div className="mt-2 flex gap-2">
@@ -850,7 +1027,7 @@ function HedgeForm({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <Metric
           label="Short size"
           value={tooSmall ? "—" : `${trim(size.size)} ${market.symbol}`}
@@ -861,6 +1038,18 @@ function HedgeForm({
           value={usd(margin.marginUsd)}
           hint={`${margin.leverage}x`}
         />
+        {/* A short is liquidated by a rally, so the distance is a rise. The
+            hint keeps the direction visible where a bare price would read as
+            just another number. */}
+        <Metric
+          label="Liquidation"
+          value={liqPrice !== null && !tooSmall ? usd(liqPrice) : "—"}
+          hint={
+            distance !== null && !tooSmall
+              ? `if ${market.symbol} rises ${percent(distance)}`
+              : undefined
+          }
+        />
         <Metric
           label="Funding"
           value={`${funding.annualizedPercent >= 0 ? "" : "+"}${Math.abs(
@@ -870,14 +1059,6 @@ function HedgeForm({
           tone={funding.annualizedPercent < 0 ? "positive" : undefined}
         />
       </div>
-
-      {distance !== null && !tooSmall && (
-        <p className="text-[11px] leading-relaxed text-white/40">
-          Liquidates if {market.symbol} rises about {percent(distance)} from here.
-          A hedge is liquidated when the stock it offsets has gone up, so size the
-          margin against a rally you consider plausible.
-        </p>
-      )}
 
       {view.route.match === "proxy" && view.route.basis && (
         <p className="text-[11px] leading-relaxed text-white/40">
@@ -894,17 +1075,44 @@ function HedgeForm({
       )}
 
       {!affordable && !tooSmall && (
-        <Notice tone="error">
-          This needs {usd(margin.marginUsd)} of margin and you have{" "}
-          {usd(collateralUsd)} on Lighter. Add margin above first.
-        </Notice>
+        <>
+          {/* The fact, stated plainly. When the asset can borrow against
+              itself the section below offers the way out; when it cannot,
+              this stands alone and adding margin above is the only path, so
+              the sentence must not promise more than the row can deliver. */}
+          <Notice tone="info">
+            This needs {usd(margin.marginUsd)} of margin and you have{" "}
+            {usd(collateralUsd)} on Lighter.
+          </Notice>
+        </>
       )}
+      {/* Mounted OUTSIDE the affordability gate on purpose. A run in flight
+          flips both affordable (margin credits) and tooSmall (the wallet
+          empties into the vault), and gating the component on either used to
+          unmount the progress box and the outcome mid-run. The component
+          gates its own idle offer on offerBorrow instead. */}
+      <OneClickHedge
+        xstockSymbol={view.holding.xstockSymbol}
+        mint={view.holding.mint}
+        // Wallet stock only. The merged quantity includes collateral that
+        // is already in the vault, and a borrow can only deposit what the
+        // wallet still holds.
+        quantity={view.holding.walletQuantity ?? view.holding.quantity}
+        totalQuantity={view.holding.quantity}
+        tokenPriceUsd={view.holding.tokenPriceUsd}
+        market={market}
+        hedgeRoute={view.route}
+        depositAddress={depositAddress}
+        onSettled={onFunded}
+        onBorrowed={onBorrowed}
+        offerBorrow={!affordable && !tooSmall}
+      />
 
       <button
         type="button"
         onClick={onConfirm}
         disabled={busy || tooSmall || !affordable}
-        className="w-full rounded-lg bg-red-500/90 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/30"
+        className="w-full rounded-xl bg-red-500/90 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-white/30"
       >
         {tooSmall
           ? "Below the minimum order size"

@@ -827,7 +827,42 @@ address, so the bridge picks it up with no wallet involved) does not work: `POST
 1 fromToken: 0xc9ee…`. Deposit-address routing is squid-only and squid does not carry SPCXon or
 SPYon. Measured 2026-08-26.
 
-**The bridge home, for when it is built.** `POST /api/v1/routes/quote` prices Ethereum SPCXon →
+## The bridge home (built 2026-08-26)
+
+`lib/ondo/unwind.ts`, `lib/ondo/use-ondo-unwind.ts`, `components/OndoUnwindCard.tsx`, plus a sixth
+`unwind` shape in the Trustware proxy allowlist. Converts a withdrawn Ondo collateral token on
+Ethereum into the canonical Solana xStock, delivered to the user's Solana wallet.
+
+**Why it had to exist, and it is not the reason you would guess.** The withdrawal works and the
+tokens are real, but they were *invisible*: the shared wallet scan filters cross-chain holdings
+through `findEquivalentSource` (`lib/trustware/balances.ts:59`), every entry in `EQUIVALENCE` is
+built by `vaultFor(underlying)`, and that throws without a Jupiter Lend borrow vault. Only TSLAx,
+SPYx, QQQx and NVDAx have one. So a withdrawn SPCXon is confirmed on chain and shown on no screen
+in this app. Widening that registry is not an option: it is load-bearing for the borrow surface and
+structurally cannot represent an underlying with no vault. `use-ondo-unwind.ts` therefore reads
+`balanceOf` straight off each Ondo collateral contract instead, which is a bounded set of eth_calls
+against a server-derived token list.
+
+Three things to keep right:
+
+- **The destination set is `XSTOCK_MINTS`, not `ALLOWED_DEST_MINTS`.** The deposit shape targets the
+  four xStocks with borrow vaults because a deposit must land somewhere lendable. An unwind returns
+  a token to the user's own wallet, so restricting it the same way would strand exactly the assets
+  that need it. Source is still the eight Ondo tokens, destination still the curated xStock list,
+  recipient still a Solana address.
+- **Value the guaranteed minimum, not the expected amount.** Trustware's `toAmountUsd` corresponds
+  to `toAmount`; `toAmountMin` is what the user is promised. Mixing them understates the cost by the
+  whole slippage tolerance. Measured live on the real SPCXon balance: 144 bps against `toAmount`
+  versus **243 bps** against `toAmountMin`. The soft bound is 150, so the optimistic figure would
+  have skipped the confirmation prompt entirely.
+- **Reads must go through `connectEvmChain`**, exported from `lib/trustware/execute.ts` for this.
+  A Privy provider is bound to the chain that was active when it was requested, so one left on
+  Monad answers an Ethereum `balanceOf` with a Monad balance, silently.
+
+Verified live through our own proxy on 2026-08-26: `POST /api/trustware/quote` returns 200 for the
+unwind shape, provider `relay`, 0.13637277 SPCXon -> 0.13305860 SPCXx guaranteed.
+
+**The original measurement, kept for the numbers.** `POST /api/v1/routes/quote` prices Ethereum SPCXon →
 Solana SPCXx fine (0.136373 SPCXon → 0.1322 SPCXx, $18.07 out on 2026-08-26), and `/route` returns
 one approval against LI.FI's diamond `0x1231DEB6…` plus a transaction. Both need ETH. Ethereum was
 at **0.125 gwei** when measured, making approve plus bridge about **$0.14**, and a gas top-up leg
@@ -854,9 +889,26 @@ top-up against a live `eth_gasPrice`, not a constant.
   Whether the trigger is really geography or a fraud heuristic that borrows the code is **not
   established**. What is established is that repeated account creation preceded it. **Do not loop
   the check scripts**, and if sign-in starts failing, suspect this before suspecting the code.
+
+  `forbidden_country` is **absent from Ondo's OpenAPI spec**, the second undocumented code found
+  here after `withdrawal_exceeds_chain_deposits`. `lib/ondo/errors.ts` maps it and the other auth
+  codes to readable copy and to a correct HTTP status (403, not 502: Ondo answered and refused, our
+  gateway did not break), and classifies each as `unavailable | retry | signed-out | upstream` so
+  the UI can withdraw the Sign in button on a terminal refusal instead of offering a retry that
+  cannot work. Unrecognised codes fall through to the upstream text rather than a generic message,
+  because the enums have now proved incomplete twice.
 - Ondo's published error enum for `/v1/withdraw` is **incomplete**.
   `withdrawal_exceeds_chain_deposits` is real and absent from the spec. Never treat the code list
   as closed.
+- **13 endpoints answer success with a bare `{success: true}` and no `result` field**, so any
+  client that treats a missing `result` as a failure throws on a call that went through. The list
+  includes `address_book/complete_challenge`, `PUT`/`DELETE /v1/wallet/address_book`,
+  `POST /v1/perps/leverage` and `DELETE /v1/perps/orders`. It presents as the useless string
+  `Ondo Perps <path>: http 200`, the fallback taken when the body carries neither `error` nor
+  `error_code` because nothing went wrong. This is the worst shape of bug available on a write
+  path: the change lands and the caller is told it did not, so the user retries something already
+  done. `ondoRequest` takes `allowEmptyResult` for these. **Check any new endpoint's 200 schema for
+  a `result` property before wiring it.**
 - **Deposits and withdrawals use different status vocabularies and share no success word.** A
   deposit is `pending | confirmed`. A withdrawal is `complete | failure | pending | cancelled |
   unknown`. There is no such thing as a `complete` deposit, so filtering deposit history on that

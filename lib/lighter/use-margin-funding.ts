@@ -14,7 +14,11 @@
 import { useCallback, useMemo, useState } from "react";
 
 import bs58 from "bs58";
-import { useSignAndSendTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { useSignAndSendTransaction } from "@privy-io/react-auth/solana";
+import {
+  requireEmbeddedSolanaWallet,
+  useEmbeddedSolanaWallet,
+} from "@/lib/privy/solana";
 
 import type { AccountBalances } from "@/lib/solana/balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
@@ -53,7 +57,8 @@ export function useMarginFunding(params: {
   const { balances, scan, depositAddress } = params;
 
   const { signAndSendTransaction } = useSignAndSendTransaction();
-  const { wallets } = useWallets();
+  const { wallet: embeddedWallet, address: walletAddress } =
+    useEmbeddedSolanaWallet();
   const [status, setStatus] = useState<DepositStatus>({ kind: "idle" });
 
   const funding = useMemo(
@@ -66,8 +71,6 @@ export function useMarginFunding(params: {
       }),
     [balances, scan.stables],
   );
-
-  const walletAddress = wallets[0]?.address;
 
   const deposit = useCallback(
     async (amountUsdc: string) => {
@@ -82,7 +85,7 @@ export function useMarginFunding(params: {
         });
         const { signature } = await signAndSendTransaction({
           transaction: built.transaction,
-          wallet: wallets[0],
+          wallet: requireEmbeddedSolanaWallet(embeddedWallet),
         });
         setStatus({ kind: "sent", signature: bs58.encode(signature) });
       } catch (err) {
@@ -92,7 +95,7 @@ export function useMarginFunding(params: {
         });
       }
     },
-    [walletAddress, depositAddress, signAndSendTransaction, wallets],
+    [walletAddress, depositAddress, signAndSendTransaction, embeddedWallet],
   );
 
   return {

@@ -15,7 +15,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 
-import { useWallets } from "@privy-io/react-auth/solana";
+import { useEmbeddedSolanaWallet } from "@/lib/privy/solana";
 
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
 
@@ -81,7 +81,7 @@ export function useOndoMargin(params: {
   // A Trustware Solana route arrives as a base64 payload rather than a built
   // transaction, so the generic send path is the right one here.
   const sendSolanaTx = useSendSolanaTxBase64();
-  const { wallets } = useWallets();
+  const { wallet: solanaWallet } = useEmbeddedSolanaWallet();
   const [status, setStatus] = useState<MarginStatus>({ kind: "idle" });
 
   const priceUsdByMint = useMemo(() => {
@@ -102,8 +102,6 @@ export function useOndoMargin(params: {
       }),
     [balances, priceUsdByMint, scan.stables, scan.held, collateral],
   );
-
-  const solanaWallet = wallets[0];
 
   // Pricing is separate from committing on purpose. The plan carries the bridge
   // fee, the delivered amount and what it credits after the haircut, and none

@@ -10,6 +10,7 @@
 // from the existing /api/jupiter/chart proxy. No new server routes.
 
 import { useEffect, useMemo, useState } from "react";
+import { GLASS_SURFACE, INSET_PANEL } from "@/lib/ui/surface";
 import {
   Area,
   AreaChart,
@@ -111,7 +112,7 @@ function Card({
 }) {
   return (
     <div
-      className={`rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6 ${className ?? ""}`}
+      className={`${GLASS_SURFACE} p-5 lg:p-6 ${className ?? ""}`}
     >
       {children}
     </div>
@@ -134,13 +135,13 @@ function Header({
   return (
     <div className="space-y-4">
       <div className="space-y-1.5">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
           Portfolio
         </div>
-        <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+        <h2 className="font-light text-2xl tracking-tight text-white">
           Portfolio overview
         </h2>
-        <p className="text-sm text-aeras-300">
+        <p className="text-sm text-white/45">
           Allocation, exposure, and lending health across your tokenized stocks
           and stables.
         </p>
@@ -173,14 +174,17 @@ function StatTile({
   value: string;
   accent?: "primary" | "warning";
 }) {
-  let valueClass = "font-mono tabular-nums text-aeras-900";
-  if (accent === "primary") valueClass = "font-mono tabular-nums text-aeras-blue";
+  let valueClass = "font-mono tabular-nums text-white";
+  // Brand blue at full strength disappears into a dark ground; the medium stop
+  // is the one design.md pairs with the night canvas.
+  if (accent === "primary")
+    valueClass = "font-mono tabular-nums text-aeras-blue-medium";
   if (accent === "warning")
     valueClass = "font-mono tabular-nums text-aeras-warning";
 
   return (
-    <div className="rounded-xl border border-aeras-border bg-white px-4 py-3">
-      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+    <div className={`${INSET_PANEL} px-4 py-3`}>
+      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
         {label}
       </div>
       <div className={`mt-1.5 text-xl font-light ${valueClass}`}>{value}</div>
@@ -335,9 +339,9 @@ function AllocationCard({
                       style={{ background: a.color }}
                     />
                     <span className="font-medium text-white truncate">
-                      {a.symbol}
+                      {a.name}
                     </span>
-                    <span className="text-white/50 truncate">{a.name}</span>
+                    <span className="text-white/50 truncate">{a.symbol}</span>
                   </span>
                   <span className="flex items-baseline gap-2 font-mono tabular-nums">
                     <span className="text-white">${a.usd.toFixed(2)}</span>
@@ -368,7 +372,7 @@ function AllocationTooltip({
   return (
     <div className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs shadow-sm">
       <div className="font-medium text-white">
-        {slice.symbol} <span className="text-white/50">· {slice.name}</span>
+        {slice.name} <span className="text-white/50">· {slice.symbol}</span>
       </div>
       <div className="font-mono tabular-nums text-white">
         ${slice.usd.toFixed(2)} · {pct.toFixed(1)}%

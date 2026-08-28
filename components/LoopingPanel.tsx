@@ -50,6 +50,8 @@ interface Props {
   onRefresh: () => Promise<void> | void;
 }
 
+import { GLASS_SURFACE } from "@/lib/ui/surface";
+
 export function LoopingCard({
   walletAddress,
   balances,
@@ -88,7 +90,7 @@ export function LoopingCard({
     XSTOCK_BORROW_VAULTS.find((v) => v.vaultId === activeVaultId) ?? null;
 
   return (
-    <div className="space-y-4 rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
+    <div className={`space-y-4 ${GLASS_SURFACE} p-5 lg:p-6`}>
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
@@ -559,10 +561,10 @@ function LoopController({
             value={`${borrowUsd.toFixed(2)} ${vault.borrowSymbol}`}
           />
           <PreviewRow
-            label="Projected LTV"
+            label="Loan vs collateral"
             value={
               projectedLtv != null
-                ? `${projectedLtv.toFixed(1)}% / LT ${ltPct.toFixed(0)}%`
+                ? `${projectedLtv.toFixed(1)}% · closes at ${ltPct.toFixed(0)}%`
                 : "—"
             }
             warn={projectedLtv != null && projectedLtv >= ltPct * 0.9}

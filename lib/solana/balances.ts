@@ -104,13 +104,20 @@ export async function fetchAllBalances(
     false,
     TOKEN_PROGRAM_ID,
   ).toBase58();
+  // Each catalog asset's ATA is derived under ITS OWN token program. Backed's
+  // xStocks are all Token-2022, which is what this assumed; the gold tokens are
+  // not consistent with each other (PAXG is Token-2022, XAUt0 is classic SPL),
+  // and deriving the wrong one yields an account that does not exist, so the
+  // balance reads as zero rather than as an error. Same failure the Ondo mints
+  // below already guard against, now answered from the registry instead of by
+  // trying both.
   const xstockAtaToMint = new Map<string, string>();
   for (const x of XSTOCKS) {
     const ata = getAssociatedTokenAddressSync(
       new PublicKey(x.mint),
       owner,
       false,
-      TOKEN_2022_PROGRAM_ID,
+      x.tokenProgram === "token-2022" ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID,
     ).toBase58();
     xstockAtaToMint.set(ata, x.mint);
   }

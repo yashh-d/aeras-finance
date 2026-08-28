@@ -128,12 +128,33 @@ export const SWAP_TOKENS: readonly SwapToken[] = [
   sol("SOL", "Solana", NATIVE_TOKEN_SENTINEL, 9, "/logos/solana.png"),
   sol("ETH", "Ether (Wormhole)", "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs", 8, "/logos/eth.png"),
   sol("WBTC", "Wrapped Bitcoin (Wormhole)", "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh", 8),
+  // Tether Gold, LayerZero's omnichain build. One token is one troy ounce, so
+  // it marks around $4,600 rather than around a dollar.
+  //
+  // XAUt0 and XAUt are DIFFERENT TOKENS, not the same token on two chains, and
+  // the pair below is the one place in this registry where two rows share an
+  // underlying. XAUt0 is where a user should hold gold: it is on Solana, it
+  // sells back to USDC for about 0.02% (measured 2026-08-26, the tightest pair
+  // here), and it lives where the rest of their portfolio does. XAUt on
+  // Ethereum is the one the Morpho gold market takes as collateral, and holding
+  // it anywhere other than inside that market earns nothing and costs ETH to
+  // move. Same reasoning CLAUDE.md applies to the Ondo tokens: the EVM side is
+  // a waypoint, not a home.
+  sol("XAUt0", "Tether Gold", "AymATz4TCL9sWNEEV9Kvyz45CHVhDZ6kUgjTJPzLpU9P", 6),
 
   // Ethereum
   evm("1", "USDC", "USD Coin", "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", 6, "/logos/usdc.png"),
   evm("1", "USDT", "Tether USD", "0xdac17f958d2ee523a2206206994597c13d831ec7", 6),
   evm("1", "ETH", "Ether", NATIVE_TOKEN_SENTINEL, 18, "/logos/eth.png"),
   evm("1", "WBTC", "Wrapped Bitcoin", "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", 8),
+  // Tether Gold on Ethereum: the Morpho gold market's collateral asset.
+  //
+  // **6 decimals, not 18.** Every other Ethereum ERC-20 this app touches is 18,
+  // and the two gold rows break the habit. Cross-checked in both directions the
+  // way this file requires: 500 USDC bought 107,927 atomic units, and 100,000
+  // atomic units sold for $461.91. Both imply ~$4,615/oz. At 18 decimals the
+  // implied price is off by 10^12, which quotes as free gold.
+  evm("1", "XAUt", "Tether Gold", "0x68749665ff8d2d112fa859aa293f07a622782f38", 6),
 
   // BNB Chain. USDC and USDT are 18 decimals here, not 6.
   evm("56", "USDC", "USD Coin", "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d", 18, "/logos/usdc.png"),

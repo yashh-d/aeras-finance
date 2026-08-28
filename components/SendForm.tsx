@@ -3,7 +3,11 @@
 import { useMemo, useState } from "react";
 import bs58 from "bs58";
 import { PublicKey } from "@solana/web3.js";
-import { useSignAndSendTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { useSignAndSendTransaction } from "@privy-io/react-auth/solana";
+import {
+  requireEmbeddedSolanaWallet,
+  useEmbeddedSolanaWallet,
+} from "@/lib/privy/solana";
 import {
   SOLSCAN_TX_BASE,
   SOL_MINT,
@@ -14,6 +18,7 @@ import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { XSTOCKS } from "@/lib/jupiter/xstocks";
 import type { AccountBalances } from "@/lib/solana/balances";
 import { buildSendTransaction, type SendAsset } from "@/lib/solana/send";
+import { INSET_PANEL } from "@/lib/ui/surface";
 
 type AssetOption = {
   key: string;
@@ -49,7 +54,7 @@ export function SendForm({
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
   const { signAndSendTransaction } = useSignAndSendTransaction();
-  const { wallets } = useWallets();
+  const { wallet: embeddedWallet } = useEmbeddedSolanaWallet();
 
   const option = options.find((o) => o.key === optionKey) ?? options[0];
   const amount = Number(amountInput);
@@ -71,12 +76,12 @@ export function SendForm({
 
   if (!options.length) {
     return (
-      <div className="rounded-lg border border-aeras-border dark:border-white/10 bg-white dark:bg-gradient-to-br dark:from-aeras-hero-from dark:to-aeras-hero-to p-4 text-sm text-aeras-500 dark:text-white/60">
+      <div className={`${INSET_PANEL} p-4 text-sm text-white/60`}>
         Nothing to send yet — wallet is empty.
         <button
           type="button"
           onClick={onClose}
-          className="ml-2 text-aeras-900 dark:text-white underline-offset-2 hover:underline"
+          className="ml-2 text-white underline-offset-2 hover:underline"
         >
           Close
         </button>
@@ -89,8 +94,7 @@ export function SendForm({
 
     setStatus({ kind: "sending" });
     try {
-      const wallet = wallets[0];
-      if (!wallet) throw new Error("No Solana wallet available to sign.");
+      const wallet = requireEmbeddedSolanaWallet(embeddedWallet);
 
       const built = await buildSendTransaction({
         sender: walletAddress,
@@ -124,7 +128,7 @@ export function SendForm({
           <div>
             <label
               htmlFor="send-asset"
-              className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50"
+              className="text-xs font-medium uppercase tracking-wide text-white/50"
             >
               Token
             </label>
@@ -135,7 +139,7 @@ export function SendForm({
                 setOptionKey(e.target.value);
                 setAmountInput("");
               }}
-              className="mt-1 block w-full rounded-lg border border-aeras-border dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 text-sm text-aeras-900 dark:text-white focus:border-aeras-blue focus:outline-none"
+              className="mt-1 block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-white focus:border-aeras-blue focus:outline-none"
             >
               {options.map((o) => (
                 <option key={o.key} value={o.key}>
@@ -148,7 +152,7 @@ export function SendForm({
           <div>
             <label
               htmlFor="send-recipient"
-              className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50"
+              className="text-xs font-medium uppercase tracking-wide text-white/50"
             >
               To
             </label>
@@ -158,7 +162,7 @@ export function SendForm({
               placeholder="Solana address"
               value={recipient}
               onChange={(e) => setRecipient(e.target.value.trim())}
-              className="mt-1 block w-full rounded-lg border border-aeras-border dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 font-mono text-xs text-aeras-900 dark:text-white placeholder:text-aeras-300 dark:placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
+              className="mt-1 block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 font-mono text-xs text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
             />
             {recipient && !recipientPubkey && (
               <p className="mt-1 text-xs text-aeras-negative">Invalid Solana address.</p>
@@ -174,7 +178,7 @@ export function SendForm({
             <div className="mb-1 flex items-baseline justify-between">
               <label
                 htmlFor="send-amount"
-                className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50"
+                className="text-xs font-medium uppercase tracking-wide text-white/50"
               >
                 Amount
               </label>
@@ -183,7 +187,7 @@ export function SendForm({
                 onClick={() =>
                   option && setAmountInput(maxAmountStr(option))
                 }
-                className="text-xs text-aeras-500 dark:text-white/60 underline-offset-2 hover:underline"
+                className="text-xs text-white/60 underline-offset-2 hover:underline"
               >
                 Max
               </button>
@@ -196,10 +200,10 @@ export function SendForm({
                 step="any"
                 value={amountInput}
                 onChange={(e) => setAmountInput(e.target.value)}
-                className="block w-full rounded-lg border border-aeras-border dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 pr-16 text-sm text-aeras-900 dark:text-white placeholder:text-aeras-300 dark:placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
+                className="block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 pr-16 text-sm text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
               />
               {option && (
-                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-aeras-300 dark:text-white/50">
+                <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-white/50">
                   {option.label.split(" ")[0]}
                 </span>
               )}
@@ -214,7 +218,7 @@ export function SendForm({
           <GasEstimate balanceSol={balances.sol} solPrice={solPrice} />
 
           {status.kind === "error" && (
-            <p className="rounded-lg bg-aeras-surface dark:bg-white/5 px-3 py-2 text-sm text-aeras-negative">
+            <p className="rounded-lg bg-white/5 px-3 py-2 text-sm text-aeras-negative">
               {status.message}
             </p>
           )}
@@ -286,13 +290,13 @@ function GasEstimate({
   const gasUsd = solPrice ? gasSol * solPrice : null;
   const noSol = balanceSol < 0.001;
   return (
-    <div className="rounded-lg bg-aeras-surface dark:bg-white/5 px-3 py-2 text-xs">
+    <div className="rounded-lg bg-white/5 px-3 py-2 text-xs">
       <div className="flex justify-between">
-        <span className="text-aeras-300 dark:text-white/50">Gas (paid in SOL)</span>
-        <span className="tabular-nums text-aeras-500 dark:text-white/60">
+        <span className="text-white/50">Gas (paid in SOL)</span>
+        <span className="tabular-nums text-white/60">
           ~{gasSol.toFixed(6)} SOL
           {gasUsd != null && (
-            <span className="text-aeras-300 dark:text-white/50"> · ${gasUsd.toFixed(4)}</span>
+            <span className="text-white/50"> · ${gasUsd.toFixed(4)}</span>
           )}
         </span>
       </div>
@@ -315,13 +319,13 @@ function SentCard({
 }) {
   return (
     <div className="space-y-2">
-      <div className="rounded-lg border border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 p-3 text-sm">
+      <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-sm">
         <div className="font-medium text-aeras-positive">Sent</div>
         <a
           href={`${SOLSCAN_TX_BASE}${signature}`}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-1 block break-all font-mono text-xs text-aeras-positive underline decoration-aeras-border dark:decoration-white/10"
+          className="mt-1 block break-all font-mono text-xs text-aeras-positive underline decoration-white/10"
         >
           {signature}
         </a>
@@ -329,7 +333,7 @@ function SentCard({
       <button
         type="button"
         onClick={onClose}
-        className="w-full rounded-lg border border-aeras-border dark:border-white/10 px-4 py-2 text-sm font-medium text-aeras-500 dark:text-white/60 transition-colors hover:bg-aeras-surface dark:hover:bg-white/5"
+        className="w-full rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-white/60 transition-colors hover:bg-white/5"
       >
         Done
       </button>

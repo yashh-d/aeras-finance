@@ -28,8 +28,9 @@ import {
 } from "recharts";
 
 import { OndoMarginCard } from "@/components/OndoMarginCard";
+import { OndoUnwindCard } from "@/components/OndoUnwindCard";
 import { OndoWithdrawCard } from "@/components/OndoWithdrawCard";
-import { signInToOndo } from "@/lib/ondo/auth";
+import { isOndoUnavailable, signInToOndo } from "@/lib/ondo/auth";
 import {
   fetchOndoCandles,
   placeOndoTrade,
@@ -37,6 +38,8 @@ import {
 } from "@/lib/ondo/client";
 import { useOndoMargin } from "@/lib/ondo/use-ondo-margin";
 import { useOndoWithdraw } from "@/lib/ondo/use-ondo-withdraw";
+import { useOndoUnwind } from "@/lib/ondo/use-ondo-unwind";
+import { useEmbeddedSolanaWallet } from "@/lib/privy/solana";
 import { usePerps } from "@/lib/ondo/use-perps";
 import { MarketHeader } from "@/components/MarketHeader";
 import type { OndoCandle, OndoMarket, OndoPosition } from "@/lib/ondo/types";
@@ -44,8 +47,12 @@ import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import type { AccountBalances } from "@/lib/solana/balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
+import { GLASS_SURFACE } from "@/lib/ui/surface";
 
-const PANEL = "rounded-xl border border-white/[0.07] bg-[#111415]";
+// Inner panels sit on top of the outer glass card, so they are a lift in the
+// same white wash rather than a second opaque fill: stacking two opaque greys
+// broke the ambient blue that reads through every other surface in the app.
+const PANEL = "rounded-xl border border-white/[0.07] bg-white/[0.04]";
 const LABEL =
   "text-[10px] font-medium uppercase tracking-[0.14em] text-white/35";
 
@@ -96,9 +103,26 @@ export function PerpsPanel({
     onWithdrawn: () => void perps.refresh(),
   });
 
+  // What a withdrawal actually left behind, read off Ethereum directly.
+  //
+  // Not gated on an Ondo session, unlike everything else on this tab: once the
+  // tokens are withdrawn they are the user's own ERC-20s and Ondo has nothing
+  // to do with them. Someone whose session expired must still be able to see
+  // and move them, which is the whole failure this card was built to fix.
+  const { address: solanaAddress } = useEmbeddedSolanaWallet();
+  const unwind = useOndoUnwind({
+    collateral: perps.collateral,
+    solanaAddress,
+    onDelivered: () => void perps.refresh(),
+  });
+
   const [selected, setSelected] = useState<string | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [signingIn, setSigningIn] = useState(false);
+  // Set when Ondo refuses to serve this account or location at all. Separate
+  // from `status` because it is not a transient error: it replaces the sign-in
+  // offer rather than appearing above it.
+  const [unavailable, setUnavailable] = useState<string | null>(null);
 
   // Held as a market symbol rather than an index so the choice survives the
   // catalog reloading underneath it.
@@ -116,7 +140,14 @@ export function PerpsPanel({
       await signInToOndo(provider, wallet.address);
       await perps.refresh();
     } catch (err) {
-      setStatus({ kind: "error", message: message(err) });
+      // A terminal refusal is held separately from an ordinary error. Ondo
+      // answering `forbidden_country` is not something a retry fixes, so the
+      // Sign in button is withdrawn rather than left there to fail again.
+      if (isOndoUnavailable(err)) {
+        setUnavailable(message(err));
+      } else {
+        setStatus({ kind: "error", message: message(err) });
+      }
     } finally {
       setSigningIn(false);
     }
@@ -160,7 +191,7 @@ export function PerpsPanel({
   }
 
   return (
-    <div className="rounded-2xl border border-white/[0.07] bg-[#0a0c0d] p-4 text-white lg:p-5">
+    <div className={`${GLASS_SURFACE} p-4 text-white lg:p-5`}>
       <div className="flex items-center justify-between gap-4 border-b border-white/[0.07] pb-3">
         <div className="flex items-baseline gap-3">
           <span className="text-sm font-medium tracking-tight text-white">Perps</span>
@@ -209,29 +240,41 @@ export function PerpsPanel({
           </div>
         )}
 
-        {perps.status === "needs-signin" && (
-          <div className={`${PANEL} p-4`}>
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-sm font-medium text-white">
-                  Sign in to Ondo Perps
-                </h3>
-                <p className="mt-1 max-w-xl text-sm text-white/45">
-                  One signature, no transaction and no gas. Markets and prices
-                  below are live without it; placing an order needs it.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => void onSignIn()}
-                disabled={signingIn}
-                className="shrink-0 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-white/20 disabled:opacity-40"
-              >
-                {signingIn ? "Check your wallet…" : "Sign in"}
-              </button>
+        {perps.status === "needs-signin" &&
+          (unavailable ? (
+            // No Sign in button. Ondo has refused outright, so offering a retry
+            // would be offering something that cannot succeed. The markets
+            // below stay rendered because they are unauthenticated and still
+            // load, which is also what the copy says.
+            <div className={`${PANEL} p-4`}>
+              <h3 className="text-sm font-medium text-white">
+                Ondo Perps is unavailable
+              </h3>
+              <p className="mt-1 max-w-xl text-sm text-white/45">{unavailable}</p>
             </div>
-          </div>
-        )}
+          ) : (
+            <div className={`${PANEL} p-4`}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-sm font-medium text-white">
+                    Sign in to Ondo Perps
+                  </h3>
+                  <p className="mt-1 max-w-xl text-sm text-white/45">
+                    One signature, no transaction and no gas. Markets and prices
+                    below are live without it; placing an order needs it.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void onSignIn()}
+                  disabled={signingIn}
+                  className="shrink-0 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-white/20 disabled:opacity-40"
+                >
+                  {signingIn ? "Check your wallet…" : "Sign in"}
+                </button>
+              </div>
+            </div>
+          ))}
 
         {/* Margin is what gates every button on this tab, so adding it is
             offered here rather than sent to another surface. Shown whenever
@@ -246,6 +289,12 @@ export function PerpsPanel({
             <OndoWithdrawCard withdraw={withdraw} />
           </div>
         )}
+
+        {/* Rendered outside the session gate above. Withdrawn tokens belong to
+            the user regardless of whether Ondo will still talk to them, and
+            this card returns null when there is nothing on Ethereum, so it
+            costs nothing in the common case. */}
+        <OndoUnwindCard unwind={unwind} />
 
         {perps.loading ? (
           <div className={`${PANEL} p-4 text-sm text-white/45`}>

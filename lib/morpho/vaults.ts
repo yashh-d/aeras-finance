@@ -86,3 +86,14 @@ export function morphoVaultByAddress(address: string): MorphoVault | undefined {
   const a = address.toLowerCase();
   return MONAD_USDC_VAULTS.find((v) => v.address.toLowerCase() === a);
 }
+
+// Which Morpho vaults accept a given Earn asset. Morpho is a venue column in
+// the Earn table beside Jupiter Lend and Kamino, and that table is keyed by
+// asset, so the registry has to answer per asset rather than per chain. Every
+// curated vault is USDC today; an asset with no vault gets an empty list and
+// its Morpho cell reads as unavailable, the same way Kamino's does.
+export function morphoVaultsForAsset(
+  symbol: string,
+): readonly MorphoVault[] {
+  return symbol === "USDC" ? MONAD_USDC_VAULTS : [];
+}

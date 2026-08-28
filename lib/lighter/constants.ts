@@ -130,8 +130,16 @@ export const LIGHTER_MAIN_ACCOUNT_TYPE = 0;
 // Transaction type tags for sendTx. The sequencer routes on these, so a correct
 // signature under the wrong tag is still rejected.
 export const LIGHTER_TX_TYPE_CHANGE_PUBKEY = 8;
+export const LIGHTER_TX_TYPE_WITHDRAW = 13;
 export const LIGHTER_TX_TYPE_CREATE_ORDER = 14;
 export const LIGHTER_TX_TYPE_CANCEL_ORDER = 15;
+
+// Wire ids a withdrawal names, from lighter-go (types/txtypes): USDC is asset
+// index 3 at 1e6 scale, and route 0 is the perps balance, which is the only
+// balance this app holds there. Verified against the docs' constants table and
+// the Python SDK's ASSET_ID_USDC / ROUTE_PERP on 2026-08-27.
+export const LIGHTER_ASSET_ID_USDC = 3;
+export const LIGHTER_ROUTE_PERP = 0;
 
 // Response codes we branch on rather than merely report.
 //

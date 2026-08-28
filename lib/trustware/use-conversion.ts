@@ -10,7 +10,7 @@
 
 import { useCallback } from "react";
 
-import { useWallets } from "@privy-io/react-auth/solana";
+import { useEmbeddedSolanaWallet } from "@/lib/privy/solana";
 
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
@@ -30,8 +30,7 @@ export interface ConversionRunner {
 }
 
 export function useConversionRunner(): ConversionRunner {
-  const { wallets } = useWallets();
-  const solanaAddress = wallets[0]?.address;
+  const { address: solanaAddress } = useEmbeddedSolanaWallet();
   const sendSolanaTx = useSendSolanaTxBase64();
   const evm = useEmbeddedEvmWallet();
 

@@ -2,7 +2,6 @@
 
 import { AssetLogo } from "@/components/AssetLogo";
 import { assetIdentity } from "@/lib/jupiter/xstocks";
-import { formatUsdCompact } from "@/lib/borrow/use-market-stats";
 
 export type BorrowMode = "borrow" | "repay";
 
@@ -104,65 +103,3 @@ function ModeButton({
   );
 }
 
-// Market-level facts, as tiles. Deliberately about the market rather than the
-// user, so it reads the same whether or not they hold a position. The header
-// above already answers "what can I draw"; this answers "how big and how deep is
-// the market I would be drawing from".
-export function MarketStatGrid({
-  aprPct,
-  priceUsd,
-  suppliedUsd,
-  borrowedUsd,
-  liquidityUsd,
-  maxLtvPct,
-  borrowSymbol,
-}: {
-  aprPct: number | null;
-  priceUsd: number | null;
-  suppliedUsd: number | null;
-  borrowedUsd: number | null;
-  // Undrawn borrow-asset liquidity across the venue. Distinct from the header's
-  // "available to borrow", which is this capped by the user's own collateral.
-  liquidityUsd: number | null;
-  maxLtvPct: number;
-  borrowSymbol: string;
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-3">
-      <StatTile
-        label={`Borrow APY · ${borrowSymbol}`}
-        value={aprPct == null ? "—" : `${aprPct.toFixed(2)}%`}
-      />
-      <StatTile
-        label="Price"
-        value={priceUsd == null ? "—" : `$${priceUsd.toFixed(2)}`}
-      />
-      <StatTile
-        label="Total market supplied"
-        value={suppliedUsd == null ? "—" : formatUsdCompact(suppliedUsd)}
-      />
-      <StatTile
-        label="Total market borrowed"
-        value={borrowedUsd == null ? "—" : formatUsdCompact(borrowedUsd)}
-      />
-      <StatTile
-        label={`${borrowSymbol} liquidity`}
-        value={liquidityUsd == null ? "—" : formatUsdCompact(liquidityUsd)}
-      />
-      <StatTile label="Max LTV" value={`${maxLtvPct.toFixed(0)}%`} />
-    </div>
-  );
-}
-
-function StatTile({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3">
-      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-        {label}
-      </div>
-      <div className="mt-1.5 font-mono text-lg font-light tabular-nums text-white">
-        {value}
-      </div>
-    </div>
-  );
-}

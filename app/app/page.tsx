@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePrivy, type WalletWithMetadata } from "@privy-io/react-auth";
-import { ChevronDown, ChevronLeft, Search, ShieldCheck } from "lucide-react";
+import { ChevronDown, ChevronLeft, Search } from "lucide-react";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AssetGrid } from "@/components/AssetGrid";
-import { AssetLogo } from "@/components/AssetLogo";
+import { AssetLogo, LendingBadge } from "@/components/AssetLogo";
 import { AssetTradePanel } from "@/components/AssetTradePanel";
 import { BorrowPanel } from "@/components/BorrowPanel";
 import { EarnPanel } from "@/components/EarnPanel";
@@ -17,17 +17,16 @@ import { PriceChart } from "@/components/PriceChart";
 import { WalletPanel } from "@/components/WalletPanel";
 import { WaitlistPending, type UserView } from "@/components/WaitlistPending";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
-import {
-  vaultByCollateralMint,
-  XSTOCK_BORROW_VAULTS,
-} from "@/lib/jupiter/borrow";
+import { hasLendingMarket } from "@/lib/borrow/availability";
 import { fetchSparklines, type SparklinesResponse } from "@/lib/jupiter/charts";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useJupiterPrices } from "@/lib/jupiter/use-prices";
+import { useLighterBalance } from "@/lib/lighter/use-lighter-balance";
 import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
 import { totalPortfolioUsd } from "@/lib/solana/holdings";
 import { useWalletScan } from "@/lib/trustware/use-wallet-scan";
 import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
+import { GLASS_SURFACE } from "@/lib/ui/surface";
 import {
   XSTOCK_CATEGORIES,
   XSTOCKS,
@@ -47,7 +46,15 @@ type Gate =
 
 export default function AppPage() {
   const router = useRouter();
-  const { ready, authenticated, user, logout, getAccessToken } = usePrivy();
+  const { ready, authenticated, user, logout, getAccessToken, linkEmail } =
+    usePrivy();
+
+  // Email is the merge key for the users table (users_email_unique in
+  // 0001_waitlist.sql), so a signed-in user without one cannot be resolved
+  // against the waitlist or approved by an admin. Wallet login makes that
+  // reachable: signing in with Phantom or MetaMask links no email at all.
+  // Mirrors extractEmail in lib/privy/auth.ts, which accepts either source.
+  const linkedEmail = user?.email?.address ?? user?.google?.email;
 
   // Approval gate. On login we sync the verified Privy identity into the users
   // table and read back the access status. Approved enters the app; everyone
@@ -60,6 +67,14 @@ export default function AppPage() {
       router.replace("/");
       return;
     }
+    // Hold the sync until an email exists rather than syncing without one and
+    // patching it in later. syncFromPrivy matches on the Privy DID first, so a
+    // row inserted with a null email would never adopt the waitlist row the
+    // same person created through the form, and stamping the address on later
+    // collides with that row on users_email_unique. That surfaces as a 500 on
+    // every subsequent sign-in, with no way out from the UI. The render below
+    // shows the prompt; linking re-runs this effect through `linkedEmail`.
+    if (!linkedEmail) return;
 
     let cancelled = false;
     (async () => {
@@ -102,7 +117,7 @@ export default function AppPage() {
     return () => {
       cancelled = true;
     };
-  }, [ready, authenticated, getAccessToken, router]);
+  }, [ready, authenticated, linkedEmail, getAccessToken, router]);
 
   const embeddedSolanaWallet = user?.linkedAccounts.find(
     (account): account is WalletWithMetadata =>
@@ -111,10 +126,62 @@ export default function AppPage() {
       account.chainType === "solana",
   );
 
-  if (!ready || !authenticated || gate.state === "checking") {
+  if (!ready || !authenticated) {
     return (
-      <div className="flex flex-1 items-center justify-center bg-aeras-canvas px-6 py-12">
-        <main className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8">
+      <div
+        className="flex flex-1 items-center justify-center px-6 py-12"
+        style={{ backgroundColor: "#08090a" }}
+      >
+        <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
+          <p className="text-sm text-white/50">Loading...</p>
+        </main>
+      </div>
+    );
+  }
+
+  // Ahead of the gate states on purpose: without an email there is nothing to
+  // sync yet, so `gate` is still "checking" and would otherwise render as an
+  // indefinite loading screen.
+  if (!linkedEmail) {
+    return (
+      <div
+        className="flex min-h-screen items-center justify-center px-6 py-12"
+        style={{ backgroundColor: "#08090a" }}
+      >
+        <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
+          <h1 className="font-light text-xl tracking-tight text-white">
+            Add your email
+          </h1>
+          <p className="mt-2 text-sm text-white/50">
+            Your wallet is connected. Aeras uses your email to match you to your
+            waitlist place and to reach you about your account.
+          </p>
+          <button
+            type="button"
+            onClick={linkEmail}
+            className="mt-6 w-full rounded-lg bg-white px-4 py-2.5 text-sm font-medium text-black transition-colors hover:bg-white/90"
+          >
+            Add email
+          </button>
+          <button
+            type="button"
+            onClick={logout}
+            className="mt-4 block text-xs text-white/50 underline-offset-2 hover:text-white hover:underline"
+          >
+            Sign out
+          </button>
+        </main>
+      </div>
+    );
+  }
+
+  if (gate.state === "checking") {
+    return (
+      <div
+        className="flex flex-1 items-center justify-center px-6 py-12"
+        style={{ backgroundColor: "#08090a" }}
+      >
+        <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
           <p className="text-sm text-white/50">Loading...</p>
         </main>
       </div>
@@ -123,8 +190,11 @@ export default function AppPage() {
 
   if (gate.state === "error") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-aeras-canvas px-6 py-12">
-        <main className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8">
+      <div
+        className="flex min-h-screen items-center justify-center px-6 py-12"
+        style={{ backgroundColor: "#08090a" }}
+      >
+        <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
           <h1 className="font-light text-xl tracking-tight text-white">
             Something went wrong
           </h1>
@@ -147,7 +217,7 @@ export default function AppPage() {
 
   return (
     <SignedIn
-      userEmail={user?.email?.address}
+      userEmail={linkedEmail}
       walletAddress={embeddedSolanaWallet?.address}
       onLogout={logout}
     />
@@ -212,19 +282,23 @@ function SignedIn({
   // Monad balances live in the embedded EVM wallet, outside both the Solana
   // read and the Trustware scan, so the header total reads them separately.
   const monad = useMonadBalances(walletScan.evmAddress);
+  // Lighter margin lives on its own L2, keyed by the embedded EVM wallet, so
+  // it is a third separate read.
+  const lighter = useLighterBalance(walletScan.evmAddress);
   // A deposit can spend a holding on another chain, so anything that refreshes
   // the Solana balances has to re-scan the others too. Without this the panel
   // kept showing an EVM balance the conversion had already consumed.
   const refreshScan = walletScan.refresh;
   const refreshMonad = monad.refresh;
+  const refreshLighter = lighter.refresh;
   const refreshAll = useCallback(async () => {
     refreshScan();
-    await Promise.all([refreshBalances(), refreshMonad()]);
-  }, [refreshScan, refreshBalances, refreshMonad]);
+    await Promise.all([refreshBalances(), refreshMonad(), refreshLighter()]);
+  }, [refreshScan, refreshBalances, refreshMonad, refreshLighter]);
   const settleAll = useCallback(async () => {
     refreshScan();
-    await Promise.all([settleBalances(), refreshMonad()]);
-  }, [refreshScan, settleBalances, refreshMonad]);
+    await Promise.all([settleBalances(), refreshMonad(), refreshLighter()]);
+  }, [refreshScan, settleBalances, refreshMonad, refreshLighter]);
   const solanaTotalUsd = totalPortfolioUsd(
     balances,
     prices,
@@ -237,11 +311,14 @@ function SignedIn({
   const monadUsd =
     (monad.balances?.usdcUi ?? 0) +
     (monad.balances?.monUi ?? 0) * (walletScan.nativePrices["monad"] ?? 0);
+  // Lighter margin counts the same way: 0 while loading, so a slow read can
+  // only understate the total.
+  const offSolanaUsd = monadUsd + (lighter.usd ?? 0);
   const totalUsd =
     solanaTotalUsd != null
-      ? solanaTotalUsd + monadUsd
-      : monadUsd > 0
-        ? monadUsd
+      ? solanaTotalUsd + offSolanaUsd
+      : offSolanaUsd > 0
+        ? offSolanaUsd
         : null;
 
   // Jupiter Trigger auth for the Home asset detail's limit tab. Cheap to hold:
@@ -254,9 +331,27 @@ function SignedIn({
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-aeras-canvas lg:flex-row">
-      {/* Sidebar (full-height dark gradient on desktop, top hero on mobile) */}
-      <aside className="bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-72 lg:flex-col lg:p-7 xl:w-80">
+    // The night canvas, on every section. It is set inline rather than as a
+    // theme token: a token added to @theme needs a dev-server restart to
+    // register, and a class that silently fails here drops the whole page onto
+    // the white body background with white type on top of it.
+    <div
+      className="relative flex min-h-screen flex-col text-white lg:flex-row"
+      style={{ backgroundColor: "#08090a" }}
+    >
+      {/* Two low-alpha pools in the brand blue. Without them the canvas reads as
+          flat black and the glass surfaces have nothing to catch. */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0"
+        style={{
+          background:
+            "radial-gradient(58rem 38rem at 10% -12%, rgba(41,115,255,0.10), transparent 62%), radial-gradient(46rem 34rem at 94% 6%, rgba(87,146,255,0.055), transparent 60%)",
+        }}
+      />
+
+      {/* Sidebar (full-height on desktop, top hero on mobile) */}
+      <aside className="relative border-b border-white/[0.08] bg-white/[0.035] text-white backdrop-blur-2xl lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-72 lg:flex-col lg:border-b-0 lg:border-r lg:p-7 xl:w-80">
         <div className="flex items-center justify-between p-6 lg:p-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -347,7 +442,27 @@ function SignedIn({
             {walletAddress && (
               <CopyAddressButton address={walletAddress} dark />
             )}
+            <span className="text-[10px] uppercase tracking-wider text-white/30">
+              SOL
+            </span>
           </div>
+          {/* The embedded Ethereum wallet, shown rather than left to be
+              discovered. It is a second wallet holding real assets: Ondo Perps
+              withdrawals land in it, and Morpho earn funds through it. Until
+              this line existed the only way to see the address was to open the
+              Receive sheet, so a user looking at a withdrawal that had already
+              settled had no address to check it against. */}
+          {walletScan.evmAddress && (
+            <div className="flex items-center gap-1 text-xs">
+              <span className="font-mono text-white/70">
+                {`${walletScan.evmAddress.slice(0, 6)}…${walletScan.evmAddress.slice(-4)}`}
+              </span>
+              <CopyAddressButton address={walletScan.evmAddress} dark />
+              <span className="text-[10px] uppercase tracking-wider text-white/30">
+                ETH
+              </span>
+            </div>
+          )}
           <button
             type="button"
             onClick={onLogout}
@@ -359,7 +474,7 @@ function SignedIn({
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 px-6 py-8 lg:px-10 lg:py-10">
+      <main className="relative flex-1 px-6 py-8 lg:px-10 lg:py-10">
         <div className="mx-auto max-w-6xl space-y-6">
           {activeSection === "earn" ? (
             <EarnPanel
@@ -433,13 +548,13 @@ function SignedIn({
           ) : walletAddress ? (
             <>
               <div className="space-y-1.5">
-                <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+                <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
                   Home
                 </div>
-                <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+                <h2 className="font-light text-2xl tracking-tight text-white">
                   Your account
                 </h2>
-                <p className="text-sm text-aeras-300">
+                <p className="text-sm text-white/45">
                   Fund your wallet, buy tokenized stocks, and track your balance.
                 </p>
               </div>
@@ -476,6 +591,7 @@ function SignedIn({
                       pricesError={pricesError}
                       selectedMint={ticker.mint}
                       onSelect={handleAssetSelect}
+                      onSeeAll={() => setActiveSection("markets")}
                     />
                   )}
                 </Card>
@@ -483,18 +599,18 @@ function SignedIn({
 
               {/* Chart + Borrow side by side on desktop */}
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-                <Card className="lg:col-span-3">
+                <Card className="lg:col-span-2">
                   <PriceChart ticker={ticker} />
                 </Card>
 
-                <Card className="lg:col-span-2">
+                <Card className="lg:col-span-3">
                   <BorrowPanel
                     walletAddress={walletAddress}
                     balances={balances}
                     prices={prices}
                     onRefresh={settleAll}
                     onAddFunds={() => setActiveSection("markets")}
-                    dark
+                    unboxed
                   />
                 </Card>
               </div>
@@ -521,7 +637,7 @@ function Card({
 }) {
   return (
     <div
-      className={`rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6 ${className ?? ""}`}
+      className={`${GLASS_SURFACE} p-5 text-white lg:p-6 ${className ?? ""}`}
     >
       {children}
     </div>
@@ -599,16 +715,12 @@ function MarketsSection({
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
         <div className="space-y-1.5">
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
             Markets
           </div>
-          <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+          <h2 className="font-light text-2xl tracking-tight text-white">
             Buy, sell and use as collateral
           </h2>
-          <p className="text-sm text-aeras-300">
-            xStocks are tokenized representations of the underlying asset;
-            holders do not have direct shareholder rights.
-          </p>
         </div>
         {pricesError ? (
           <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-aeras-warning">
@@ -616,7 +728,7 @@ function MarketsSection({
             Price feed offline
           </span>
         ) : (
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-aeras-300">
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-white/50">
             <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
             Live · 10s
           </span>
@@ -625,14 +737,14 @@ function MarketsSection({
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative sm:w-64">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-aeras-300" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-white/40" />
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search assets"
             aria-label="Search assets"
-            className="w-full rounded-lg border border-aeras-border bg-white py-2 pl-9 pr-3 text-sm tracking-tight text-aeras-900 outline-none transition-colors placeholder:text-aeras-300 focus:border-aeras-blue"
+            className="w-full rounded-lg border border-white/15 bg-white/5 py-2 pl-9 pr-3 text-sm tracking-tight text-white outline-none transition-colors placeholder:text-white/30 focus:border-aeras-blue"
           />
         </div>
         <div className="flex flex-wrap gap-1.5">
@@ -653,7 +765,7 @@ function MarketsSection({
       </div>
 
       {groups.length === 0 ? (
-        <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8 text-center text-sm text-white/50">
+        <div className={`${GLASS_SURFACE} p-8 text-center text-sm text-white/50`}>
           No assets match that search.
         </div>
       ) : (
@@ -662,10 +774,7 @@ function MarketsSection({
           const rows = open ? g.assets : g.assets.slice(0, GROUP_PREVIEW_ROWS);
           const truncated = collapsible && g.assets.length > GROUP_PREVIEW_ROWS;
           return (
-            <div
-              key={g.id}
-              className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6"
-            >
+            <div key={g.id} className={`${GLASS_SURFACE} p-5 lg:p-6`}>
               <div className="flex items-baseline justify-between gap-3">
                 <div className="flex items-baseline gap-2">
                   <h3 className="text-sm font-medium tracking-tight text-white">
@@ -704,7 +813,7 @@ function MarketsSection({
                         sparkline={sparks?.[x.mint]}
                         held={balances?.xstocks[x.mint] ?? 0}
                         expanded={expanded}
-                        borrowable={vaultByCollateralMint(x.mint) != null}
+                        borrowable={hasLendingMarket(x.mint)}
                         onToggle={() =>
                           setExpandedMint(expanded ? null : x.mint)
                         }
@@ -727,13 +836,6 @@ function MarketsSection({
           );
         })
       )}
-
-      <p className="text-[11px] text-aeras-300">
-        Tokenized stocks are subject to KYC and geographic restrictions at the
-        issuer level. {XSTOCK_BORROW_VAULTS.length} of {XSTOCKS.length} are
-        borrowable today, marked with a shield; the rest can be held and sold
-        but not used as collateral yet.
-      </p>
     </div>
   );
 }
@@ -767,8 +869,8 @@ function CategoryPill({
       aria-pressed={active}
       className={`rounded-lg border px-3 py-1.5 text-xs font-medium tracking-tight transition-colors ${
         active
-          ? "border-aeras-900 bg-aeras-900 text-white"
-          : "border-aeras-border bg-white text-aeras-300 hover:border-aeras-border-strong hover:text-aeras-900"
+          ? "border-white/[0.18] bg-white/[0.12] text-white"
+          : "border-white/10 bg-white/[0.04] text-white/55 hover:border-white/20 hover:text-white"
       }`}
     >
       {label}
@@ -822,9 +924,15 @@ function MarketsRow({
         : "stroke-aeras-negative";
   const heldUsd = price != null ? held * price : null;
   return (
-    <div
-      className={`flex w-full items-center gap-3 py-3 text-left text-sm ${
-        expanded ? "bg-white/[0.03]" : ""
+    // The whole row is the control, as on the Borrow tab. "Trade" stays as a
+    // visible affordance but is a span, not a button: a button inside a button
+    // is invalid markup and swallows the row's own click.
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      className={`group flex w-full items-center gap-3 py-3 text-left text-sm transition-colors ${
+        expanded ? "bg-white/[0.03]" : "hover:bg-white/5"
       }`}
     >
       <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -835,12 +943,7 @@ function MarketsRow({
           </div>
           <div className="mt-0.5 flex items-center gap-1.5">
             <span className="text-[11px] text-white/45">{xstock.symbol}</span>
-            {borrowable && (
-              <ShieldCheck
-                className="size-3 shrink-0 text-aeras-blue-medium"
-                aria-label="Can be used as collateral"
-              />
-            )}
+            {borrowable && <LendingBadge />}
           </div>
         </div>
       </div>
@@ -872,21 +975,16 @@ function MarketsRow({
         <RowSparkline values={sparkline} strokeClassName={sparkStroke} />
       </div>
       <div className={MK_ACTION}>
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={expanded}
-          className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-white/10 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:border-white/25 hover:bg-white/5"
-        >
+        <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-white/10 bg-white/10 px-2.5 py-1 text-[11px] font-medium text-white transition-colors group-hover:border-white/25">
           Trade
           <ChevronDown
             className={`size-3.5 text-white/50 transition-transform ${
               expanded ? "rotate-180" : ""
             }`}
           />
-        </button>
+        </span>
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -909,7 +1007,7 @@ function MarketsRowExpanded({
     <div className="border-t border-white/10 px-1 py-5">
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="rounded-xl border border-white/10 bg-white/5 p-4">
-          <PriceChart ticker={xstock} />
+          <PriceChart ticker={xstock} heightClass="h-72" />
         </div>
 
         <div className="space-y-4">
@@ -973,9 +1071,9 @@ function HomeAssetDetail({
           <AssetLogo xstock={xstock} size={32} />
           <div>
             <div className="text-sm font-medium tracking-tight text-white">
-              {xstock.symbol}
+              {xstock.name}
             </div>
-            <div className="text-xs text-white/50">{xstock.name}</div>
+            <div className="text-xs text-white/50">{xstock.symbol}</div>
           </div>
         </div>
         <div className="text-right">
@@ -990,6 +1088,13 @@ function HomeAssetDetail({
         </div>
       </div>
 
+      {/* Chart first, then the ticket. Drilling into an asset to buy it without
+          seeing its price history meant leaving for the chart card below and
+          losing the panel, so the full chart lives here as it does on the
+          Markets tab. Unboxed and headingless: the row above already names the
+          asset and prices it, and the card around this panel is border enough. */}
+      <PriceChart ticker={xstock} heightClass="h-40" showHeading={false} />
+
       <AssetTradePanel
         xstock={xstock}
         prices={prices}
@@ -997,6 +1102,7 @@ function HomeAssetDetail({
         walletAddress={walletAddress ?? null}
         auth={auth}
         onRefresh={onRefresh}
+        autoFocus
       />
     </div>
   );
@@ -1066,10 +1172,10 @@ function BorrowSection({
   return (
     <div className="space-y-6">
       <div className="space-y-1.5">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
           Borrow
         </div>
-        <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+        <h2 className="font-light text-2xl tracking-tight text-white">
           Borrow USDC against your tokenized stocks
         </h2>
       </div>
@@ -1114,9 +1220,9 @@ function SidebarNavItem({
       disabled={!interactive}
       className={`group flex items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition-colors ${
         active
-          ? "bg-white/10 text-white"
+          ? "border border-white/[0.09] bg-white/[0.07] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.07)]"
           : interactive
-            ? "text-white/55 hover:bg-white/5 hover:text-white"
+            ? "border border-transparent text-white/55 hover:bg-white/5 hover:text-white"
             : "cursor-not-allowed text-white/30"
       }`}
     >

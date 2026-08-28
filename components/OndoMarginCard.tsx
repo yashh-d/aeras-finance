@@ -20,7 +20,9 @@ import { useState } from "react";
 import type { OndoMarginSource } from "@/lib/ondo/margin-sources";
 import type { UseOndoMargin } from "@/lib/ondo/use-ondo-margin";
 
-const PANEL = "rounded-xl border border-white/[0.07] bg-[#111415]";
+import { INSET_PANEL } from "@/lib/ui/surface";
+
+const PANEL = INSET_PANEL;
 const LABEL =
   "text-[10px] font-medium uppercase tracking-[0.14em] text-white/35";
 

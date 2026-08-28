@@ -5,12 +5,14 @@
 import "server-only";
 
 import { XSTOCK_BORROW_VAULTS } from "@/lib/jupiter/borrow";
+import { XSTOCKS } from "@/lib/jupiter/xstocks";
 import { USDC_MINT } from "@/lib/jupiter/constants";
 import {
   MONAD_CHAIN_ID,
   MONAD_NATIVE_TOKEN,
   MONAD_USDC,
 } from "@/lib/morpho/constants";
+import { XAUT } from "@/lib/morpho/gold-market";
 import { ONDO_MARGIN_TOKEN_ADDRESSES } from "@/lib/ondo/collateral";
 import {
   TRUSTWARE_API_BASE_URL,
@@ -35,6 +37,12 @@ const ALLOWED_DEST_MINTS = new Set(
   XSTOCK_BORROW_VAULTS.map((v) => v.collateralMint),
 );
 
+// Every curated xStock mint, which is a wider set than the four above: only
+// TSLAx, SPYx, QQQx and NVDAx have Jupiter Lend borrow vaults. Used by the
+// `unwind` shape, where the destination is the user's own wallet rather than a
+// lending vault, so there is nothing for a vault to be required for.
+const XSTOCK_MINTS = new Set(XSTOCKS.map((x) => x.mint));
+
 // Funding destinations for the Morpho-on-Monad earn venue, delivered to the
 // user's embedded EVM wallet: USDC (the deposit asset) and native MON (the gas
 // top-up so the wallet can sign the approve and deposit).
@@ -43,6 +51,36 @@ const MONAD_FUNDING_TOKENS = new Set([
   MONAD_USDC.address.toLowerCase(),
   MONAD_NATIVE_TOKEN.toLowerCase(),
 ]);
+
+// Collateral destination for the Morpho Blue gold market: XAUt on Ethereum,
+// delivered to the user's own embedded EVM wallet.
+//
+// Narrower than it looks. Native ETH is NOT here even though the gold funding
+// plan buys it for gas: ETH on Ethereum is already in SWAP_TOKENS, so the swap
+// shape below covers the top-up with both sides curated, and repeating it here
+// would widen the boundary for no gain. The one thing this shape adds over the
+// swap shape is an UNCONSTRAINED SOURCE, which is what lets a user's GLDx or
+// GLDon fund a deposit without either being in the swap registry.
+//
+// Same trust model as the Monad funding shape: the destination token and chain
+// are pinned server-side, the recipient must be an EVM address, the client
+// planner constrains the source against GOLD_COLLATERAL_SOURCES, and a wrong
+// source can only waste the caller's own funds. Unlike the Ondo margin shape,
+// the recipient here is the user's own wallet, so nothing is unrecoverable.
+const MORPHO_GOLD_COLLATERAL_TOKENS = new Set([XAUT.address.toLowerCase()]);
+
+// Chains a Lighter margin deposit may be bridged to, and the exact USDC contract
+// on each. Arbitrum and Base are the two EVM chains Lighter issues intent
+// addresses for that Trustware can also reach; Ethereum is excluded because
+// createIntentAddress rejects it and the direct deposit contract is a different
+// path entirely.
+//
+// Lower-cased values, compared against a lower-cased request token, so a caller
+// cannot slip a different contract through on casing alone.
+const LIGHTER_MARGIN_DESTINATIONS: Record<string, string> = {
+  "42161": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+  "8453": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+};
 
 // Margin destinations for Ondo Perps, delivered to the deposit address Ondo
 // provisioned for the user's account. Ethereum only: Ondo credits no other
@@ -66,7 +104,7 @@ const ATOMIC_AMOUNT = /^\d+$/;
 // caller to surface as a 400, or null when valid.
 //
 // This is the control that keeps the key-bearing proxy from being used as an
-// open cross-chain swap for arbitrary tokens. There are exactly five shapes it
+// open cross-chain swap for arbitrary tokens. There are exactly seven shapes it
 // accepts, and all are allowlists resolved server-side from hardcoded
 // registries. None takes the caller's word for what is permissible:
 //
@@ -88,6 +126,13 @@ const ATOMIC_AMOUNT = /^\d+$/;
 //            (or another chain) coming home to the primary wallet. Destination
 //            token and chain pinned here, same trust model as funding.
 //
+//   gold     anything -> XAUt on Ethereum, delivered to an EVM address. The
+//            collateral leg of the Morpho Blue gold market: a user's GLDx or
+//            GLDon becomes the XAUt that market takes. Destination token and
+//            chain pinned here; the source is constrained by the client planner
+//            against GOLD_COLLATERAL_SOURCES, and the recipient is the user's
+//            own wallet, so a wrong source only wastes the caller's own funds.
+//
 //   margin   anything -> an Ondo Perps collateral token on Ethereum, delivered
 //            to an Ondo-provisioned deposit address. The destination token set
 //            is ONDO_MARGIN_TOKENS, pinned in lib/ondo/collateral.ts and
@@ -96,6 +141,13 @@ const ATOMIC_AMOUNT = /^\d+$/;
 //            recipient is not the user's own wallet, so the caller-supplied
 //            address is checked against Ondo before the route is built, in
 //            lib/ondo/fund.ts, not here.
+//
+//   unwind   an Ondo collateral token on Ethereum -> a curated Solana xStock,
+//            delivered to a Solana address. The reverse of margin, and the last
+//            leg of the Ondo exit. Both sides pinned here. Its destination set
+//            is every curated xStock rather than the four with borrow vaults,
+//            because it returns a token to the user's own wallet rather than
+//            into a lending vault; see the note at the branch.
 //
 //   swap     a curated token -> a curated token, either direction, including
 //            EVM destinations. BOTH sides must be in SWAP_TOKENS. Widening this
@@ -151,6 +203,69 @@ export function validateTrustwareRequest(
     ONDO_MARGIN_TOKEN_ADDRESSES.has(req.toToken.toLowerCase()) &&
     EVM_ADDRESS.test(req.toAddress!);
   if (isOndoMargin) return null;
+
+  const isGoldCollateral =
+    req.toChain === ETHEREUM_CHAIN &&
+    MORPHO_GOLD_COLLATERAL_TOKENS.has(req.toToken.toLowerCase()) &&
+    EVM_ADDRESS.test(req.toAddress!);
+  if (isGoldCollateral) return null;
+
+  // unwind  an Ondo collateral token on Ethereum -> the canonical Solana
+  //         xStock, delivered to a Solana address. The reverse of `margin`,
+  //         and the last leg of the exit: withdrawing from Ondo lands an
+  //         ERC-20 on Ethereum, and this brings it home.
+  //
+  // Both sides are pinned server-side. The source must be one of Ondo's own
+  // margin tokens, the same fixed set the margin shape uses, and the
+  // destination must be a curated xStock mint.
+  //
+  // **The destination set here is XSTOCK_MINTS, not ALLOWED_DEST_MINTS.** The
+  // deposit shape targets the four xStocks with Jupiter Lend borrow vaults,
+  // because a deposit has to land somewhere it can be lent. An unwind has no
+  // such requirement: it returns a token the user already owns to their own
+  // wallet, and restricting it to the borrow-vault four would strand exactly
+  // the assets that need it most. SPCX is the live example, since SPCXon is
+  // accepted Ondo collateral and SPCXx has no borrow vault.
+  //
+  // This widens the boundary, so it is worth being precise about by how much:
+  // the source is still the eight Ondo tokens and nothing else, the
+  // destination is still the curated xStock list and nothing else, and the
+  // recipient must be a Solana address. It does not become a general bridge.
+  const isOndoUnwind =
+    req.fromChain === ETHEREUM_CHAIN &&
+    ONDO_MARGIN_TOKEN_ADDRESSES.has(req.fromToken!.toLowerCase()) &&
+    req.toChain === TRUSTWARE_SOLANA_CHAIN &&
+    XSTOCK_MINTS.has(req.toToken) &&
+    SOLANA_ADDRESS.test(req.toAddress!);
+  if (isOndoUnwind) return null;
+
+  // lighter margin  borrowed Solana USDC -> canonical USDC on a chain Lighter
+  //                 accepts deposits from, delivered to the intent address
+  //                 Lighter provisioned for the user.
+  //
+  // The narrowest shape in this function, deliberately. The source is pinned to
+  // Solana USDC and nothing else, because this leg only ever carries the
+  // proceeds of a borrow. The destination is pinned to the canonical USDC of two
+  // chains, so a caller cannot use it to deliver an arbitrary token anywhere.
+  //
+  // The recipient is NOT the user's own wallet, which it shares with the Ondo
+  // margin shape above and for the same reason: Lighter's intent address is
+  // derived from the user's L1 address and credits any USDC sent to it, so
+  // routing the bridge straight at one removes the gas problem entirely. The
+  // user never holds ETH on Arbitrum, never switches chains, and signs once on
+  // Solana. Routing to their own wallet instead would strand the funds behind an
+  // EVM transfer they cannot pay for.
+  //
+  // The address itself is not validated here beyond its shape, because this
+  // route handler cannot tell a real Lighter intent address from any other. That
+  // guarantee comes from the caller fetching it over /api/lighter/account, which
+  // gets it from Lighter and never from the browser.
+  const isLighterMargin =
+    req.fromChain === TRUSTWARE_SOLANA_CHAIN &&
+    req.fromToken === USDC_MINT &&
+    LIGHTER_MARGIN_DESTINATIONS[req.toChain] === req.toToken.toLowerCase() &&
+    EVM_ADDRESS.test(req.toAddress!);
+  if (isLighterMargin) return null;
 
   const from = findSwapToken(req.fromChain!, req.fromToken!);
   const to = findSwapToken(req.toChain, req.toToken);

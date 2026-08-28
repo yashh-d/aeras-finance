@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { CircleDollarSign } from "lucide-react";
 
 import type { XStock } from "@/lib/jupiter/xstocks";
 
@@ -23,8 +24,15 @@ export function AssetLogo({
     return (
       <div
         aria-hidden="true"
-        className="flex shrink-0 items-center justify-center rounded-full bg-aeras-surface text-[9px] font-semibold tracking-tight text-aeras-500"
-        style={{ width: size, height: size }}
+        className="flex shrink-0 items-center justify-center rounded-full bg-aeras-surface font-semibold leading-none tracking-tight text-aeras-500"
+        style={{
+          width: size,
+          height: size,
+          // Was a flat 9px, which fit while every monogram was four characters
+          // or fewer. "XAUt0" is five and overflowed the circle. Steps down the
+          // same way MarketLogo does for its three-character index badges.
+          fontSize: monogram.length > 4 ? Math.round(size * 0.25) : 9,
+        }}
       >
         {monogram}
       </div>
@@ -44,6 +52,20 @@ export function AssetLogo({
         onError={() => setErrored(true)}
       />
     </div>
+  );
+}
+
+// Marks an asset that can be borrowed against, in the asset lists on Home and
+// Markets. Green rather than the blue used for interactive affordances: this is
+// a property of the asset, not something to click.
+export function LendingBadge({ size = 13 }: { size?: number }) {
+  return (
+    <CircleDollarSign
+      className="shrink-0 text-aeras-positive"
+      style={{ width: size, height: size }}
+      aria-label="Can be lent against"
+      role="img"
+    />
   );
 }
 

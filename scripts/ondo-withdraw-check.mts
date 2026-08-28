@@ -57,6 +57,7 @@ import {
   ondoGetChallenge,
   ondoMarkets,
   ondoPositions,
+  ondoSetLeverage,
   ondoWithdraw,
   ondoWithdrawalLimits,
   ondoWithdrawals,
@@ -422,6 +423,34 @@ async function main() {
       "a fresh account has an empty address book",
       (book.addressBook ?? []).length === 0,
       "so registration really is a precondition, not a formality",
+    );
+
+    // Set Leverage answers with a bare `{success: true}` and no `result`, the
+    // same envelope shape as address-book completion and removal. Before
+    // `allowEmptyResult` existed, ondoRequest treated a missing result as a
+    // failure and threw "http 200" on a call that had gone through. That is the
+    // worst shape of bug available here, because the write lands and the caller
+    // is told it did not, so the user retries something already done.
+    //
+    // Exercised against Set Leverage rather than the address book because it is
+    // the one bare-envelope endpoint a check script can safely call: the
+    // burner has no position, so nothing is changed by it.
+    let bareEnvelopeOk = true;
+    let bareEnvelopeDetail = "returned without throwing";
+    try {
+      await ondoSetLeverage(token, "SPY-USD.P", 2);
+    } catch (err) {
+      // A business refusal is fine and proves the same point: the envelope
+      // parsed. Only the "http 200" fallback means the parser rejected a
+      // success.
+      const e = err as OndoApiError;
+      bareEnvelopeOk = !/http 200/.test(e.message ?? "");
+      bareEnvelopeDetail = e.message?.slice(0, 80) ?? String(err);
+    }
+    check(
+      "a bare `{success:true}` envelope is not read as a failure",
+      bareEnvelopeOk,
+      bareEnvelopeDetail,
     );
 
     // The challenge is minted but never completed. Completing it would register

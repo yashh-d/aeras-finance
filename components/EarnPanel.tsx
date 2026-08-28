@@ -4,18 +4,19 @@
 // terminal" feel: yield Vaults (Jupiter Lend Earn and Kamino Earn vaults),
 // Looping (recursive borrow against collateral), and direct Lend.
 //
-// One Vaults table, three venues. The Solana assets carry two of them side by
-// side per row: Jupiter Lend is a single protocol-native vault per asset, while
-// a Kamino K-Vault is a curator-run strategy allocating across Kamino Lend
-// reserves. Kamino usually pays more and does not cover every asset, so both
-// rates show rather than picking one.
+// One Vaults table, one row per asset, a column per venue. Jupiter Lend is a
+// single protocol-native vault per asset; a Kamino K-Vault is a curator-run
+// strategy allocating across Kamino Lend reserves; Morpho-on-Monad is a set of
+// curator vaults on an EVM chain. No venue covers every asset and they trade
+// places on rate, so all three rates show rather than picking one.
 //
-// Morpho-on-Monad is the third venue and renders as a section at the foot of
-// the same table (MorphoVaultsSection). It is shaped differently - one row per
-// curator vault, not per asset, since all three are USDC - so it keeps its own
-// column labels while sharing the card and the right-hand columns. It is also
-// the one EVM venue here: the embedded EVM wallet signs its deposits and
-// Trustware funds them from Solana USDC.
+// Morpho used to sit in a section of its own at the foot of the table with its
+// own column labels, because it is the one venue with SEVERAL vaults for the
+// same asset. That is now resolved in the cell instead: the column shows the
+// best-paying vault and names it, and the choice between vaults moves into the
+// expanded row (MorphoVenuePanel), which is where a venue's internals belong.
+// Morpho is also the one EVM venue here - the embedded EVM wallet signs its
+// deposits and Trustware funds them from Solana USDC.
 //
 // Looping (multiply / unwind) lives in LoopingPanel. Aave stays off until it
 // gets the same treatment.
@@ -60,7 +61,15 @@ import {
   type KaminoVaultState,
 } from "@/lib/kamino/kvaults";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
-import { MorphoVaultsSection } from "@/components/MorphoVaultsCard";
+import {
+  MorphoVenuePanel,
+  morphoBestVault,
+  morphoPositionAtomic,
+  morphoTotalPositionAtomic,
+  useMorphoEarn,
+  type MorphoEarn,
+} from "@/components/MorphoVaultsCard";
+import { morphoVaultsForAsset, type MorphoVault } from "@/lib/morpho/vaults";
 import {
   atomicToUiString,
   getConnection,
@@ -84,6 +93,8 @@ interface Props {
   prices: JupiterPriceMap | null;
   onRefresh: () => Promise<void>;
 }
+
+import { GLASS_SURFACE } from "@/lib/ui/surface";
 
 export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props) {
   const { vaults, error: vaultsError } = useEarnVaults();
@@ -125,13 +136,13 @@ export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props)
 function PageHeader() {
   return (
     <div className="space-y-1.5">
-      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300">
+      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
         Earn
       </div>
-      <h2 className="font-light text-2xl tracking-tight text-aeras-900">
+      <h2 className="font-light text-2xl tracking-tight text-white">
         Put idle capital to work
       </h2>
-      <p className="text-sm text-aeras-300">
+      <p className="text-sm text-white/45">
         Three ways to earn yield on assets you already hold: vault deposits,
         leveraged looping, and selling options.
       </p>
@@ -315,25 +326,28 @@ function VaultsCard({
   walletAddress: string | undefined;
   onSettled: () => Promise<void>;
   // Solana balances and the page-level refresh, both needed by the Monad
-  // Morpho rows: a deposit there can be funded from Solana USDC.
+  // Morpho venue: a deposit there can be funded from Solana USDC.
   solanaBalances: AccountBalances | null;
   onRefresh: () => Promise<void>;
 }) {
   const [openMint, setOpenMint] = useState<string | null>(null);
+  // Held here, not inside a Morpho component, because the Morpho column has to
+  // draw a rate on every row whether or not anything is expanded.
+  const morpho = useMorphoEarn(walletAddress);
+
+  const handleMorphoSettled = useCallback(async () => {
+    await morpho.refresh();
+    await onRefresh();
+  }, [morpho, onRefresh]);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
-      <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-            Vaults
-          </div>
-          <div className="mt-1 text-sm font-medium tracking-tight text-white">
-            Deposit, hold, earn
-          </div>
+    <div className={`${GLASS_SURFACE} p-5 lg:p-6`}>
+      <div>
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+          Vaults
         </div>
-        <div className="text-[11px] text-white/50">
-          Jupiter Lend, Kamino and Morpho
+        <div className="mt-1 text-sm font-medium tracking-tight text-white">
+          Deposit, hold, earn
         </div>
       </div>
 
@@ -346,13 +360,17 @@ function VaultsCard({
       <div className="mt-5 divide-y divide-white/10">
         <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           <div className="col-span-3">Asset</div>
-          <div className="col-span-3 flex items-center justify-end gap-1.5">
+          <div className="col-span-2 flex items-center justify-end gap-1.5">
             <VenueMark src={VENUE_LOGOS.jupiter} />
-            Jupiter Lend
+            Jupiter
           </div>
-          <div className="col-span-3 flex items-center justify-end gap-1.5">
+          <div className="col-span-2 flex items-center justify-end gap-1.5">
             <VenueMark src={VENUE_LOGOS.kamino} />
             Kamino
+          </div>
+          <div className="col-span-2 flex items-center justify-end gap-1.5">
+            <VenueMark src={VENUE_LOGOS.morpho} />
+            Morpho
           </div>
           <div className="col-span-2 text-right">Your deposit</div>
           <div className="col-span-1" />
@@ -371,6 +389,10 @@ function VaultsCard({
               kaminoPosition={
                 kaminoMeta ? kaminoPositions.get(kaminoMeta.address) : undefined
               }
+              morphoVaults={morphoVaultsForAsset(meta.symbol)}
+              morpho={morpho}
+              solanaUsdcAtomic={solanaBalances?.usdcAtomic ?? "0"}
+              onMorphoSettled={handleMorphoSettled}
               balances={balances}
               walletAddress={walletAddress}
               open={openMint === meta.assetMint}
@@ -383,17 +405,18 @@ function VaultsCard({
             />
           );
         })}
-        <MorphoVaultsSection
-          walletAddress={walletAddress}
-          balances={solanaBalances}
-          onRefresh={onRefresh}
-        />
       </div>
     </div>
   );
 }
 
-type Venue = "jupiter" | "kamino";
+type Venue = "jupiter" | "kamino" | "morpho";
+
+const VENUE_NAMES: Record<Venue, string> = {
+  jupiter: "Jupiter",
+  kamino: "Kamino",
+  morpho: "Morpho",
+};
 
 function VaultRow({
   meta,
@@ -401,6 +424,10 @@ function VaultRow({
   kaminoMeta,
   kaminoVault,
   kaminoPosition,
+  morphoVaults,
+  morpho,
+  solanaUsdcAtomic,
+  onMorphoSettled,
   balances,
   walletAddress,
   open,
@@ -412,6 +439,12 @@ function VaultRow({
   kaminoMeta: KaminoVaultMeta | undefined;
   kaminoVault: KaminoVaultState | undefined;
   kaminoPosition: KaminoPosition | undefined;
+  // Empty for every asset Morpho has no curated vault for, which is every one
+  // but USDC today.
+  morphoVaults: readonly MorphoVault[];
+  morpho: MorphoEarn;
+  solanaUsdcAtomic: string;
+  onMorphoSettled: () => Promise<void>;
   balances: EarnWalletBalances | null;
   walletAddress: string | undefined;
   open: boolean;
@@ -432,47 +465,105 @@ function VaultRow({
     atomicToUiString(kaminoPositionAtomic, meta.decimals),
   );
 
+  // Morpho carries several curator vaults for one asset, so the column shows
+  // the best-paying one and the row-level position sums all of them.
+  const morphoBest = morphoBestVault(morphoVaults, morpho.metrics);
+  const morphoApy = morphoBest?.metric?.netApy ?? null;
+  const morphoPositionUi = Number(
+    atomicToUiString(
+      morphoTotalPositionAtomic(morphoVaults, morpho.positions).toString(),
+      6,
+    ),
+  );
+
   // Whichever venue pays more gets the green rate. This falls out of the data
   // rather than being asserted anywhere, so the USDT row correctly shows
-  // Jupiter ahead without a special case.
+  // Jupiter ahead without a special case. Ties go to the leftmost venue.
   const jupiterApy = vault?.apy ?? null;
   const kaminoApy = kaminoVault?.apy ?? null;
-  const jupiterLeads =
-    jupiterApy !== null && (kaminoApy === null || jupiterApy >= kaminoApy);
-  const kaminoLeads =
-    kaminoApy !== null && (jupiterApy === null || kaminoApy > jupiterApy);
+  const apyByVenue: Array<[Venue, number | null]> = [
+    ["jupiter", jupiterApy],
+    ["kamino", kaminoApy],
+    ["morpho", morphoApy],
+  ];
+  const bestApy = Math.max(...apyByVenue.map(([, a]) => a ?? -Infinity));
+  const leader =
+    apyByVenue.find(([, a]) => a !== null && a === bestApy)?.[0] ?? null;
 
-  const totalPositionUi = positionUi + kaminoPositionUi;
-  const bothVenuesHeld = positionUi > 0 && kaminoPositionUi > 0;
+  const totalPositionUi = positionUi + kaminoPositionUi + morphoPositionUi;
+  const positionByVenue: Array<[Venue, number]> = [
+    ["jupiter", positionUi],
+    ["kamino", kaminoPositionUi],
+    ["morpho", morphoPositionUi],
+  ];
+  const heldVenues = positionByVenue.filter(([, p]) => p > 0);
   const decimalsShown = meta.decimals === 9 ? 4 : 2;
+
+  const kaminoUsable = Boolean(kaminoMeta && kaminoVault);
+  const morphoUsable = morphoVaults.length > 0;
+  const usableByVenue: Record<Venue, boolean> = {
+    jupiter: Boolean(vault),
+    kamino: kaminoUsable,
+    morpho: morphoUsable,
+  };
 
   // Default the expanded form to the venue the user already has money in, then
   // to the better rate. Derived rather than stored, so the default tracks a
   // rate flip until the user picks a venue explicitly.
   const [picked, setPicked] = useState<Venue | null>(null);
   const suggested: Venue =
-    positionUi > 0 && kaminoPositionUi === 0
-      ? "jupiter"
-      : kaminoPositionUi > 0 && positionUi === 0
-        ? "kamino"
-        : kaminoLeads
-          ? "kamino"
-          : "jupiter";
-  const kaminoUsable = Boolean(kaminoMeta && kaminoVault);
+    heldVenues.length === 1 ? heldVenues[0][0] : (leader ?? "jupiter");
+  // A venue that went unusable under the user (no vault, rates unread) falls
+  // back rather than leaving an empty panel on screen.
   const venue: Venue =
-    picked === "kamino" && !kaminoUsable ? "jupiter" : (picked ?? suggested);
+    picked && usableByVenue[picked] ? picked : suggested;
 
-  const canOpen = Boolean((vault || kaminoUsable) && walletAddress);
+  // Which Morpho vault the panel is on. Defaults to the one already holding a
+  // deposit, then to the best rate, and only sticks once the user picks.
+  const [pickedMorpho, setPickedMorpho] = useState<string | null>(null);
+  const morphoHeld = morphoVaults.find(
+    (v) => morphoPositionAtomic(v, morpho.positions) !== "0",
+  );
+  const morphoVault =
+    morphoVaults.find((v) => v.address === pickedMorpho) ??
+    morphoHeld ??
+    morphoBest?.vault;
+  const morphoVaultApy = morphoVault
+    ? (morpho.metrics.get(morphoVault.address.toLowerCase())?.netApy ?? null)
+    : null;
+  const morphoVaultPositionUi = morphoVault
+    ? Number(
+        atomicToUiString(morphoPositionAtomic(morphoVault, morpho.positions), 6),
+      )
+    : 0;
+
+  const canOpen = Boolean(
+    (vault || kaminoUsable || morphoUsable) && walletAddress,
+  );
 
   // Withdraw falls back to deposit when the selected venue holds nothing, so
   // switching venue mid-flow can never leave an unusable form on screen.
   const [pickedMode, setPickedMode] = useState<EarnMode>("deposit");
-  const venuePositionUi = venue === "jupiter" ? positionUi : kaminoPositionUi;
+  const venuePositionUi =
+    venue === "jupiter"
+      ? positionUi
+      : venue === "kamino"
+        ? kaminoPositionUi
+        : morphoVaultPositionUi;
   const mode: EarnMode =
     pickedMode === "withdraw" && venuePositionUi <= 0 ? "deposit" : pickedMode;
-  const venueApy = venue === "jupiter" ? jupiterApy : kaminoApy;
+  const venueApy =
+    venue === "jupiter"
+      ? jupiterApy
+      : venue === "kamino"
+        ? kaminoApy
+        : morphoVaultApy;
   const venueLabel =
-    venue === "jupiter" ? "Jupiter Lend" : (kaminoMeta?.name ?? "Kamino");
+    venue === "jupiter"
+      ? "Jupiter Lend"
+      : venue === "kamino"
+        ? (kaminoMeta?.name ?? "Kamino")
+        : (morphoVault?.name ?? "Morpho");
 
   return (
     <div className="py-2.5">
@@ -484,17 +575,17 @@ function VaultRow({
           />
           <div className="min-w-0">
             <div className="truncate font-medium tracking-tight text-white">
-              {meta.symbol}
+              {meta.name}
             </div>
             <div className="truncate text-[11px] text-white/50">
-              {meta.name}
+              {meta.symbol}
             </div>
           </div>
         </div>
 
         <VenueCell
           apy={jupiterApy}
-          leads={jupiterLeads}
+          leads={leader === "jupiter"}
           subtitle={vault ? `$${formatLargeUsd(vault.tvlUsd)} TVL` : null}
           note={
             vault && vault.rewardsApy > 0
@@ -505,11 +596,22 @@ function VaultRow({
 
         <VenueCell
           apy={kaminoApy}
-          leads={kaminoLeads}
+          leads={leader === "kamino"}
           subtitle={
             kaminoVault ? `$${formatLargeUsd(kaminoVault.tvlUsd)} TVL` : null
           }
           note={kaminoMeta ? kaminoMeta.name : "No vault"}
+        />
+
+        <VenueCell
+          apy={morphoApy}
+          leads={leader === "morpho"}
+          subtitle={
+            morphoBest?.metric?.tvlUsd != null
+              ? `$${formatLargeUsd(morphoBest.metric.tvlUsd)} TVL`
+              : null
+          }
+          note={morphoBest ? morphoBest.vault.name : "No vault"}
         />
 
         <div className="col-span-2 text-right font-mono text-xs tabular-nums text-white">
@@ -517,11 +619,9 @@ function VaultRow({
             <>
               {totalPositionUi.toFixed(decimalsShown)}
               <div className="text-[10px] text-white/50">
-                {bothVenuesHeld
-                  ? "2 venues"
-                  : positionUi > 0
-                    ? "Jupiter"
-                    : "Kamino"}
+                {heldVenues.length > 1
+                  ? `${heldVenues.length} venues`
+                  : VENUE_NAMES[heldVenues[0][0]]}
               </div>
             </>
           ) : (
@@ -568,9 +668,11 @@ function VaultRow({
             onPick={setPicked}
             jupiterApy={jupiterApy}
             kaminoApy={kaminoApy}
+            morphoApy={morphoVaultApy}
             kaminoName={kaminoMeta?.name}
             kaminoUsable={kaminoUsable}
             jupiterUsable={Boolean(vault)}
+            morphoUsable={morphoUsable}
           />
 
           {venue === "jupiter" && vault && (
@@ -595,6 +697,17 @@ function VaultRow({
               balances={balances}
               walletAddress={walletAddress}
               onSettled={onSettled}
+            />
+          )}
+          {venue === "morpho" && morphoVault && (
+            <MorphoVenuePanel
+              vaults={morphoVaults}
+              earn={morpho}
+              selected={morphoVault}
+              onSelect={(v) => setPickedMorpho(v.address)}
+              mode={mode}
+              solanaUsdcAtomic={solanaUsdcAtomic}
+              onSettled={onMorphoSettled}
             />
           )}
         </div>
@@ -722,7 +835,7 @@ function VenueCell({
   note: string | null;
 }) {
   return (
-    <div className="col-span-3 text-right">
+    <div className="col-span-2 text-right">
       <span
         className={`font-mono tabular-nums ${
           apy === null
@@ -753,17 +866,23 @@ function VenueTabs({
   onPick,
   jupiterApy,
   kaminoApy,
+  morphoApy,
   kaminoName,
   kaminoUsable,
   jupiterUsable,
+  morphoUsable,
 }: {
   venue: Venue;
   onPick: (v: Venue) => void;
   jupiterApy: number | null;
   kaminoApy: number | null;
+  // The selected Morpho vault's rate, not the column's best, so the tab agrees
+  // with the panel it opens.
+  morphoApy: number | null;
   kaminoName: string | undefined;
   kaminoUsable: boolean;
   jupiterUsable: boolean;
+  morphoUsable: boolean;
 }) {
   const options: Array<{
     id: Venue;
@@ -783,10 +902,16 @@ function VenueTabs({
       apy: kaminoApy,
       enabled: kaminoUsable,
     },
+    {
+      id: "morpho",
+      label: "Morpho · Monad",
+      apy: morphoApy,
+      enabled: morphoUsable,
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-2">
+    <div className="grid grid-cols-3 gap-2">
       {options.map((o) => (
         <button
           key={o.id}

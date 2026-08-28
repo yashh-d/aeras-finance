@@ -55,10 +55,21 @@ export class OndoApiError extends Error {
 }
 
 interface OndoRequestInit {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "DELETE" | "PUT";
   body?: unknown;
   token?: string;
   baseUrl?: string;
+  // Set for endpoints whose success response is a bare `{success: true}` with
+  // no `result` field. Without it those calls throw on success.
+  //
+  // **This is not an edge case: 13 endpoints answer that way**, including
+  // address-book completion, address-book removal, Set Leverage and Cancel All
+  // Orders. The failure is nasty because the write goes through and the caller
+  // is told it did not, which invites a retry of something already done. It
+  // surfaced as the useless string "Ondo Perps <path>: http 200", the fallback
+  // taken when the body carries neither `error` nor `error_code` because
+  // nothing went wrong.
+  allowEmptyResult?: boolean;
 }
 
 async function ondoRequest<T>(path: string, init: OndoRequestInit = {}): Promise<T> {
@@ -84,7 +95,10 @@ async function ondoRequest<T>(path: string, init: OndoRequestInit = {}): Promise
     throw new OndoApiError(path, response.status, text.slice(0, 200) || "unreadable response");
   }
 
-  if (!body.success || body.result === undefined) {
+  // `success` is the only field every Ondo response carries, so it is the only
+  // thing checked unconditionally. A missing `result` is a failure for the
+  // endpoints that return one and completely normal for the ones that do not.
+  if (!body.success || (body.result === undefined && !init.allowEmptyResult)) {
     throw new OndoApiError(
       path,
       response.status,
@@ -92,7 +106,7 @@ async function ondoRequest<T>(path: string, init: OndoRequestInit = {}): Promise
       body.error_code,
     );
   }
-  return body.result;
+  return body.result as T;
 }
 
 function ondoGet<T>(path: string, baseUrl = ONDO_API_BASE_URL): Promise<T> {
@@ -247,10 +261,15 @@ export function ondoSetLeverage(
   market: string,
   leverage: number,
 ): Promise<unknown> {
+  // Bare envelope too, which means this has been reporting failure on every
+  // successful call since the Perps tab shipped: Ondo applied the leverage and
+  // the UI said it could not. Found 2026-08-26 while fixing the same bug on the
+  // address-book path.
   return ondoRequest<unknown>("/v1/perps/leverage", {
     method: "POST",
     body: { market, leverage },
     token,
+    allowEmptyResult: true,
   });
 }
 
@@ -343,10 +362,14 @@ export function ondoAddressBookComplete(
   token: string,
   request: OndoAddressBookCompleteRequest,
 ): Promise<unknown> {
+  // Answers a bare `{success: true}` with no result. Without allowEmptyResult
+  // this throws "http 200" on a registration that actually went through, which
+  // is exactly what it did the first time a real user tried it.
   return ondoRequest<unknown>("/v1/auth/erc-4361/address_book/complete_challenge", {
     method: "POST",
     body: request,
     token,
+    allowEmptyResult: true,
   });
 }
 
@@ -361,10 +384,12 @@ export function ondoRemoveAddressBookEntry(
   token: string,
   withdrawalAddress: string,
 ): Promise<unknown> {
+  // Bare envelope, same as the completion above.
   return ondoRequest<unknown>("/v1/wallet/address_book", {
     method: "DELETE",
     body: { withdrawalAddress },
     token,
+    allowEmptyResult: true,
   });
 }
 

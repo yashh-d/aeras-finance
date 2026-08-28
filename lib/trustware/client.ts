@@ -3,6 +3,7 @@
 // client never sees TRUSTWARE_API_KEY.
 
 import type { EquivalentBalances } from "./balances";
+import type { GoldHolding } from "./gold-holdings";
 import type { TrustwareQuoteRequest, TrustwareQuoteResponse } from "./types";
 
 async function postProxy(
@@ -36,10 +37,19 @@ export function fetchTrustwareRouteViaProxy(
 
 // Convertible holdings across both of the user's addresses. Either may be
 // omitted; passing neither is a caller error.
+//
+// The scan route returns several selections over one upstream call. `held` is
+// the convertible equivalents this function is named for; `gold` rides along
+// for the Morpho gold market, which cannot use `held` because the equivalence
+// registry is keyed to Jupiter Lend borrow vaults and gold has none.
+export interface EquivalentBalancesPayload extends EquivalentBalances {
+  gold: GoldHolding[];
+}
+
 export async function fetchEquivalentBalancesViaProxy(args: {
   solanaAddress?: string;
   evmAddress?: string;
-}): Promise<EquivalentBalances> {
+}): Promise<EquivalentBalancesPayload> {
   const params = new URLSearchParams();
   if (args.solanaAddress) params.set("solana", args.solanaAddress);
   if (args.evmAddress) params.set("evm", args.evmAddress);
@@ -47,9 +57,15 @@ export async function fetchEquivalentBalancesViaProxy(args: {
   const res = await fetch(`/api/trustware/balances?${params}`, {
     cache: "no-store",
   });
-  const body = (await res.json()) as EquivalentBalances & { error?: string };
+  const body = (await res.json()) as Partial<EquivalentBalancesPayload> & {
+    error?: string;
+  };
   if (!res.ok) {
     throw new Error(body.error ?? `Trustware balances proxy failed: ${res.status}`);
   }
-  return body;
+  return {
+    held: body.held ?? [],
+    unreadableChains: body.unreadableChains ?? [],
+    gold: body.gold ?? [],
+  };
 }

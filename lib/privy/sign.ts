@@ -2,8 +2,12 @@
 
 import { useCallback } from "react";
 
-import { useSignTransaction, useWallets } from "@privy-io/react-auth/solana";
+import { useSignTransaction } from "@privy-io/react-auth/solana";
 
+import {
+  requireEmbeddedSolanaWallet,
+  useEmbeddedSolanaWallet,
+} from "@/lib/privy/solana";
 import { getConnection } from "@/lib/solana/balances";
 import { sendAndConfirm } from "@/lib/solana/send-confirm";
 
@@ -24,14 +28,11 @@ function bytesToBase64(bytes: Uint8Array): string {
 
 export function useSignSolanaTxBase64() {
   const { signTransaction } = useSignTransaction();
-  const { wallets } = useWallets();
+  const { wallet: embedded } = useEmbeddedSolanaWallet();
 
   return useCallback(
     async function signTxBase64(b64Tx: string): Promise<string> {
-      const wallet = wallets[0];
-      if (!wallet) {
-        throw new Error("No Solana wallet available to sign.");
-      }
+      const wallet = requireEmbeddedSolanaWallet(embedded);
       const transaction = base64ToBytes(b64Tx);
       const { signedTransaction } = await signTransaction({
         transaction,
@@ -39,7 +40,7 @@ export function useSignSolanaTxBase64() {
       });
       return bytesToBase64(signedTransaction);
     },
-    [signTransaction, wallets],
+    [signTransaction, embedded],
   );
 }
 

@@ -66,8 +66,10 @@ export const VENUE_LOGOS: Readonly<Record<string, string>> = {
   jupiter: "/logos/jupiter.svg",
   kamino: "/logos/kamino.svg",
   morpho: "/logos/morpho.png",
-  // Chain mark, shown beside the Monad section of the vault list.
+  // Chain marks, shown beside the section for each EVM venue: Monad for the
+  // Morpho earn vaults, Ethereum for the Morpho gold borrow market.
   monad: "/logos/monad.png",
+  ethereum: "/logos/eth.png",
 };
 
 // Morpho vault curators. Sourced from Morpho's own CDN, which serves these for

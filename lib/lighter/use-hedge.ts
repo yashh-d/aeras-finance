@@ -49,8 +49,14 @@ export function useHedge(params: {
   l1Address: string | undefined;
   balances: AccountBalances | null;
   prices: JupiterPriceMap | null;
+  // xStocks the wallet has posted as borrow collateral, keyed by mint, in base
+  // units. Merged into the hedgeable holdings because vault collateral is still
+  // price exposure: a borrow-funded hedge moves the stock into a vault, and a
+  // list keyed to the wallet alone would drop the row at the moment the short
+  // still needs placing.
+  vaultCollateralAtomic?: Record<string, string>;
 }): UseHedge {
-  const { l1Address, balances, prices } = params;
+  const { l1Address, balances, prices, vaultCollateralAtomic } = params;
 
   const [catalog, setCatalog] = useState<LighterMarket[]>([]);
   const [state, setState] = useState<LighterAccountState | null>(null);
@@ -93,14 +99,23 @@ export function useHedge(params: {
   // Atomic amounts rather than the float field on AccountBalances. An xStock
   // carries 8 decimals and the float can round up in the last place, which is
   // enough to size an order against a balance the wallet does not have.
+  //
+  // Total exposure is wallet plus vault collateral, summed in base units so the
+  // two cannot disagree on rounding. walletQuantity carries the wallet part
+  // separately, because a new borrow can only post what the wallet holds.
   const holdings = useMemo(() => {
     if (!balances) return [];
-    return XSTOCKS.map((x) => ({
-      xstockSymbol: x.symbol,
-      mint: x.mint,
-      quantity: atomicToUiString(balances.xstocksAtomic[x.mint] ?? "0", x.decimals),
-    })).filter((h) => Number(h.quantity) > 0);
-  }, [balances]);
+    return XSTOCKS.map((x) => {
+      const wallet = BigInt(balances.xstocksAtomic[x.mint] ?? "0");
+      const vault = BigInt(vaultCollateralAtomic?.[x.mint] ?? "0");
+      return {
+        xstockSymbol: x.symbol,
+        mint: x.mint,
+        quantity: atomicToUiString((wallet + vault).toString(), x.decimals),
+        walletQuantity: atomicToUiString(wallet.toString(), x.decimals),
+      };
+    }).filter((h) => Number(h.quantity) > 0);
+  }, [balances, vaultCollateralAtomic]);
 
   const priceUsdByMint = useMemo(() => {
     const map: Record<string, number | undefined> = {};

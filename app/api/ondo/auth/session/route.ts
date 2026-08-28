@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { ondoAccount, ondoCompleteChallenge } from "@/lib/ondo/server";
+import { describeOndoAuthError } from "@/lib/ondo/errors";
+import { OndoApiError, ondoAccount, ondoCompleteChallenge } from "@/lib/ondo/server";
 import { clearOndoSession, setOndoSession } from "@/lib/ondo/session";
 
 export const dynamic = "force-dynamic";
@@ -57,8 +58,19 @@ export async function POST(request: Request) {
       perpsEnabled: account.disabledFunctionality?.disablePerps === false,
     });
   } catch (err) {
+    // Same treatment as the challenge route. The most likely failure on this
+    // one is `challenge_not_found`, which means the five-minute window closed
+    // while the wallet prompt sat open. Retrying the signature cannot fix that,
+    // so the message has to send the user back to the start.
+    if (err instanceof OndoApiError) {
+      const described = describeOndoAuthError(err.code, err.message);
+      return NextResponse.json(
+        { error: described.message, failure: described.failure, code: described.code },
+        { status: described.status },
+      );
+    }
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: err instanceof Error ? err.message : String(err), failure: "upstream" },
       { status: 502 },
     );
   }

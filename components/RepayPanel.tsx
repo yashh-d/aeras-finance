@@ -1,11 +1,12 @@
 "use client";
 
 // One-click repay from the account headline. Both venues accept a partial
-// repayment, so this is an amount picker rather than a close button: the debt
-// comes down by whatever the user chooses and the collateral stays deposited,
-// which leaves the position available to draw against again without a second
-// deposit. Closing a position out entirely still lives in each market card,
-// where the collateral withdrawal belongs.
+// repayment, so this is an amount picker rather than a close button: a partial
+// repay brings the debt down and leaves the collateral deposited, available to
+// draw against again without a second deposit. Taking the amount to the full
+// debt closes the position outright: the collateral comes back to the wallet
+// in the same flow, atomically on Jupiter, and as a second transaction on
+// Kamino, which has no combined repay-and-withdraw.
 //
 // The repay funds itself across chains: when the Solana wallet is short, the
 // gap is converted from the user's Monad USDC through Trustware
@@ -25,6 +26,7 @@ import {
 import {
   buildKaminoPartialRepayTx,
   buildKaminoRepayTx,
+  buildKaminoWithdrawTx,
 } from "@/lib/kamino/positions";
 import { fundRepayUsdc, repayFundingSources } from "@/lib/borrow/fund-repay";
 import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
@@ -243,26 +245,76 @@ function RepayForm({
       if (position.ref.venue === "jupiter") {
         const { vault, nftId } = position.ref;
         // Negative debt delta repays. The sentinel clears the balance exactly,
-        // including interest accrued in the meantime.
-        const debtDeltaAtomic = payoffAll
-          ? (await getMaxSentinels()).maxRepay
-          : toAtomicBN(amount, vault.borrowDecimals).neg();
+        // including interest accrued in the meantime. A full payoff also passes
+        // the withdraw sentinel, so the collateral returns to the wallet in the
+        // same transaction instead of staying deposited with no loan behind it.
+        const sentinels = payoffAll ? await getMaxSentinels() : null;
         ({ base64Tx } = await buildOperateTx({
           vaultId: vault.vaultId,
           positionId: nftId,
-          collateralDeltaAtomic: toAtomicBN(0, vault.collateralDecimals),
-          debtDeltaAtomic,
+          collateralDeltaAtomic: sentinels
+            ? sentinels.maxWithdraw
+            : toAtomicBN(0, vault.collateralDecimals),
+          debtDeltaAtomic: sentinels
+            ? sentinels.maxRepay
+            : toAtomicBN(amount, vault.borrowDecimals).neg(),
           signerAddress: walletAddress,
           connection,
         }));
+      } else if (payoffAll) {
+        // Kamino has no atomic repay-and-withdraw, so a full payoff is two
+        // transactions: clear the debt, then pull the collateral once nothing
+        // is owed against it. The withdraw is built only after the repay
+        // settles; built earlier it would fail simulation on the open debt.
+        const repayTx = await buildKaminoRepayTx(walletAddress, debtUi);
+        const signedRepay = await signTxBase64(repayTx);
+        await sendAndConfirm(connection, base64ToBytes(signedRepay));
+
+        setState({
+          kind: "submitting",
+          message: `Withdrawing ${position.collateralSymbol}…`,
+        });
+        let sig: string;
+        try {
+          const withdrawTx = await buildKaminoWithdrawTx(
+            walletAddress,
+            position.ref.position,
+          );
+          const signedWithdraw = await signTxBase64(withdrawTx);
+          sig = await sendAndConfirm(connection, base64ToBytes(signedWithdraw));
+        } catch (err) {
+          // The debt is cleared but the collateral is still deposited. Say
+          // exactly that: the generic "repay failed" would read as if the
+          // payment itself bounced.
+          console.error("[repay withdraw]", err);
+          setState({
+            kind: "error",
+            message:
+              `The loan is repaid, but withdrawing your ${position.collateralSymbol} did not go ` +
+              `through, so it is still deposited. Withdraw it from the ` +
+              `${position.collateralSymbol} market.`,
+          });
+          await onSettled();
+          return;
+        }
+        setState({ kind: "done", signature: sig });
+        await onSettled();
+        return;
       } else {
-        base64Tx = payoffAll
-          ? await buildKaminoRepayTx(walletAddress, debtUi)
-          : await buildKaminoPartialRepayTx(walletAddress, amount);
+        base64Tx = await buildKaminoPartialRepayTx(walletAddress, amount);
       }
 
       const signed = await signTxBase64(base64Tx);
       const sig = await sendAndConfirm(connection, base64ToBytes(signed));
+      // A full payoff closed the position. Clear any leftover loop tag so it
+      // cannot influence a future close, mirroring the market card's close.
+      if (payoffAll && position.ref.venue === "jupiter") {
+        try {
+          localStorage.removeItem(
+            `aeras:loop:${walletAddress}:${position.ref.vault.vaultId}`,
+          );
+        } catch {}
+      }
       setState({ kind: "done", signature: sig });
       await onSettled();
     } catch (err) {
@@ -358,9 +410,12 @@ function RepayForm({
             </span>
           </div>
           <p className="text-[11px] text-white/50">
-            Your collateral stays deposited and can be borrowed against again.
-            Withdraw it from the {position.collateralSymbol} market when you
-            want it back in your wallet.
+            {payoffAll
+              ? `Repaying in full closes the position and returns your ${position.collateralSymbol} to your wallet.` +
+                (position.ref.venue === "kamino"
+                  ? " Kamino needs two signatures for this: the repay, then the withdrawal."
+                  : "")
+              : `Your collateral stays deposited and can be borrowed against again. Withdraw it from the ${position.collateralSymbol} market when you want it back in your wallet.`}
           </p>
         </div>
 
@@ -441,7 +496,11 @@ function RepayForm({
             rel="noopener noreferrer"
             className="block rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs"
           >
-            <div className="font-medium text-aeras-positive">Repay confirmed</div>
+            <div className="font-medium text-aeras-positive">
+              {payoffAll
+                ? `Loan repaid and ${position.collateralSymbol} withdrawn`
+                : "Repay confirmed"}
+            </div>
             <div className="mt-0.5 break-all font-mono text-[10px] text-white/50">
               {state.signature}
             </div>
@@ -456,11 +515,9 @@ function RepayForm({
         >
           {submitting
             ? (state.message ?? "Signing and submitting…")
-            : payoffAll
-              ? `Repay all ${position.debtSymbol}`
-              : amount > 0
-                ? `Repay ${amount.toFixed(2)} ${position.debtSymbol}`
-                : "Enter an amount"}
+            : payoffAll || amount > 0
+              ? "Repay"
+              : "Enter an amount"}
         </button>
       </div>
     </PanelShell>

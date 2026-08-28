@@ -23,7 +23,17 @@ export interface HedgeableHolding {
   mint: string;
   // Tokens held, as an exact decimal string. Taken from xstocksAtomic rather
   // than the float field, since this is what an order is eventually sized from.
+  //
+  // This is the TOTAL exposure: wallet balance plus any of the same token
+  // posted as borrow collateral. Collateral in a vault is still price exposure,
+  // and it is exactly what a borrow-funded hedge creates, so a view keyed to
+  // the wallet alone showed "nothing to hedge" the moment that flow deposited
+  // the stock, which is the moment the hedge matters most.
   quantity: string;
+  // The part of `quantity` sitting in the wallet and spendable. What a NEW
+  // borrow can post as collateral; the rest is already posted. Absent means
+  // everything is in the wallet.
+  walletQuantity?: string;
   tokenPriceUsd: number;
   exposureUsd: number;
 }
@@ -85,7 +95,12 @@ function shortFor(
 export function buildHedgeViews(input: {
   // Exact token amounts keyed by mint, from AccountBalances.xstocksAtomic
   // converted to decimal strings.
-  holdings: { xstockSymbol: string; mint: string; quantity: string }[];
+  holdings: {
+    xstockSymbol: string;
+    mint: string;
+    quantity: string;
+    walletQuantity?: string;
+  }[];
   priceUsdByMint: Record<string, number | undefined>;
   catalog: LighterMarket[];
   positions: LighterPosition[];
@@ -116,6 +131,7 @@ export function buildHedgeViews(input: {
         xstockSymbol: holding.xstockSymbol,
         mint: holding.mint,
         quantity: holding.quantity,
+        walletQuantity: holding.walletQuantity,
         tokenPriceUsd,
         exposureUsd,
       },

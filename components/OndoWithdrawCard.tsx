@@ -23,7 +23,9 @@ import type { UseOndoWithdraw } from "@/lib/ondo/use-ondo-withdraw";
 import { defaultHolding } from "@/lib/ondo/use-ondo-withdraw";
 import type { OndoHolding } from "@/lib/ondo/withdraw";
 
-const PANEL = "rounded-xl border border-white/[0.07] bg-[#111415]";
+import { INSET_PANEL } from "@/lib/ui/surface";
+
+const PANEL = INSET_PANEL;
 
 export function OndoWithdrawCard({ withdraw }: { withdraw: UseOndoWithdraw }) {
   const [selected, setSelected] = useState<string | null>(null);

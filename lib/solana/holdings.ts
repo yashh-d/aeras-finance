@@ -15,6 +15,11 @@ import { XSTOCKS } from "@/lib/jupiter/xstocks";
 import type { HeldEquivalent } from "@/lib/trustware/planner";
 import type { NativeHolding } from "@/lib/trustware/native";
 import { nativeUiAmount } from "@/lib/trustware/native";
+import {
+  ondoHoldingUiAmount,
+  type OndoWalletHolding,
+} from "@/lib/trustware/ondo-holdings";
+import { unwindTargetFor } from "@/lib/ondo/unwind";
 import { totalAccountUsd } from "./balances";
 import type { AccountBalances } from "./balances";
 import { SOLANA_EQUIVALENT_TOKENS } from "./equivalent-tokens";
@@ -164,6 +169,11 @@ export function totalPortfolioUsd(
   crossChain: HeldEquivalent[],
   native: NativeHolding[],
   nativePrices: Record<string, number>,
+  // Ondo collateral withdrawn to the user's Ethereum wallet. Optional so every
+  // existing call site keeps working, but a caller that renders these as rows
+  // must pass them: a balance shown in the list and missing from the total is
+  // the thing that makes someone ask where their money went.
+  ondo: OndoWalletHolding[] = [],
 ): number | null {
   const solana = totalAccountUsd(balances, prices);
   if (solana == null) return null;
@@ -185,6 +195,16 @@ export function totalPortfolioUsd(
     const price = nativePrices[holding.priceId];
     if (!price) continue;
     total += nativeUiAmount(holding) * price;
+  }
+
+  // Priced off the matching Solana xStock: SPCXon and SPCXx track the same
+  // underlying, and the mint is what this app has a price feed for. No price
+  // means the holding is left out of the total rather than counted at zero.
+  for (const holding of ondo) {
+    const target = unwindTargetFor(holding.symbol);
+    const price = target ? prices?.[target.mint]?.usdPrice : undefined;
+    if (!price) continue;
+    total += ondoHoldingUiAmount(holding) * price;
   }
 
   return total;

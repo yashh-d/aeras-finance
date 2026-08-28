@@ -14,6 +14,7 @@ import {
 } from "@/lib/rysk/strategy";
 import type { RyskOption, RyskUnderlying } from "@/lib/rysk/types";
 import { useRyskChain } from "@/lib/rysk/use-chain";
+import { GLASS_SURFACE } from "@/lib/ui/surface";
 
 // Rysk V12 option selling, read only.
 //
@@ -78,7 +79,7 @@ export function RyskOptionsCard() {
   };
 
   return (
-    <div className="space-y-4 rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
+    <div className={`space-y-4 ${GLASS_SURFACE} p-5 lg:p-6`}>
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">

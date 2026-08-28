@@ -39,15 +39,46 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
         loginMethods: ["email", "wallet"],
         appearance: {
           theme: "light",
-          walletChainType: "solana-only",
+          // Both chain types, so an EVM wallet (MetaMask and friends) can sign
+          // a user in alongside the Solana wallets. This only widens the login
+          // modal: it does not make an external wallet the account the app
+          // operates on. See the embeddedWallets note below.
+          walletChainType: "ethereum-and-solana",
+          // Privy's built-in default is
+          // ['detected_ethereum_wallets', 'detected_solana_wallets', 'metamask',
+          //  'coinbase_wallet', 'rainbow', 'base_account', 'wallet_connect',
+          //  'phantom'], filtered by walletChainType. Spelled out here to
+          //  control the order and to add the Solana wallets Privy does not
+          //  list by default. Solana entries lead because Solana is where
+          //  positions settle.
+          walletList: [
+            "detected_solana_wallets",
+            "phantom",
+            "solflare",
+            "backpack",
+            "detected_ethereum_wallets",
+            "metamask",
+            "coinbase_wallet",
+            "okx_wallet",
+            "wallet_connect",
+          ],
           landingHeader: "Sign in to Aeras",
         },
         embeddedWallets: {
-          solana: { createOnLogin: "users-without-wallets" },
+          // "all-users", not "users-without-wallets". A user who signs in with
+          // Phantom or MetaMask already has a wallet, so the narrower setting
+          // would provision nothing and leave them with no account to hold a
+          // position in. An external wallet is identity and a funding source
+          // here; the embedded wallet is what the app reads balances from and
+          // signs with, which is what lets every downstream flow stay
+          // popup-free (see showWalletUIs below). lib/privy/solana.ts and
+          // lib/privy/evm.ts are the only places that resolve it, and both pin
+          // to walletClientType "privy" rather than trusting array order.
+          solana: { createOnLogin: "all-users" },
           // EVM embedded wallet holds/signs the source-chain asset for the
-          // Trustware cross-chain conversion. It is not a login method; Solana
-          // stays the primary wallet (walletChainType above is unchanged).
-          ethereum: { createOnLogin: "users-without-wallets" },
+          // Trustware cross-chain conversion, and the Morpho venues on Monad
+          // and Ethereum. It is not the user's connected MetaMask.
+          ethereum: { createOnLogin: "all-users" },
           // No per-transaction confirmation modals for embedded wallets. The
           // product thesis is that users do not want to touch a wallet UI, and
           // a funded Morpho deposit signs several transactions (bridge legs,

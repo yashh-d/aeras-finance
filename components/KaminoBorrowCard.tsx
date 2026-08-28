@@ -22,7 +22,6 @@ import type { KaminoCollateralReserve } from "@/lib/kamino/reserves";
 import type { MarketStat } from "@/lib/borrow/use-market-stats";
 import {
   MarketDetailHeader,
-  MarketStatGrid,
   type BorrowMode,
 } from "@/components/BorrowMarketDetail";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
@@ -309,21 +308,12 @@ export function KaminoBorrowCard({
           collateralBalance={collateralBalance}
           collateralBalanceAtomic={collateralBalanceAtomic}
           oraclePrice={oraclePrice}
+          aprPct={stat?.borrowAprPct ?? null}
           onSubmit={handleSubmit}
           formState={formState}
           resetForm={() => setFormState({ kind: "idle" })}
         />
       ) : null}
-
-      <MarketStatGrid
-        aprPct={stat?.borrowAprPct ?? null}
-        priceUsd={oraclePrice}
-        suppliedUsd={stat?.sizeUsd ?? null}
-        borrowedUsd={stat?.borrowedUsd ?? null}
-        liquidityUsd={stat?.liquidityUsd ?? null}
-        maxLtvPct={collateral.maxLtvSnapshot * 100}
-        borrowSymbol={BORROW_SYMBOL}
-      />
     </div>
   );
 }
@@ -441,6 +431,7 @@ function KaminoOperateForm({
   collateralBalance,
   collateralBalanceAtomic,
   oraclePrice,
+  aprPct,
   onSubmit,
   formState,
   resetForm,
@@ -450,6 +441,9 @@ function KaminoOperateForm({
   collateralBalance: number;
   collateralBalanceAtomic: string;
   oraclePrice: number | null;
+  // Annual borrow rate, shown against the amount being drawn rather than as a
+  // standalone market figure.
+  aprPct: number | null;
   onSubmit: (args: { collateralUi: number; borrowUi: number }) => void;
   formState: FormState;
   resetForm: () => void;
@@ -609,14 +603,23 @@ function KaminoOperateForm({
             </div>
           )}
 
+          {borrowUi > 0 && aprPct != null && (
+            <div className="flex justify-between">
+              <span className="text-white/50">Interest</span>
+              <span className="font-mono tabular-nums text-white">
+                {aprPct.toFixed(2)}% APY
+              </span>
+            </div>
+          )}
+
           <div className="flex justify-between">
-            <span className="text-white/50">Projected LTV</span>
+            <span className="text-white/50">Loan vs collateral</span>
             <span
               className={`font-mono tabular-nums ${
                 tooClose ? "text-aeras-negative" : "text-white"
               }`}
             >
-              {projectedLtv.toFixed(1)}% / LT {ltPct.toFixed(0)}%
+              {projectedLtv.toFixed(1)}% · closes at {ltPct.toFixed(0)}%
             </span>
           </div>
 

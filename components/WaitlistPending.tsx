@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { GLASS_SURFACE } from "@/lib/ui/surface";
 
 export type UserView = {
   status: "waitlisted" | "approved" | "rejected" | "banned";
@@ -39,8 +40,11 @@ export function WaitlistPending({
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-aeras-canvas px-6 py-12">
-      <main className="w-full max-w-md rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-8">
+    <div
+      className="flex min-h-screen items-center justify-center px-6 py-12"
+      style={{ backgroundColor: "#08090a" }}
+    >
+      <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src="/aeras-logo-white.png"

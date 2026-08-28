@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { AmountField } from "@/components/AmountField";
 import {
   SOLSCAN_TX_BASE,
   TRIGGER_DEFAULT_EXPIRY_MS,
@@ -38,6 +39,8 @@ export function TriggerForm({
   auth,
   onBalanceChange,
   onOrderPlaced,
+  modeToggle,
+  autoFocus = false,
 }: {
   ticker: XStock;
   walletAddress: string;
@@ -46,6 +49,10 @@ export function TriggerForm({
   auth: TriggerAuth;
   onBalanceChange: () => void;
   onOrderPlaced: () => void;
+  // Market/limit switch, rendered beside buy/sell rather than in a row of its
+  // own. Owned by AssetTradePanel, which is what the switch actually controls.
+  modeToggle?: ReactNode;
+  autoFocus?: boolean;
 }) {
   const [direction, setDirection] = useState<Direction>("buy");
   const [amountInput, setAmountInput] = useState("");
@@ -172,9 +179,9 @@ export function TriggerForm({
   if (status.kind === "done") {
     return (
       <div className="space-y-4">
-        <div className="rounded-lg border border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 p-3 text-sm">
+        <div className="rounded-lg border border-white/10 bg-white/5 p-3 text-sm">
           <div className="font-medium text-aeras-positive">Limit order placed</div>
-          <div className="mt-1 break-all font-mono text-xs text-aeras-300 dark:text-white/50">
+          <div className="mt-1 break-all font-mono text-xs text-white/50">
             {status.orderId}
           </div>
           {status.signature && (
@@ -182,7 +189,7 @@ export function TriggerForm({
               href={`${SOLSCAN_TX_BASE}${status.signature}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-1 block break-all font-mono text-xs text-aeras-positive underline decoration-aeras-border dark:decoration-white/10"
+              className="mt-1 block break-all font-mono text-xs text-aeras-positive underline decoration-white/10"
             >
               {status.signature}
             </a>
@@ -191,7 +198,7 @@ export function TriggerForm({
         <button
           type="button"
           onClick={() => setStatus({ kind: "idle" })}
-          className="w-full rounded-lg border border-aeras-border dark:border-white/10 px-4 py-3 text-sm font-medium text-aeras-500 dark:text-white/60 transition-colors hover:bg-aeras-surface dark:hover:bg-white/5"
+          className="w-full rounded-lg border border-white/10 px-4 py-3 text-sm font-medium text-white/60 transition-colors hover:bg-white/5"
         >
           New limit order
         </button>
@@ -201,147 +208,117 @@ export function TriggerForm({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50">
-            Limit {isBuy ? "buy" : "sell"}
-          </div>
-          <div className="mt-1 text-base font-medium text-aeras-900 dark:text-white">
-            {ticker.symbol}{" "}
-            <span className="text-aeras-300 dark:text-white/50">· {ticker.name}</span>
-          </div>
-        </div>
-        <div className="inline-flex rounded-lg border border-aeras-border dark:border-white/10 p-0.5 text-xs">
-          {(["buy", "sell"] as Direction[]).map((d) => (
-            <button
-              key={d}
-              type="button"
-              onClick={() => setDirection(d)}
-              className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                direction === d
-                  ? "bg-aeras-900 dark:bg-aeras-blue text-white"
-                  : "text-aeras-500 dark:text-white/60 hover:text-aeras-900 dark:hover:text-white"
-              }`}
-            >
-              {d === "buy" ? "Buy" : "Sell"}
-            </button>
-          ))}
-        </div>
-      </div>
-
+      {/* No asset identity here, and no "Limit buy" heading: the market/limit
+          switch beside buy/sell already says which one this is, and both places
+          this form renders name the asset directly above it. Direction and mode
+          share the amount's row, as they do on the market ticket. */}
       <div>
-        <div className="mb-1 flex items-baseline justify-between">
-          <label
-            htmlFor="limit-amount"
-            className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50"
-          >
-            {isBuy ? "Pay with" : "Sell amount"}
-          </label>
-          <span className="text-xs text-aeras-300 dark:text-white/50">
-            Balance:{" "}
-            {inputBalance == null
-              ? "..."
-              : `${inputBalance.toFixed(amountDigits)} ${inputSymbol}`}
-            {inputBalance != null && inputBalance > 0 && (
-              <button
-                type="button"
-                onClick={() => setAmountInput(inputBalance.toFixed(amountDigits))}
-                className="ml-1 text-aeras-500 dark:text-white/60 underline-offset-2 hover:underline"
-              >
-                Max
-              </button>
-            )}
-          </span>
-        </div>
-        <div className="relative">
-          <input
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+          <AmountField
             id="limit-amount"
-            type="number"
-            inputMode="decimal"
-            min={0}
-            step={inputSymbol === "USDC" ? "0.01" : "0.0001"}
+            ariaLabel={`Amount to ${direction} in ${inputSymbol}`}
+            autoFocus={autoFocus}
             value={amountInput}
-            placeholder="0.00"
-            onChange={(e) => setAmountInput(e.target.value)}
-            className="block w-full rounded-lg border border-aeras-border dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 pr-16 text-sm text-aeras-900 dark:text-white placeholder:text-aeras-300 dark:placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
+            onChange={setAmountInput}
+            unit={<span className="text-sm text-white/40">{inputSymbol}</span>}
           />
-          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-aeras-300 dark:text-white/50">
-            {inputSymbol}
-          </span>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
+              {(["buy", "sell"] as Direction[]).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setDirection(d)}
+                  className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                    direction === d
+                      ? "bg-aeras-blue text-white"
+                      : "text-white/60 hover:text-white"
+                  }`}
+                >
+                  {d === "buy" ? "Buy" : "Sell"}
+                </button>
+              ))}
+            </div>
+            {modeToggle}
+          </div>
+        </div>
+        <div className="mt-2 text-xs text-white/40">
+          {inputBalance == null
+            ? "..."
+            : `${inputBalance.toFixed(amountDigits)} ${inputSymbol} available`}
+          {inputBalance != null && inputBalance > 0 && (
+            <button
+              type="button"
+              onClick={() => setAmountInput(inputBalance.toFixed(amountDigits))}
+              className="ml-1.5 text-white/60 underline-offset-2 hover:text-white hover:underline"
+            >
+              Max
+            </button>
+          )}
         </div>
       </div>
 
       <div>
-        <div className="mb-1 flex items-baseline justify-between">
-          <label
-            htmlFor="limit-price"
-            className="text-xs font-medium uppercase tracking-wide text-aeras-300 dark:text-white/50"
-          >
-            Trigger price (USD)
-          </label>
-          <span className="text-xs text-aeras-300 dark:text-white/50">
-            Market: {marketPrice != null ? `$${marketPrice.toFixed(2)}` : "—"}
-          </span>
+        <div className="mb-1 text-xs text-white/40">
+          Trigger price · market{" "}
+          {marketPrice != null ? `$${marketPrice.toFixed(2)}` : "—"}
         </div>
-        <div className="relative">
-          <input
-            id="limit-price"
-            type="number"
-            inputMode="decimal"
-            min={0}
-            step="0.01"
-            value={priceInput}
-            placeholder="0.00"
-            onChange={(e) => setPriceInput(e.target.value)}
-            className="block w-full rounded-lg border border-aeras-border dark:border-white/15 bg-white dark:bg-white/5 px-3 py-2 pr-10 text-sm text-aeras-900 dark:text-white placeholder:text-aeras-300 dark:placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
-          />
-          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-aeras-300 dark:text-white/50">
-            $
-          </span>
-        </div>
-        <p className="mt-1 text-xs text-aeras-300 dark:text-white/50">
-          Executes when {ticker.symbol} trades{" "}
-          {triggerCondition === "below" ? "at or below" : "at or above"} this price.
-          Output is not guaranteed; the swap runs at market when triggered.
-        </p>
+        <AmountField
+          id="limit-price"
+          ariaLabel="Trigger price in USD"
+          prefix="$"
+          value={priceInput}
+          onChange={setPriceInput}
+          unit={
+            <span className="text-sm text-white/40">
+              {triggerCondition === "below" ? "or below" : "or above"}
+            </span>
+          }
+        />
       </div>
 
-      <div className="space-y-1 rounded-lg border border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 p-3 text-sm">
+      <div className="space-y-1 rounded-lg border border-white/10 bg-white/5 p-3 text-sm">
         <div className="flex justify-between">
-          <span className="text-aeras-300 dark:text-white/50">Order value</span>
-          <span className="tabular-nums text-aeras-900 dark:text-white">
+          <span className="text-white/50">Order value</span>
+          <span className="tabular-nums text-white">
             {orderUsd > 0 ? `$${orderUsd.toFixed(2)}` : "—"}
           </span>
         </div>
         <div className="flex justify-between">
-          <span className="text-aeras-300 dark:text-white/50">
+          <span className="text-white/50">
             Est. {isBuy ? `${ticker.symbol} received` : "USDC received"}
           </span>
-          <span className="tabular-nums text-aeras-900 dark:text-white">
+          <span className="tabular-nums text-white">
             {estimate != null
               ? `${estimate.toFixed(isBuy ? 4 : 2)} ${isBuy ? ticker.symbol : "USDC"}`
               : "—"}
           </span>
         </div>
         <div className="flex justify-between">
-          <span className="text-aeras-300 dark:text-white/50">Expires</span>
-          <span className="tabular-nums text-aeras-900 dark:text-white">7 days</span>
+          <span className="text-white/50">Expires</span>
+          <span className="tabular-nums text-white">7 days</span>
         </div>
+        {/* Kept, because it is the one thing about a trigger order a user can
+            get wrong: the estimate above is not a fill price. */}
+        <p className="pt-1 text-xs text-white/40">
+          The estimate is not guaranteed. The swap runs at market once the
+          trigger is hit.
+        </p>
       </div>
 
       {insufficient ? (
         <p className="text-xs text-aeras-negative">
-          Insufficient {inputSymbol}. Need {amount}, have{" "}
+          Not enough {inputSymbol}. You have{" "}
           {inputBalance?.toFixed(amountDigits)}.
         </p>
       ) : belowMin && amountValid ? (
-        <p className="text-xs text-aeras-300 dark:text-white/50">
+        <p className="text-xs text-aeras-negative">
           Minimum order size is ${TRIGGER_MIN_USD}.
         </p>
       ) : null}
 
       {status.kind === "error" && (
-        <p className="rounded-lg bg-aeras-surface dark:bg-white/5 px-3 py-2 text-sm text-aeras-negative">
+        <p className="rounded-lg bg-white/5 px-3 py-2 text-sm text-aeras-negative">
           {status.message}
         </p>
       )}

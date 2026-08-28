@@ -7,7 +7,7 @@ import {
   useFundWallet as useFundEvmWallet,
 } from "@privy-io/react-auth";
 import { useFundWallet } from "@privy-io/react-auth/solana";
-import { mainnet } from "viem/chains";
+import { bsc, mainnet } from "viem/chains";
 import { SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { AssetLogo } from "@/components/AssetLogo";
@@ -18,6 +18,15 @@ import {
   type HoldingGroup,
 } from "@/lib/solana/holdings";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { depositableChains } from "@/lib/trustware/equivalents";
+import { collateralTicker, marketLogo } from "@/lib/tokens/market-logos";
+import { ondoHoldingUiAmount } from "@/lib/trustware/ondo-holdings";
+import { useOndoCollateral } from "@/lib/ondo/use-ondo-collateral";
+import { useOndoUnwind } from "@/lib/ondo/use-ondo-unwind";
+import { OndoUnwindCard } from "@/components/OndoUnwindCard";
+import { unwindTargetFor } from "@/lib/ondo/unwind";
+import { XSTOCKS } from "@/lib/jupiter/xstocks";
+import { useLighterBalance } from "@/lib/lighter/use-lighter-balance";
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
 import type { SolanaSigner } from "@/lib/morpho/fund";
 import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
@@ -26,6 +35,7 @@ import { nativeUiAmount } from "@/lib/trustware/native";
 import { stableUiAmount } from "@/lib/trustware/stables";
 import { MonadFundForm } from "./MonadFundForm";
 import { SendForm } from "./SendForm";
+import { FundMenu } from "./FundMenu";
 import {
   Sheet,
   SheetContent,
@@ -38,6 +48,15 @@ import {
 // USDC needs a starting figure. It is a prefill the user edits in the funding
 // UI, not a fixed charge.
 const USDC_FUNDING_PREFILL = "25";
+
+// Trustware chain ids to the viem chains Privy funds on. Only chains declared
+// in Privy's supportedChains can appear here: the registry may list a token on
+// a chain the wallet cannot fund, and that has to fail loudly rather than open
+// a widget pointed at the wrong network.
+const EVM_FUNDING_CHAINS: Record<string, typeof mainnet | typeof bsc> = {
+  "1": mainnet,
+  "56": bsc,
+};
 
 // Badges for native gas tokens, keyed by symbol. Symbols without an entry
 // fall back to the AssetLogo monogram.
@@ -78,6 +97,8 @@ export function WalletPanel({
   const [sending, setSending] = useState(false);
   const [receiving, setReceiving] = useState(false);
   const [fundingMonad, setFundingMonad] = useState(false);
+  const [movingOndo, setMovingOndo] = useState(false);
+  const [depositingStocks, setDepositingStocks] = useState(false);
   const [fundError, setFundError] = useState<string | null>(null);
   const { fundWallet } = useFundWallet({
     onUserExited: () => {
@@ -88,11 +109,29 @@ export function WalletPanel({
   const { createWallet: createEvmWallet } = useCreateWallet();
   const [creatingEvm, setCreatingEvm] = useState(false);
   const { address: evmAddress } = useEmbeddedEvmWallet();
+  // Every chain a tokenized stock can be deposited from. EVM chains route
+  // through Privy's funding widget like USDC and ETH do; Solana falls back to
+  // its address, because Privy's Solana funding config takes only
+  // 'native-currency' or 'USDC' and cannot name an SPL mint.
+  const depositChains = useMemo(() => depositableChains(), []);
   // Monad balances live in the embedded EVM wallet, outside both the Solana
   // read and the Trustware scan, so they get their own read. USDC counts at
   // par and MON at the native price feed's rate (missing price -> no USD
   // figure on the row and no MON value in the total).
   const monad = useMonadBalances(evmAddress);
+  // Margin on Lighter's L2, keyed by the embedded EVM wallet that owns the
+  // account. Not a wallet balance: it left the wallet when it was deposited,
+  // but it is still the user's money and belongs in the account total.
+  const lighter = useLighterBalance(evmAddress);
+  // Only fetched when something is actually stranded on Ethereum, so the common
+  // case costs no extra request.
+  const ondoCatalog = useOndoCollateral(scan.ondo.length > 0);
+  const unwind = useOndoUnwind({
+    collateral: ondoCatalog.collateral,
+    solanaAddress: walletAddress,
+    enabled: scan.ondo.length > 0,
+    onDelivered: () => void onRefresh(),
+  });
   const monadUsdc = monad.balances?.usdcUi ?? 0;
   const monPrice = scan.nativePrices["monad"];
   const monadUsd = monadUsdc + (monad.balances?.monUi ?? 0) * (monPrice ?? 0);
@@ -109,12 +148,16 @@ export function WalletPanel({
     scan.held,
     scan.native,
     scan.nativePrices,
+    scan.ondo,
   );
+  // Mirrors the header total in app/app/page.tsx: a missing Lighter read
+  // counts as 0, so the total can only understate.
+  const offSolanaUsd = monadUsd + (lighter.usd ?? 0);
   const totalUsd =
     solanaTotalUsd != null
-      ? solanaTotalUsd + monadUsd
-      : monadUsd > 0
-        ? monadUsd
+      ? solanaTotalUsd + offSolanaUsd
+      : offSolanaUsd > 0
+        ? offSolanaUsd
         : null;
   // One row per equity, not per mint. TSLAx and TSLAon are the same Tesla
   // position, so they collapse into a single line that opens to show the parts.
@@ -135,9 +178,7 @@ export function WalletPanel({
         amount: stableUiAmount(s),
       })),
   ];
-  const hasIndirectHolding = groups.some((g) =>
-    g.parts.some((p) => !p.direct),
-  );
+  const hasIndirectHolding = groups.some((g) => g.parts.some((p) => !p.direct));
 
   async function handleFund(asset: "native-currency" | "USDC") {
     setFundError(null);
@@ -153,11 +194,46 @@ export function WalletPanel({
     }
   }
 
+
   // Funding the EVM wallet is a separate hook from the Solana one: the root
   // export funds EVM wallets, the /solana subpath funds Solana wallets. The
   // chain has to be named explicitly, and Privy's EVM config requires an amount
   // whenever an asset is specified, so USDC carries a prefill the user can edit
   // in the funding UI while ETH uses the open-ended native flow.
+  // Open Privy's funding widget for a whole chain rather than one token.
+  //
+  // Naming an asset here would be theatre: an ERC-20 deposit lands on the same
+  // 0x address whatever the token, so the destination and the QR are identical.
+  // It only changed the widget's caption, which is what made the old per-token
+  // grid sixteen buttons for two addresses.
+  async function handleFundEvmChain(chainId: string, chainLabel: string) {
+    setFundError(null);
+    const chain = EVM_FUNDING_CHAINS[chainId];
+    if (!chain) {
+      setFundError(`This wallet cannot fund on ${chainLabel}.`);
+      return;
+    }
+    try {
+      let address = evmAddress;
+      if (!address) {
+        setCreatingEvm(true);
+        address = (await createEvmWallet())?.address;
+      }
+      if (!address) {
+        throw new Error(
+          "Could not create an Ethereum wallet for this account.",
+        );
+      }
+      await fundEvmWallet({ address, options: { chain } });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setFundError(msg);
+      console.error("[fundWallet evm chain]", err);
+    } finally {
+      setCreatingEvm(false);
+    }
+  }
+
   async function handleFundEvm(asset: "native-currency" | "USDC") {
     setFundError(null);
     try {
@@ -209,6 +285,7 @@ export function WalletPanel({
             onClick={() => {
               onRefresh();
               monad.refresh();
+              lighter.refresh();
             }}
             disabled={balancesRefreshing}
             className="underline-offset-2 hover:text-white hover:underline disabled:opacity-50"
@@ -234,6 +311,33 @@ export function WalletPanel({
       {open && balances && (
         <>
           <div>
+            {/* MON leads the list. It is gas for the Monad earn venue, and a
+                Morpho deposit or withdrawal there fails outright once it runs
+                out, so it is the one balance worth seeing before scrolling. */}
+            {monad.balances && monad.balances.monUi > 0 && (
+              <BalanceRow
+                label="MON"
+                sublabel="Monad"
+                amount={monad.balances.monUi}
+                decimals={4}
+                usd={monPrice ? monad.balances.monUi * monPrice : null}
+                icon={
+                  <AssetLogo
+                    xstock={{
+                      symbol: "MON",
+                      name: "Monad",
+                      logo: "/logos/monad.png",
+                    }}
+                    size={30}
+                  />
+                }
+                badge={
+                  <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+                    Gas
+                  </span>
+                }
+              />
+            )}
             <BalanceRow
               label="SOL"
               sublabel="Solana"
@@ -246,7 +350,11 @@ export function WalletPanel({
               }
               icon={
                 <AssetLogo
-                  xstock={{ symbol: "SOL", name: "Solana", logo: "/logos/solana.png" }}
+                  xstock={{
+                    symbol: "SOL",
+                    name: "Solana",
+                    logo: "/logos/solana.png",
+                  }}
                   size={30}
                 />
               }
@@ -258,6 +366,33 @@ export function WalletPanel({
                 setExpandedKey(expandedKey === "usdc" ? null : "usdc")
               }
             />
+            {/* Margin held on Lighter, right after the wallet's dollars since
+                it is dollar denominated. Total account value, so the figure
+                moves with open positions' PnL, not just deposits. */}
+            {lighter.usd != null && lighter.usd > 0 && (
+              <BalanceRow
+                label="Lighter"
+                sublabel="Perps margin"
+                amount={lighter.usd}
+                decimals={2}
+                usd={lighter.usd}
+                icon={
+                  <AssetLogo
+                    xstock={{
+                      symbol: "L",
+                      name: "Lighter",
+                      logo: "/logos/lighter.png",
+                    }}
+                    size={30}
+                  />
+                }
+                badge={
+                  <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+                    Perps
+                  </span>
+                }
+              />
+            )}
             {groups.map((group) => (
               <HoldingRow
                 key={group.key}
@@ -297,30 +432,50 @@ export function WalletPanel({
                 />
               );
             })}
-            {monad.balances && monad.balances.monUi > 0 && (
-              <BalanceRow
-                label="MON"
-                sublabel="Monad"
-                amount={monad.balances.monUi}
-                decimals={4}
-                usd={monPrice ? monad.balances.monUi * monPrice : null}
-                icon={
-                  <AssetLogo
-                    xstock={{ symbol: "MON", name: "Monad", logo: "/logos/monad.png" }}
-                    size={30}
-                  />
-                }
-                badge={
-                  <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
-                    Gas
-                  </span>
-                }
-              />
-            )}
+            {/* Ondo collateral withdrawn to the Ethereum wallet.
+                Priced off the matching xStock, since SPCXon and SPCXx track the
+                same underlying and the Solana mint is what this app has a price
+                for. Rows appear only after a Perps withdrawal, so this is
+                normally empty. */}
+            {scan.ondo.map((o) => {
+              const amount = ondoHoldingUiAmount(o);
+              const target = unwindTargetFor(o.symbol);
+              const price = target
+                ? prices?.[target.mint]?.usdPrice
+                : undefined;
+              return (
+                <BalanceRow
+                  key={`ondo:${o.contractAddress}`}
+                  label={o.symbol}
+                  sublabel="Ethereum"
+                  amount={amount}
+                  decimals={6}
+                  usd={price ? amount * price : null}
+                  icon={
+                    <AssetLogo
+                      xstock={{
+                        symbol: o.symbol,
+                        name: o.symbol,
+                        logo: target
+                          ? XSTOCKS.find((x) => x.mint === target.mint)?.logo
+                          : undefined,
+                      }}
+                      size={30}
+                    />
+                  }
+                  badge={
+                    <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+                      Ondo
+                    </span>
+                  }
+                />
+              );
+            })}
             {balances.usdc === 0 &&
               balances.sol === 0 &&
               scan.native.length === 0 &&
               monadUsdc === 0 &&
+              (lighter.usd ?? 0) === 0 &&
               groups.length === 0 && (
                 <div className="px-3 py-4 text-center text-xs text-white/50">
                   No balances yet. Fund USDC or SOL to start.
@@ -335,41 +490,119 @@ export function WalletPanel({
             </p>
           )}
 
-          <div className="space-y-2">
-            <FundRow label="Solana">
-              <ActionButton onClick={() => handleFund("USDC")}>
-                Fund USDC
-              </ActionButton>
-              <ActionButton onClick={() => handleFund("native-currency")}>
-                Fund SOL
-              </ActionButton>
-            </FundRow>
-            <FundRow label="Ethereum">
-              <ActionButton onClick={() => handleFundEvm("USDC")}>
-                {creatingEvm ? "Setting up…" : "Fund USDC"}
-              </ActionButton>
-              <ActionButton onClick={() => handleFundEvm("native-currency")}>
-                {creatingEvm ? "Setting up…" : "Fund ETH"}
-              </ActionButton>
-            </FundRow>
-            {/* Monad has no Privy funding provider, so its Fund flow moves
-                USDC to or from the Solana wallet through Trustware instead.
-                Gas arrives automatically on the way in; direct transfers go
-                through Receive. */}
-            <FundRow label="Monad">
-              <ActionButton onClick={() => setFundingMonad(true)}>
-                Move USDC
-              </ActionButton>
-              <ActionButton onClick={() => setReceiving(true)}>
-                Receive USDC
-              </ActionButton>
-            </FundRow>
-            <div className="grid grid-cols-2 gap-2">
-              <ActionButton onClick={() => setReceiving(true)}>
-                Receive
-              </ActionButton>
-              <ActionButton onClick={() => setSending(true)}>Send</ActionButton>
-            </div>
+          {/* Three actions, not eight. Fund carries the chain/asset matrix in
+              a menu so the panel reads as a wallet rather than a control board;
+              Receive and Send were already single destinations. */}
+          <div className="grid grid-cols-3 gap-2">
+            <FundMenu
+              busyLabel={creatingEvm ? "Setting up…" : null}
+              groups={[
+                {
+                  chain: "Solana",
+                  chainLogo: "/logos/solana.png",
+                  options: [
+                    {
+                      id: "sol-usdc",
+                      label: "USDC",
+                      logo: "/logos/usdc.png",
+                      onSelect: () => handleFund("USDC"),
+                    },
+                    {
+                      id: "sol-native",
+                      label: "SOL",
+                      logo: "/logos/solana.png",
+                      onSelect: () => handleFund("native-currency"),
+                    },
+                  ],
+                },
+                {
+                  chain: "Ethereum",
+                  chainLogo: "/logos/eth.png",
+                  options: [
+                    {
+                      id: "eth-usdc",
+                      label: "USDC",
+                      logo: "/logos/usdc.png",
+                      disabled: creatingEvm,
+                      onSelect: () => handleFundEvm("USDC"),
+                    },
+                    {
+                      id: "eth-native",
+                      label: "ETH",
+                      logo: "/logos/eth.png",
+                      disabled: creatingEvm,
+                      onSelect: () => handleFundEvm("native-currency"),
+                    },
+                    // Only when an Ondo token is actually stranded there. An
+                    // Ondo asset belongs on Solana unless it is posted as margin
+                    // on Ondo Perps, so it is offered where the balance shows.
+                    ...(scan.ondo.length > 0
+                      ? [
+                          {
+                            id: "eth-ondo",
+                            label: "Move Ondo to Solana",
+                            hint: "Converts to the Solana mint",
+                            logo: "/logos/ondo.png",
+                            onSelect: () => setMovingOndo(true),
+                          },
+                        ]
+                      : []),
+                  ],
+                },
+                {
+                  // Monad has no Privy funding provider, so its Fund flow moves
+                  // USDC from the Solana wallet through Trustware. Gas arrives
+                  // automatically on the way in.
+                  chain: "Monad",
+                  chainLogo: "/logos/monad.png",
+                  options: [
+                    {
+                      id: "monad-usdc",
+                      label: "USDC",
+                      hint: "Moved from Solana",
+                      logo: "/logos/usdc.png",
+                      onSelect: () => setFundingMonad(true),
+                    },
+                  ],
+                },
+                // Grouped by asset class rather than by chain, unlike the three
+                // above. The registry carries eight tickers across three
+                // chains; listing those as chain/asset pairs would be nineteen
+                // rows for a menu that is meant to read as a wallet. One row
+                // covers it, and anything the user already holds is promoted
+                // beside it because that is a deposit they can act on now.
+                {
+                  chain: "Tokenized stocks",
+                  chainLogo: "/logos/ondo.png",
+                  options: [
+                    ...scan.held.map((h) => ({
+                      id: `equiv-${h.source.chain}-${h.source.token}`,
+                      label: `${h.source.symbol} on ${h.source.chainLabel}`,
+                      hint: `${formatEquivalentAmount(
+                        h.balanceAtomic,
+                        h.source.decimals,
+                      )} ready to convert`,
+                      logo: equivalentLogo(h.source.symbol),
+                      onSelect: () => setDepositingStocks(true),
+                    })),
+                    {
+                      id: "stocks-deposit",
+                      label: scan.held.length
+                        ? "Deposit another"
+                        : "Deposit tokenized stocks",
+                      hint: depositableChains()
+                        .map((c) => c.chainLabel)
+                        .join(", "),
+                      onSelect: () => setDepositingStocks(true),
+                    },
+                  ],
+                },
+              ]}
+            />
+            <ActionButton onClick={() => setReceiving(true)}>
+              Receive
+            </ActionButton>
+            <ActionButton onClick={() => setSending(true)}>Send</ActionButton>
           </div>
           {fundError && (
             <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60">
@@ -393,6 +626,143 @@ export function WalletPanel({
                   accepts="SOL, USDC, xStocks, and Ondo's Solana tokens."
                 />
                 <EvmReceiveAddress />
+              </div>
+            </SheetContent>
+          </Sheet>
+
+          {/* Tokenized stocks arriving from another chain.
+              Picking the ticker here rather than in the Fund menu is what keeps
+              that menu at one row instead of eleven chain/asset pairs. The EVM
+              rows open the same Privy funding widget USDC and ETH use, named
+              for the token; Solana falls back to its address because Privy's
+              Solana funding config takes only 'native-currency' or 'USDC'. */}
+          <Sheet open={depositingStocks} onOpenChange={setDepositingStocks}>
+            <SheetContent side="right" className="w-full sm:max-w-md">
+              <SheetHeader className="border-b border-white/10">
+                <SheetTitle>Deposit tokenized stocks</SheetTitle>
+                <SheetDescription>
+                  Pick what you are sending. It arrives in the wallet you
+                  already have, and converts to the Solana version when you
+                  deposit it as collateral in Borrow.
+                </SheetDescription>
+              </SheetHeader>
+              <div className="space-y-3 overflow-y-auto px-4 py-4">
+                {scan.held.length > 0 && (
+                  <div className="rounded-xl border border-aeras-blue/30 bg-aeras-blue/15 px-3.5 py-3">
+                    <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+                      Already in your wallet
+                    </div>
+                    <ul className="mt-1.5 space-y-1">
+                      {scan.held.map((h) => (
+                        <li
+                          key={`${h.source.chain}-${h.source.token}`}
+                          className="flex items-baseline justify-between gap-3 text-xs"
+                        >
+                          <span className="text-white">
+                            {h.source.symbol}
+                            <span className="text-white/45">
+                              {" "}
+                              on {h.source.chainLabel}
+                            </span>
+                          </span>
+                          <span className="font-mono tabular-nums text-white/70">
+                            {formatEquivalentAmount(
+                              h.balanceAtomic,
+                              h.source.decimals,
+                            )}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="mt-2 text-[11px] text-white/50">
+                      Deposit one as collateral in Borrow and it converts first.
+                    </p>
+                  </div>
+                )}
+
+                {depositChains.map((c) => (
+                  <div key={c.chain}>
+                    <div className="px-1 pb-1.5 text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
+                      {c.chainLabel}
+                    </div>
+                    {c.kind === "evm" ? (
+                      // One address per chain, not one button per token.
+                      //
+                      // A receive address does not care which token arrives:
+                      // every asset on a chain lands at the same address. The
+                      // per-token grid came from the Privy funding widget, which
+                      // does need a token named, and wrongly implied the user had
+                      // to pick the exact one before sending from elsewhere.
+                      // Accepted tokens are listed as a hint instead, the way the
+                      // Solana row already did it.
+                      <div className="space-y-2">
+                        <ReceiveAddress
+                          label={`Send to your ${c.chainLabel} address`}
+                          address={evmAddress ?? ""}
+                          accepts={c.assets.map((a) => a.symbol).join(", ")}
+                        />
+                        {/* The same Privy widget as before, scoped to the chain
+                            rather than to a ticker. Sending from another wallet
+                            uses the address above; this is for buying or
+                            transferring in through Privy. */}
+                        <button
+                          type="button"
+                          disabled={creatingEvm}
+                          onClick={() =>
+                            handleFundEvmChain(c.chain, c.chainLabel)
+                          }
+                          className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white transition-colors hover:border-white/25 hover:bg-white/10 disabled:opacity-40"
+                        >
+                          {creatingEvm
+                            ? "Setting up…"
+                            : `Fund on ${c.chainLabel} with Privy`}
+                        </button>
+                      </div>
+                    ) : (
+                      // Privy's Solana funding config cannot name an SPL mint,
+                      // so this one stays an address. Same wallet either way.
+                      <ReceiveAddress
+                        label={`Send to your Solana address`}
+                        address={walletAddress}
+                        accepts={c.assets.map((a) => a.symbol).join(", ")}
+                      />
+                    )}
+                  </div>
+                ))}
+
+                {/* Naming what is NOT accepted matters more here than in the
+                    plain Receive panel: these tokens exist on chains the
+                    registry deliberately holds out, and one sent to this
+                    address on Arbitrum or HyperEVM is stuck. */}
+                <p className="px-1 text-[11px] text-white/45">
+                  Only these chains. The same token on another chain reaches
+                  your address but cannot be converted or moved.
+                </p>
+                {scan.error && (
+                  <p className="px-1 text-[11px] text-white/45">
+                    Could not read your balances on every chain, so this list
+                    may be incomplete.
+                  </p>
+                )}
+              </div>
+            </SheetContent>
+          </Sheet>
+
+          {/* Ondo collateral going home.
+              Ethereum is a waypoint for these tokens, never a destination: on
+              Solana the same asset trades on Jupiter and works everywhere else
+              in the app, while on Ethereum it does nothing at all. */}
+          <Sheet open={movingOndo} onOpenChange={setMovingOndo}>
+            <SheetContent side="right" className="w-full sm:max-w-md">
+              <SheetHeader className="border-b border-white/10">
+                <SheetTitle>Move to Solana</SheetTitle>
+                <SheetDescription>
+                  Converts an Ondo token withdrawn from Perps into its Solana
+                  version, where it can be traded and lent.
+                </SheetDescription>
+              </SheetHeader>
+              <div className="overflow-y-auto px-4 py-4">
+                <OndoUnwindCard unwind={unwind} />
               </div>
             </SheetContent>
           </Sheet>
@@ -444,26 +814,6 @@ export function WalletPanel({
           </Sheet>
         </>
       )}
-    </div>
-  );
-}
-
-// A funding pair labelled with the chain it funds. Naming the chain matters:
-// USDC on Solana and USDC on Ethereum are different balances in different
-// wallets, and an unlabelled pair of buttons would not say which one you get.
-function FundRow({
-  label,
-  children,
-}: {
-  label: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-16 shrink-0 text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
-        {label}
-      </span>
-      <div className="grid flex-1 grid-cols-2 gap-2">{children}</div>
     </div>
   );
 }
@@ -536,6 +886,26 @@ function BalanceRow({
 }
 
 // One receiving address, with what it accepts and a way to copy it.
+// Logo for a convertible ticker. `collateralTicker` strips Ondo's "on" suffix;
+// Backed's xStocks carry a trailing "x" instead, so that comes off first. Both
+// are registry naming conventions, not guesses at arbitrary symbols.
+function equivalentLogo(symbol: string): string | undefined {
+  const base = symbol.endsWith("x")
+    ? symbol.slice(0, -1)
+    : collateralTicker(symbol);
+  return marketLogo(base);
+}
+
+// Atomic units to a short display figure. These are equity balances, so two
+// decimals is enough, but a dust balance should not render as "0.00" and read
+// as nothing.
+function formatEquivalentAmount(atomic: string, decimals: number): string {
+  const value = Number(atomic) / 10 ** decimals;
+  if (!Number.isFinite(value)) return "0";
+  if (value > 0 && value < 0.01) return "<0.01";
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
 function ReceiveAddress({
   label,
   address,
@@ -598,7 +968,20 @@ function ReceiveAddress({
 // Assets sent on any other EVM chain arrive at this same address and then
 // cannot be moved from here, so the warning says so rather than leaving it to
 // be discovered.
-function EvmReceiveAddress() {
+// Copy is overridable because two panels need this same address with different
+// framing: the general Receive panel names every chain the wallet can spend on,
+// while the tokenized-stock deposit panel names only the chains that convert.
+// The create-on-demand flow below is the reason they share a component rather
+// than each rendering their own ReceiveAddress.
+function EvmReceiveAddress({
+  label = "Ethereum, BNB Chain, and Monad",
+  accepts = "Tokenized stocks on Ethereum or BNB Chain (Borrow converts them to the Solana version first), and USDC on Monad for Morpho earn deposits. Earn deposits also fund this wallet automatically from Solana USDC.",
+  warning = "Only these three chains. Assets sent on another EVM chain reach this address but cannot be used or moved.",
+}: {
+  label?: string;
+  accepts?: string;
+  warning?: string;
+} = {}) {
   const { address, ready } = useEmbeddedEvmWallet();
   const { createWallet } = useCreateWallet();
   const [creating, setCreating] = useState(false);
@@ -643,10 +1026,10 @@ function EvmReceiveAddress() {
 
   return (
     <ReceiveAddress
-      label="Ethereum, BNB Chain, and Monad"
+      label={label}
       address={address}
-      accepts="Tokenized stocks on Ethereum or BNB Chain (Borrow converts them to the Solana version first), and USDC on Monad for Morpho earn deposits. Earn deposits also fund this wallet automatically from Solana USDC."
-      warning="Only these three chains. Assets sent on another EVM chain reach this address but cannot be used or moved."
+      accepts={accepts}
+      warning={warning}
     />
   );
 }
@@ -770,8 +1153,8 @@ function HoldingRow({
     const part = group.parts[0];
     return (
       <BalanceRow
-        label={part.symbol}
-        sublabel={part.direct ? part.name : `${part.name} · Ondo`}
+        label={part.name}
+        sublabel={part.direct ? part.symbol : `${part.symbol} · Ondo`}
         amount={part.amount}
         decimals={6}
         usd={part.usd}
@@ -799,10 +1182,10 @@ function HoldingRow({
           {icon}
           <div>
             <div className="text-sm font-medium tracking-tight text-white">
-              {group.symbol}
+              {group.name}
             </div>
             <div className="text-xs text-white/50">
-              {group.name} · {group.parts.length} tokens
+              {group.symbol} · {group.parts.length} tokens
             </div>
           </div>
         </div>
@@ -861,4 +1244,3 @@ function HoldingRow({
     </div>
   );
 }
-

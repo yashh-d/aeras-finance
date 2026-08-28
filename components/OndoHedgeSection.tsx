@@ -27,7 +27,7 @@
 
 import { useState } from "react";
 
-import { signInToOndo } from "@/lib/ondo/auth";
+import { isOndoUnavailable, signInToOndo } from "@/lib/ondo/auth";
 import {
   closeOndoHedge,
   fetchOndoAccount,
@@ -37,7 +37,7 @@ import {
 import type { OndoHedgeView } from "@/lib/ondo/exposure";
 import type { UseOndoHedge } from "@/lib/ondo/use-ondo-hedge";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
-import { useWallets as useSolanaWallets } from "@privy-io/react-auth/solana";
+import { useEmbeddedSolanaWallet } from "@/lib/privy/solana";
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
 import { uiToAtomic } from "@/lib/trustware/amounts";
 import { runOneClickHedge } from "@/lib/ondo/one-click";
@@ -48,7 +48,9 @@ import { AssetLogo } from "@/components/AssetLogo";
 import { MarketLogo } from "@/components/MarketLogo";
 import { assetIdentity } from "@/lib/jupiter/xstocks";
 
-const PANEL = "rounded-xl border border-white/[0.07] bg-[#111415]";
+import { INSET_PANEL } from "@/lib/ui/surface";
+
+const PANEL = INSET_PANEL;
 const LABEL =
   "text-[10px] font-medium uppercase tracking-[0.14em] text-white/35";
 
@@ -88,6 +90,9 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
   const wallet = useEmbeddedEvmWallet();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [signingIn, setSigningIn] = useState(false);
+  // Ondo refusing to serve this account or location at all. Not a transient
+  // error, so it replaces the sign-in offer rather than sitting above it.
+  const [unavailable, setUnavailable] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   // Set when a self-hedge is priced above the soft bound. Holding it here
   // rather than in the row keeps the confirm visible while the row re-renders
@@ -99,8 +104,7 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
     | null
   >(null);
   const sendSolanaTx = useSendSolanaTxBase64();
-  const { wallets: solanaWallets } = useSolanaWallets();
-  const solanaAddress = solanaWallets[0]?.address;
+  const { address: solanaAddress } = useEmbeddedSolanaWallet();
 
   async function onSignIn() {
     if (!wallet.address) return;
@@ -111,10 +115,17 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
       await hedge.refresh();
       setStatus({ kind: "idle" });
     } catch (err) {
-      setStatus({
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      // Held apart from the error status for the same reason as the Perps tab:
+      // a terminal refusal withdraws the Sign in button instead of leaving one
+      // that cannot succeed.
+      if (isOndoUnavailable(err)) {
+        setUnavailable(err instanceof Error ? err.message : String(err));
+      } else {
+        setStatus({
+          kind: "error",
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
     } finally {
       setSigningIn(false);
     }
@@ -289,7 +300,7 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
           endpoint returns totals only, so deposit history is the sole place the
           asset is named. Without this the collateral looks like it vanished. */}
       {(hedge.account?.deposits?.length ?? 0) > 0 && (
-        <div className="rounded-xl border border-white/[0.07] bg-[#111415] p-4">
+        <div className={`${INSET_PANEL} p-4`}>
           <div className="flex items-baseline justify-between">
             <div className={LABEL}>Posted collateral</div>
             <div className="font-mono text-[11px] tabular-nums text-white/40">
@@ -399,6 +410,7 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
       <SessionCard
         status={hedge.status}
         signingIn={signingIn}
+        unavailable={unavailable}
         onSignIn={() => void onSignIn()}
         selfCollateralizableUsd={hedge.totals.selfCollateralizableUsd}
         marginUsd={hedge.marginUsd}
@@ -459,12 +471,15 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
 function SessionCard({
   status,
   signingIn,
+  unavailable,
   onSignIn,
   selfCollateralizableUsd,
   marginUsd,
 }: {
   status: UseOndoHedge["status"];
   signingIn: boolean;
+  // Non-null when Ondo has refused outright, which withdraws the sign-in offer.
+  unavailable: string | null;
   onSignIn: () => void;
   selfCollateralizableUsd: number;
   marginUsd: number;
@@ -478,6 +493,20 @@ function SessionCard({
   }
 
   if (status === "needs-signin") {
+    if (unavailable) {
+      return (
+        <div className={`${PANEL} p-4`}>
+          <h3 className="text-sm font-medium text-white">
+            Ondo Perps is unavailable
+          </h3>
+          <p className="mt-1 max-w-xl text-sm text-white/45">{unavailable}</p>
+          <p className="mt-2 max-w-xl text-sm text-white/45">
+            Lighter is the other hedge venue on this tab and is unaffected.
+          </p>
+        </div>
+      );
+    }
+
     return (
       <div className={`${PANEL} p-4`}>
         <div className="flex items-start justify-between gap-4">

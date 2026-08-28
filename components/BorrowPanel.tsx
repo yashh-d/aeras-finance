@@ -11,9 +11,11 @@ import {
 
 import { PriceChart } from "@/components/PriceChart";
 import { KaminoBorrowCard } from "@/components/KaminoBorrowCard";
+import { GoldBorrowSection } from "@/components/GoldBorrowCard";
 import { SOLSCAN_TX_BASE, SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { assetIdentity, xstockByMint } from "@/lib/jupiter/xstocks";
+import { GLASS_SURFACE } from "@/lib/ui/surface";
 import { AssetLogo } from "@/components/AssetLogo";
 import {
   buildOperateTx,
@@ -40,7 +42,6 @@ import { KAMINO_XSTOCK_COLLATERALS } from "@/lib/kamino/reserves";
 import { useBorrowSummary } from "@/lib/borrow/use-borrow-summary";
 import {
   MarketDetailHeader,
-  MarketStatGrid,
   type BorrowMode,
 } from "@/components/BorrowMarketDetail";
 import { fundRepayUsdc, repayFundingSources } from "@/lib/borrow/fund-repay";
@@ -91,10 +92,11 @@ interface Props {
   // Sends the user somewhere they can acquire collateral. Omitted where the
   // panel is embedded without anywhere to send them.
   onAddFunds?: () => void;
-  // Rendered on a dark surface (inside Home's card) rather than on the light
-  // page canvas. Flips the summary to light-on-dark and drops the panel's own
-  // card chrome so cards don't nest.
-  dark?: boolean;
+  // Drops the panel's own card chrome. Set where the panel is already inside a
+  // card (Home) so cards don't nest; the Borrow tab renders it straight onto
+  // the page canvas and draws its own. Type is always light-on-dark either way:
+  // both surfaces are the night canvas.
+  unboxed?: boolean;
 }
 
 export function BorrowPanel({
@@ -103,7 +105,7 @@ export function BorrowPanel({
   prices,
   onRefresh,
   onAddFunds,
-  dark,
+  unboxed,
 }: Props) {
   // Same-underlying holdings on other chains (and Ondo's native Solana mints),
   // scanned once for the whole section rather than per card.
@@ -148,11 +150,9 @@ export function BorrowPanel({
   // position it targets is chosen in the panel itself.
   const [repayOpen, setRepayOpen] = useState(false);
 
-  // On a dark surface the panel is already inside a card, so its sections drop
-  // their own chrome rather than nesting one card inside another.
-  const sectionClass = dark
-    ? ""
-    : "rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6";
+  // Inside Home's card the panel drops its own chrome rather than nesting one
+  // card inside another; on the Borrow tab it is the card.
+  const sectionClass = unboxed ? "" : `${GLASS_SURFACE} p-5 lg:p-6`;
 
   return (
     <div className="space-y-6">
@@ -167,7 +167,6 @@ export function BorrowPanel({
             ? () => setRepayOpen((open) => !open)
             : undefined
         }
-        dark={dark}
       />
 
       {repayOpen && (
@@ -194,7 +193,7 @@ export function BorrowPanel({
           </p>
         </div>
 
-        <div className="mt-5 divide-y divide-white/10 border-t border-white/10">
+        <div className="@container mt-5 divide-y divide-white/10 border-t border-white/10">
           <MarketRowHeader />
           {XSTOCK_BORROW_VAULTS.map((vault) => {
             const key = jupiterMarketKey(vault.vaultId);
@@ -279,6 +278,18 @@ export function BorrowPanel({
               </div>
             );
           })}
+
+          {/* Gold sits below the equity markets rather than beside them. It is
+              a different collateral, a different chain and a different loan
+              asset, and the row shape above (one xStock, USDC borrowed on
+              Solana) does not describe it. Its own section says so plainly
+              instead of hiding an Ethereum position inside a Solana list. */}
+          <GoldBorrowSection
+            walletAddress={walletAddress}
+            goldHoldings={equivalents.gold}
+            solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+            onRefresh={refreshAll}
+          />
         </div>
       </div>
     </div>
@@ -295,7 +306,6 @@ function BorrowSummaryHero({
   loading,
   onAddFunds,
   onRepay,
-  dark,
 }: {
   debtUsd: number;
   capacityUsd: number;
@@ -305,12 +315,11 @@ function BorrowSummaryHero({
   // Absent when nothing is owed, so the button only appears next to Add funds
   // once there is a loan to pay down.
   onRepay?: () => void;
-  dark?: boolean;
 }) {
   const utilisationPct =
     capacityUsd > 0 ? Math.min(100, (debtUsd / capacityUsd) * 100) : 0;
-  const muted = dark ? "text-white/50" : "text-aeras-300";
-  const strong = dark ? "text-white" : "text-aeras-900";
+  const muted = "text-white/50";
+  const strong = "text-white";
 
   return (
     <div className="space-y-4">
@@ -328,11 +337,7 @@ function BorrowSummaryHero({
       </div>
 
       <div className="max-w-xl">
-        <div
-          className={`h-1.5 w-full overflow-hidden rounded-full ${
-            dark ? "bg-white/10" : "bg-aeras-border"
-          }`}
-        >
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
           <div
             className="h-full rounded-full bg-aeras-blue transition-all"
             style={{ width: `${utilisationPct}%` }}
@@ -361,11 +366,7 @@ function BorrowSummaryHero({
             <button
               type="button"
               onClick={onRepay}
-              className={`rounded-full px-6 py-2.5 text-sm font-medium transition-colors ${
-                dark
-                  ? "border border-white/15 bg-white/5 text-white hover:border-white/25 hover:bg-white/10"
-                  : "border border-aeras-border bg-white text-aeras-900 hover:border-aeras-300"
-              }`}
+              className="rounded-full border border-white/15 bg-white/5 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/10"
             >
               Repay
             </button>
@@ -380,9 +381,13 @@ function BorrowSummaryHero({
 // figures line up. Each numeric column is a fixed width and is always rendered,
 // including the balance column: sizing it to its content would let the two rows
 // the user holds shift every column left and break the alignment down the list.
-const COL_SIZE = "hidden w-24 shrink-0 text-right sm:block";
-const COL_LIQUIDITY = "hidden w-24 shrink-0 text-right md:block";
-const COL_BALANCE = "hidden w-24 shrink-0 text-right lg:block";
+// Dropped on container width, not viewport width. This table renders both full
+// bleed on the Borrow tab and inside a two-fifths card on Home, so a viewport
+// breakpoint showed every column at desktop sizes and pushed the APY figure off
+// the right edge of the narrow placement.
+const COL_SIZE = "hidden w-24 shrink-0 text-right @md:block";
+const COL_LIQUIDITY = "hidden w-24 shrink-0 text-right @xl:block";
+const COL_BALANCE = "hidden w-24 shrink-0 text-right @3xl:block";
 const COL_APY = "w-20 shrink-0 text-right";
 
 // Labels the rows would otherwise repeat under every figure. One header keeps
@@ -450,11 +455,15 @@ function BorrowMarketRow({
       className="flex w-full items-center gap-3 py-4 text-left transition-colors hover:bg-white/5"
     >
       <AssetLogo xstock={assetIdentity(mint, symbol)} size={32} />
+      {/* Name leads, token symbol and venue share the line under it. The venue
+          has to stay visible here: the same asset is listed by both. */}
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium tracking-tight text-white">
-          {symbol}
+        <div className="truncate text-sm font-medium tracking-tight text-white">
+          {assetIdentity(mint, symbol).name}
         </div>
-        <div className="mt-0.5 text-[11px] text-white/50">{venue}</div>
+        <div className="mt-0.5 truncate text-[11px] text-white/50">
+          {symbol} · {venue}
+        </div>
       </div>
       {/* Depth of the collateral side, then what is actually drawable. Dropped
           first on narrow screens, where the rate has to win the space. */}
@@ -818,6 +827,10 @@ function VaultCard({
         atLeastAtomic: (
           BigInt(onSolana) + BigInt(next.quote.toAmountMinAtomic)
         ).toString(),
+        // Every Jupiter borrow vault's collateral is a Backed xStock, and all
+        // of those are Token-2022. Revisit if a vault ever lists a classic
+        // SPL collateral the way the buy catalog now does (XAUt0).
+        programId: TOKEN_2022_PROGRAM_ID,
       });
       available = available.filter(
         (h) =>
@@ -1046,22 +1059,15 @@ function VaultCard({
           convertibleUi={convertibleUi}
           heldEquivalents={heldEquivalents}
           oraclePrice={oraclePrice}
+          aprPct={
+            stat?.borrowAprPct ?? (live ? live.borrowRateAnnual * 100 : null)
+          }
           onSubmit={handleSubmit}
           formState={formState}
           resetForm={() => setFormState({ kind: "idle" })}
           recovering={recovering}
         />
       ) : null}
-
-      <MarketStatGrid
-        aprPct={stat?.borrowAprPct ?? (live ? live.borrowRateAnnual * 100 : null)}
-        priceUsd={oraclePrice}
-        suppliedUsd={stat?.sizeUsd ?? live?.totalSuppliedUsd ?? null}
-        borrowedUsd={stat?.borrowedUsd ?? live?.totalBorrowedUsd ?? null}
-        liquidityUsd={live?.borrowableUsd ?? stat?.liquidityUsd ?? null}
-        maxLtvPct={vault.collateralFactor / 10}
-        borrowSymbol={vault.borrowSymbol}
-      />
     </div>
   );
 }
@@ -1122,26 +1128,22 @@ function PositionCard({
       </div>
       <div className="grid grid-cols-2 gap-3 text-xs">
         <Stat
-          dark
           dot="bg-aeras-positive"
           label="Collateral"
           value={`${colUi.toFixed(4)} ${vault.collateralSymbol}`}
           sub={colUsd != null ? `$${colUsd.toFixed(2)}` : undefined}
         />
         <Stat
-          dark
           dot="bg-aeras-warning"
           label="Debt"
           value={`${debtUi.toFixed(4)} ${vault.borrowSymbol}`}
         />
         <Stat
-          dark
           dot={statusDot}
-          label="Projected LTV"
-          value={`${ltvPct.toFixed(1)}% / LT ${liquidationPct.toFixed(0)}%`}
+          label="Loan vs collateral"
+          value={`${ltvPct.toFixed(1)}% · closes at ${liquidationPct.toFixed(0)}%`}
         />
         <Stat
-          dark
           dot={statusDot}
           label="Health"
           value={health === Infinity ? "—" : `${health.toFixed(2)}×`}
@@ -1181,6 +1183,7 @@ function OperateForm({
   convertibleUi,
   heldEquivalents,
   oraclePrice,
+  aprPct,
   onSubmit,
   formState,
   resetForm,
@@ -1197,6 +1200,9 @@ function OperateForm({
   convertibleUi: number;
   heldEquivalents: HeldEquivalent[];
   oraclePrice: number | null;
+  // Annual borrow rate, shown against the amount being drawn rather than as a
+  // standalone market figure.
+  aprPct: number | null;
   onSubmit: (args: { collateralUi: number; borrowUi: number }) => void;
   formState: FormState;
   resetForm: () => void;
@@ -1228,8 +1234,6 @@ function OperateForm({
   // the user retyped the field.
   const ceilingInput = floorToDisplay(depositCeiling);
 
-  // Default: deposit a small amount of collateral and borrow conservatively against it.
-  const safeCFPct = (vault.collateralFactor / 10) * 0.6; // borrow up to 60% of CF for safety
   const [colInput, setColInput] = useState<string>(() =>
     depositCeiling > 0 ? ceilingInput : "0",
   );
@@ -1330,25 +1334,16 @@ function OperateForm({
     Boolean(previewBlocked) ||
     (collateralUi === 0 && borrowUi === 0);
 
-  const maxBorrowUsd = totalCollateralUsd ? totalCollateralUsd * (safeCFPct / 100) : 0;
-
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3">
         <NumberField
-          label={`Deposit ${vault.collateralSymbol}`}
           value={colInput}
           onChange={(v) => {
             setColInput(v);
             resetForm();
           }}
           right={vault.collateralSymbol}
-          balanceLabel={
-            convertibleUi > 0
-              ? // Floored, so the stated number is one Max can actually produce.
-                `${Number(ceilingInput).toFixed(4)} avail${quotedMax.loading ? " (pricing)" : ""}`
-              : `${collateralBalance.toFixed(4)} avail`
-          }
           onMax={() => {
             // With nothing to convert, use the exact on-chain base-unit string
             // so the resulting atomic amount never exceeds what the wallet
@@ -1367,20 +1362,19 @@ function OperateForm({
           }}
         />
         <NumberField
-          label={`Borrow ${vault.borrowSymbol}`}
           value={borrowInput}
           onChange={(v) => {
             setBorrowInput(v);
             resetForm();
           }}
           right={vault.borrowSymbol}
-          balanceLabel={
-            maxBorrowUsd > 0 ? `${maxBorrowUsd.toFixed(2)} max safe` : undefined
-          }
           onMax={
-            maxBorrowUsd > 0
+            // The real ceiling, matching the slider beside it: everything the
+            // collateral factor allows, less the 1% settlement buffer and any
+            // debt already outstanding. Not a safety-discounted figure.
+            maxNewBorrow > 0
               ? () => {
-                  setBorrowInput(maxBorrowUsd.toFixed(2));
+                  setBorrowInput(maxNewBorrow.toFixed(2));
                   resetForm();
                 }
               : undefined
@@ -1440,14 +1434,25 @@ function OperateForm({
             </div>
           )}
 
+          {borrowUi > 0 && aprPct != null && (
+            <div className="flex justify-between">
+              <span className="text-white/50">Interest</span>
+              <span className="font-mono tabular-nums text-white">
+                {aprPct.toFixed(2)}% APY
+              </span>
+            </div>
+          )}
+
+          {/* "Projected LTV / LT" named the ratio rather than saying what it
+              means. The figure is unchanged; only the wording is. */}
           <div className="flex justify-between">
-            <span className="text-white/50">Projected LTV</span>
+            <span className="text-white/50">Loan vs collateral</span>
             <span
               className={`font-mono tabular-nums ${
                 tooClose ? "text-aeras-negative" : "text-white"
               }`}
             >
-              {projectedLtv.toFixed(1)}% / LT {ltPct.toFixed(0)}%
+              {projectedLtv.toFixed(1)}% · closes at {ltPct.toFixed(0)}%
             </span>
           </div>
 
@@ -1789,6 +1794,9 @@ function ClosePositionControl({
   );
 }
 
+// The label and balance hint are optional. With neither set the header row is
+// dropped entirely and Max moves inside the field, next to the token suffix, so
+// the control is one line instead of three.
 function NumberField({
   label,
   value,
@@ -1797,34 +1805,37 @@ function NumberField({
   balanceLabel,
   onMax,
 }: {
-  label: string;
+  label?: string;
   value: string;
   onChange: (v: string) => void;
   right: string;
   balanceLabel?: string;
   onMax?: () => void;
 }) {
+  const bare = !label && !balanceLabel;
   return (
     <div>
-      <div className="mb-1 flex items-baseline justify-between">
-        <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          {label}
-        </label>
-        {balanceLabel && (
-          <span className="font-mono text-[11px] text-white/50">
-            {balanceLabel}
-            {onMax && (
-              <button
-                type="button"
-                onClick={onMax}
-                className="ml-1 text-white/70 underline-offset-2 hover:text-white hover:underline"
-              >
-                Max
-              </button>
-            )}
-          </span>
-        )}
-      </div>
+      {!bare && (
+        <div className="mb-1 flex items-baseline justify-between">
+          <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+            {label}
+          </label>
+          {balanceLabel && (
+            <span className="font-mono text-[11px] text-white/50">
+              {balanceLabel}
+              {onMax && (
+                <button
+                  type="button"
+                  onClick={onMax}
+                  className="ml-1 text-white/70 underline-offset-2 hover:text-white hover:underline"
+                >
+                  Max
+                </button>
+              )}
+            </span>
+          )}
+        </div>
+      )}
       <div className="relative">
         <input
           type="number"
@@ -1833,10 +1844,22 @@ function NumberField({
           min={0}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 pr-16 font-mono text-sm tabular-nums text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none focus:ring-2 focus:ring-aeras-blue-soft"
+          aria-label={label ?? right}
+          className={`block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 font-mono text-sm tabular-nums text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none focus:ring-2 focus:ring-aeras-blue-soft ${
+            bare && onMax ? "pr-24" : "pr-16"
+          }`}
         />
-        <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-medium text-white/50">
-          {right}
+        <span className="absolute inset-y-0 right-3 flex items-center gap-2 text-[11px] font-medium text-white/50">
+          <span className="pointer-events-none">{right}</span>
+          {bare && onMax && (
+            <button
+              type="button"
+              onClick={onMax}
+              className="text-white/70 underline-offset-2 hover:text-white hover:underline"
+            >
+              Max
+            </button>
+          )}
         </span>
       </div>
     </div>
@@ -1847,38 +1870,25 @@ function Stat({
   label,
   value,
   sub,
-  dark,
   dot,
 }: {
   label: string;
   value: string;
   sub?: string;
-  dark?: boolean;
   // Tailwind bg-* class for a small color dot before the label.
   dot?: string;
 }) {
   return (
     <div>
-      <div
-        className={`flex items-center gap-1.5 text-[11px] ${dark ? "text-white/50" : "text-aeras-300"}`}
-      >
+      <div className="flex items-center gap-1.5 text-[11px] text-white/50">
         {dot && (
           <span className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} />
         )}
         {label}
       </div>
-      <div
-        className={`mt-0.5 font-mono text-sm tabular-nums ${
-          dark ? "text-white" : "text-aeras-900"
-        }`}
-      >
+      <div className="mt-0.5 font-mono text-sm tabular-nums text-white">
         {value}
-        {sub && (
-          <span className={dark ? "text-white/50" : "text-aeras-300"}>
-            {" "}
-            · {sub}
-          </span>
-        )}
+        {sub && <span className="text-white/50"> · {sub}</span>}
       </div>
     </div>
   );

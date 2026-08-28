@@ -36,7 +36,13 @@ EVM chains appear only as a source of funds **for anything that becomes a positi
 
 The swap surface is the one exception, and it is deliberate. A swap may end on an EVM chain: Solana USDC to Ethereum USDT is a supported pair. That is wallet plumbing, not lending, and it does not weaken the rule that a *position* never settles off Solana. Its tokens are a separate hardcoded registry in `lib/trustware/swap-tokens.ts`, and both sides of a pair must be in it.
 
+**Ondo tokens live on Solana by default.** An Ondo `...on` token is only ever meant to be on Ethereum for as long as it is posted on Ondo Perps as margin for a trade or a hedge. Ethereum is a waypoint, not a home: sitting in the embedded EVM wallet the token earns nothing, backs nothing, cannot be lent on Kamino or Jupiter Lend, and cannot be sold without another bridge, while the same asset as a Solana xStock trades on Jupiter and works everywhere else in the app. So any surface that shows an Ondo token on Ethereum must offer the way back (`lib/ondo/unwind.ts`, surfaced as "Move to Solana" in the wallet panel). The conversion is never automatic: it needs two Ethereum signatures and costs real money, so it is always the user's call. This is about what the app offers by default, not what it does unasked.
+
 Morpho-on-Monad earn is the second, larger exception, and here a *position* really does live on an EVM chain. Users deposit USDC into a Morpho Vaults V2 (ERC-4626) vault on Monad mainnet (chainId 143) and earn its yield; the shares sit in the user's embedded EVM wallet, not on Solana. `lib/morpho` holds the curated vault registry and Monad constants, `app/api/morpho` serves live APY (Morpho's indexer) and per-wallet positions (Monad RPC reads). Funding runs through Trustware with a Monad-USDC destination, the same universal-deposit machinery the Solana path uses, pointed at an EVM chain instead. This is the one place the "positions settle on Solana" rule is knowingly broken; treat it as venue-scoped, not a general license to settle elsewhere.
+
+**Morpho-on-Ethereum gold borrow is the third exception**, and the only one where a *borrow* settles off Solana. Users post XAUt (Tether Gold, one troy ounce, **6 decimals**) as collateral in a Morpho Blue market on Ethereum mainnet and draw USDT against it at 77% LLTV. `lib/morpho/gold-*.ts` holds it, `app/api/morpho/gold-market` and `gold-position` serve live state read from Ethereum, and `components/GoldBorrowCard.tsx` is the surface. Funding converts gold the user already holds on Solana (GLDx, GLDon, XAUt0) into XAUt through Trustware, and buys ETH for gas because the embedded wallet is born with none.
+
+Two things separate it from the Monad venue and are easy to get backwards. It is a Morpho Blue **market**, not an ERC-4626 vault: different contract, different math, and **collateral in it earns nothing** (only USDT suppliers earn, and they are a different party). And the exit is open in both directions, so it is not a one-way door: Trustware routes Ethereum USDT back to Solana USDC at about 0.3%. Read `docs/morpho-gold.md` before touching any of it, especially the sections on decimals, USDT's non-compliant `approve`, and why a full repayment is sized in shares.
 
 EVM code is confined to three files. `lib/privy/evm.ts` resolves the embedded EVM wallet and hands back its EIP-1193 provider. `lib/trustware/evm-tx.ts` translates a Trustware route payload into `eth_sendTransaction` params. `lib/trustware/execute.ts` grants ERC-20 allowances, switches the wallet's active chain, broadcasts the source leg, and tracks the route to settlement. Nothing outside those files should reach for an EVM provider. (The Morpho earn modules `lib/morpho/deposit.ts` and `lib/morpho/fund.ts` also sign EVM transactions, but only through the signer shape `lib/privy/evm.ts` exposes.)
 
@@ -55,8 +61,9 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      prices, charts, sparklines, trigger orders
     /kamino          KTX transaction proxy, reserve and kvault metrics,
                      kvault positions, obligations
-    /morpho          Monad Morpho vault metrics (indexer) and per-wallet
-                     positions (Monad RPC reads)
+    /morpho          Monad vault metrics (indexer) and per-wallet positions
+                     (Monad RPC reads); gold-market and gold-position for the
+                     Ethereum Blue market (Ethereum RPC reads)
     /lighter         Lighter perps market catalog
     /ondo            Ondo perps: market catalog, SIWE session, account
                      snapshot, terms, orders, deposit address, withdrawal
@@ -77,8 +84,10 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      execution core (builder code, orders, SIWE session),
                      margin funding (collateral discovery, Trustware deposit)
                      and withdrawals (address book, per-asset reconstruction)
-  /morpho            Monad Morpho earn: curated USDC vault registry, Monad
-                     constants, client read helpers
+  /morpho            Two separate Morpho venues. Monad earn: curated USDC vault
+                     registry, Monad constants, client read helpers. Ethereum
+                     gold borrow (gold-*.ts): the XAUt/USDT Blue market, its
+                     position math, Trustware funding and the write path
   /privy             Privy config, auth, Solana and EVM wallet hooks
   /solana            Connection, balances, holdings, sending, activity, plus
                      the shared broadcast path: priority-fee.ts (compute unit
@@ -96,6 +105,7 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
 /docs                Integration docs (read these before writing code)
   jupiter-borrow.md
   kamino.md
+  morpho-gold.md
   ondo-perps.md
   privy.md
 CLAUDE.md            This file
@@ -113,7 +123,10 @@ For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json`
 ### Privy
 
 - For Solana wallets, import hooks from the `@privy-io/react-auth/solana` subpath, not the root. The root `useWallets` returns EVM wallets; the Solana subpath's `useWallets` returns Solana wallets. (Older Privy docs reference a `useSolanaWallets` name — that was the v2 API; v3 unified to subpath-scoped `useWallets`.)
-- Privy creates two embedded wallets on login, not one. `lib/privy/provider.tsx` sets both `embeddedWallets.solana.createOnLogin` and `embeddedWallets.ethereum.createOnLogin` to `users-without-wallets`. Solana is still the primary wallet: `appearance.walletChainType` is `solana-only`, so the EVM wallet is never offered as a login method. It exists to sign the source leg of a Trustware conversion.
+- Privy creates two embedded wallets on login, not one. `lib/privy/provider.tsx` sets both `embeddedWallets.solana.createOnLogin` and `embeddedWallets.ethereum.createOnLogin` to `all-users`. The EVM wallet exists to sign the source leg of a Trustware conversion and the two Morpho venues; it is never offered as a login method on its own.
+- **External wallets are a login method, never the account the app operates on.** `appearance.walletChainType` is `ethereum-and-solana` and `appearance.walletList` names the offered wallets, so a user can sign in with Phantom, Solflare, Backpack, MetaMask, Coinbase or OKX. That wallet is identity plus a funding source. Positions, balances and every signature still belong to the embedded wallet, which is why `createOnLogin` is `all-users` and not `users-without-wallets`: a user who signs in with Phantom already has a wallet, and the narrower setting would provision nothing and leave them with no account to hold a position in.
+- Because of the above, **never index the wallets array**. `useWallets()` is sorted by `connectedAt`, so `wallets[0]` stops being the embedded wallet the moment a user connects an external one, and reads and signatures silently land on the wrong account. Resolve the embedded wallet through `lib/privy/solana.ts` (`useEmbeddedSolanaWallet`) or `lib/privy/evm.ts` (`useEmbeddedEvmWallet`); both pin to `walletClientType === "privy"`. The Solana subpath's `ConnectedStandardSolanaWallet` carries no `walletClientType`, so `lib/privy/solana.ts` reads the embedded address off `user.linkedAccounts` and matches the signer by address.
+- A wallet-only login links no email, and email is the merge key for the users table (`users_email_unique` in `0001_waitlist.sql`). `app/app/page.tsx` therefore holds `/api/auth/sync` until an email exists and prompts for one. Do not relax that: syncing first inserts a DID row with a null email, which can never adopt the waitlist row the same person created through the form, and stamping the address on later collides with that row and 500s every subsequent sign-in.
 - `supportedChains` is `[mainnet, bsc]` with `defaultChain: mainnet`. Privy signs only on chains declared here, so `execute.ts` fails loudly on an undeclared chain instead of signing on the wrong network. Adding a Trustware source chain means adding it both here and to `lib/trustware/equivalents.ts`.
 - For Solana signing, use `signTransaction` or `signAndSendTransaction` from the Solana wallet object. For the EVM leg, go through the EIP-1193 provider returned by `useEmbeddedEvmWallet()`. viem is a dependency, but only for calldata encoding (`encodeFunctionData`, `erc20Abi`) and chain constants. There is no wagmi and no viem wallet client.
 - To sign on a non-default EVM chain, switch at the WALLET level (`wallet.switchChain(chainId)`, exposed as `useEmbeddedEvmWallet().switchChain`) and then request a FRESH provider. A provider instance is bound to the chain that was active when it was requested, and `wallet_switchEthereumChain` on a provider does not move the wallet's own active chain, which is what the signing confirmation follows. Getting this wrong once presented a Monad approval as an Ethereum transaction. After switching, read back `eth_chainId` on the fresh provider before signing anything.
@@ -184,6 +197,24 @@ These exist in the repo and are past the "do not build" line. They are listed he
 - Ondo withdrawals (`lib/ondo/withdraw.ts`, `app/api/ondo/withdraw`, `app/api/ondo/address-book`, `components/OndoWithdrawCard.tsx`), closing the one-way door that margin funding had opened. Two steps: register a payout address with a SIWE signature, then `POST /v1/withdraw`, which Ondo executes and pays the Ethereum gas for. **Assets land on Ethereum; the bridge back to Solana is not built.** Three things to know before touching it, all in `docs/ondo-perps.md`. `withdrawableMargin` is not a token cap and reading it as one tells a user with no positions and no debt they can withdraw nothing, which is backwards. Ondo exposes no per-asset balance anywhere, so held quantity is reconstructed from the deposit and withdrawal ledgers and cross-checked against credited margin, taking the smaller, because auto-exchange sells collateral with no ledger record. And the withdrawal destination is never caller-supplied: the challenge route takes no body and registers only the session's own wallet, which is the mirror of the deposit-address guard in `fund.ts` and means Aeras deliberately cannot withdraw to an external address.
 - A Rain virtual card (`/spend`).
 - Morpho-on-Monad earn (`lib/morpho`, `app/api/morpho`). Curated USDC Morpho Vaults V2 on Monad mainnet as Earn options (V2, not V1 MetaMorpho — the indexer serves them under `vaultV2s`, and near-empty V1 twins of the same vaults exist; see `lib/morpho/vaults.ts`). All three layers are in: the read layer (live APY, on-chain positions), ERC-4626 deposit/withdraw through the embedded EVM wallet (`lib/morpho/deposit.ts`), and Trustware funding of a deposit from the wallet's Solana USDC, including a one-time native-MON gas top-up because the embedded wallet is born with no gas (`lib/morpho/fund.ts`, verified live by `scripts/morpho-fund-check.mts`). Funding runs both ways: a return leg (`sendMonadUsdcToSolana`, executed by `executeEvmRoute` in `lib/trustware/execute.ts`) brings Monad USDC back to the Solana wallet. This is the exception to Solana-only positions described under Chain Assumptions.
+- Morpho-on-Ethereum gold borrow (`lib/morpho/gold-*.ts`, `app/api/morpho/gold-*`,
+  `components/GoldBorrowCard.tsx`), as of 2026-08-27. Post XAUt as collateral in the
+  Morpho Blue XAUt/USDT market, borrow USDT at 77% LLTV. See Chain Assumptions and
+  `docs/morpho-gold.md`. The position math is a direct port of Morpho's own libraries
+  (SharesMathLib, the Taylor-series accrual, `_isHealthy`) including rounding direction,
+  verified against Morpho's indexer on a live position to the seventh decimal of health.
+  Funding is bounded on value loss priced at the market's own oracle, never at a token
+  registry: Trustware lists Ethereum GLDx at 17x its real sale price. One upstream
+  defect is live and worked around rather than hidden: Trustware cannot route Solana
+  gold directly to XAUt even though it runs both halves of that path individually, so
+  funding sells to USDC first. The planner tries direct every time and will use it the
+  day it works.
+- Gold bullion in the buyable catalog: PAXG and XAUt0 on Solana, alongside the existing
+  GLDx. These are not xStocks, and adding them broke two assumptions the catalog had
+  carried since v1: entries are no longer all 8 decimals (both are 6), and they are no
+  longer all Token-2022 (PAXG is, XAUt0 is classic SPL). `XStock.tokenProgram` now
+  carries that per entry, because deriving the wrong program yields an associated token
+  account that does not exist, so a balance reads as zero rather than as an error.
 - Waitlist signup, Privy-backed user sync, admin approval, and referral codes.
 
 ## Out of Scope
@@ -191,8 +222,9 @@ These exist in the repo and are past the "do not build" line. They are listed he
 These will come later. Do not build them now, even if it seems easy.
 
 - Fiat on-ramp
-- Additional lending venues beyond Kamino, Jupiter Lend, and Morpho-on-Monad (MarginFi, Save, etc.)
+- Additional lending venues beyond Kamino, Jupiter Lend, Morpho-on-Monad, and the
+  Morpho-on-Ethereum gold market (MarginFi, Save, etc.)
 - Portfolio analytics beyond a single position view
 - Mobile-specific UI
-- EVM chains as a destination for a position, **except** the Morpho-on-Monad earn venue described under Chain Assumptions. Outside that one venue, a position never settles off Solana. Swapping out to an EVM chain is also allowed and is described under Chain Assumptions.
+- EVM chains as a destination for a position, **except** the two Morpho venues described under Chain Assumptions: earn on Monad, and the gold borrow market on Ethereum. Outside those two, a position never settles off Solana. Swapping out to an EVM chain is also allowed and is described under Chain Assumptions.
 - Notifications and email

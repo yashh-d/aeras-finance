@@ -16,12 +16,23 @@ import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import type { EquivalentBalances } from "./balances";
 import type { NativeHolding } from "./native";
 import type { StableHolding } from "./stables";
+import type { OndoWalletHolding } from "./ondo-holdings";
+import type { GoldHolding } from "./gold-holdings";
 
 export interface WalletScan extends EquivalentBalances {
   native: NativeHolding[];
   // USDC held off Solana. Lighter margin is USDC only, so the hedge surface
   // reads this to tell "you have no money" apart from "your money is elsewhere".
   stables: StableHolding[];
+  // Ondo collateral tokens withdrawn to the user's Ethereum wallet. Kept apart
+  // from `held` because those are convertible equivalents keyed to borrow
+  // vaults, and most Ondo collateral has none. See lib/trustware/ondo-holdings.
+  ondo: OndoWalletHolding[];
+  // Gold the user holds anywhere, for the Morpho gold market's funding picker.
+  // Overlaps `ondo` on purpose: GLDon on Ethereum is both a withdrawn margin
+  // token and usable gold collateral. A wallet total must read `ondo` and a
+  // funding picker `gold`, never both, or the holding is counted twice.
+  gold: GoldHolding[];
   nativePrices: Record<string, number>;
   loading: boolean;
   error: string | null;
@@ -29,7 +40,7 @@ export interface WalletScan extends EquivalentBalances {
   refresh: () => void;
 }
 
-const EMPTY = { held: [], unreadableChains: [], native: [], stables: [] };
+const EMPTY = { held: [], unreadableChains: [], native: [], stables: [], ondo: [], gold: [] };
 
 // Slower than the Solana balance poll. One scan sweeps every chain Trustware
 // can see, so it is a far heavier call than reading a few token accounts, and
@@ -41,7 +52,12 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
   const { address: evmAddress } = useEmbeddedEvmWallet();
   const [data, setData] = useState<{
     key: string;
-    scan: EquivalentBalances & { native: NativeHolding[]; stables: StableHolding[] };
+    scan: EquivalentBalances & {
+      native: NativeHolding[];
+      stables: StableHolding[];
+      ondo: OndoWalletHolding[];
+      gold: GoldHolding[];
+    };
     prices: Record<string, number>;
     error: string | null;
   } | null>(null);
@@ -81,6 +97,8 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
       let scan = EMPTY as EquivalentBalances & {
         native: NativeHolding[];
         stables: StableHolding[];
+        ondo: OndoWalletHolding[];
+        gold: GoldHolding[];
       };
       let error: string | null = null;
       if (scanRes.status === "fulfilled") {
@@ -119,6 +137,8 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
     unreadableChains: current?.scan.unreadableChains ?? [],
     native: current?.scan.native ?? [],
     stables: current?.scan.stables ?? [],
+    ondo: current?.scan.ondo ?? [],
+    gold: current?.scan.gold ?? [],
     nativePrices: current?.prices ?? {},
     loading: Boolean(addressKey) && current === null,
     error: current?.error ?? null,

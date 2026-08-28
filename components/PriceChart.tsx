@@ -36,9 +36,19 @@ export interface PriceChartMarker {
 export function PriceChart({
   ticker,
   marker,
+  // Tailwind height class for the plot area. Defaults to the compact size the
+  // dashboard cards use; an expanded row passes something taller, since the
+  // point of drilling in is to actually read the chart.
+  heightClass = "h-32",
+  // Drop the name/price/change heading. Set where the surrounding view already
+  // names the asset and shows its price, so the chart does not restate both a
+  // second time with a slightly different number.
+  showHeading = true,
 }: {
   ticker: XStock;
   marker?: PriceChartMarker;
+  heightClass?: string;
+  showHeading?: boolean;
 }) {
   const [range, setRange] = useState<Range>("1D");
   const [candles, setCandles] = useState<OhlcCandle[] | null>(null);
@@ -107,37 +117,44 @@ export function PriceChart({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-            {ticker.symbol} price
-          </div>
-          <div className="mt-1 flex items-baseline gap-3">
-            <span className="font-mono text-2xl font-light tracking-tight text-white tabular-nums">
-              {last != null ? `$${formatPrice(last)}` : "—"}
-            </span>
-            {change != null && (
-              <span
-                className={`font-mono text-xs tabular-nums ${
-                  positive ? "text-aeras-positive" : "text-aeras-negative"
-                }`}
-              >
-                {positive ? "+" : ""}
-                {change.toFixed(2)}% · {range}
+      <div
+        className={`flex items-baseline ${
+          showHeading ? "justify-between" : "justify-end"
+        }`}
+      >
+        {showHeading && (
+          <div>
+            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+              {ticker.name} price
+            </div>
+            <div className="mt-1 flex items-baseline gap-3">
+              <span className="font-mono text-2xl font-light tracking-tight text-white tabular-nums">
+                {last != null ? `$${formatPrice(last)}` : "—"}
               </span>
-            )}
+              {change != null && (
+                <span
+                  className={`font-mono text-xs tabular-nums ${
+                    positive ? "text-aeras-positive" : "text-aeras-negative"
+                  }`}
+                >
+                  {positive ? "+" : ""}
+                  {change.toFixed(2)}% · {range}
+                </span>
+              )}
+            </div>
           </div>
-        </div>
-        <div className="flex gap-0.5 rounded-lg border border-white/10 p-0.5">
+        )}
+        {/* Plain text rather than a bordered pill group: at four options the
+            container and the filled active state read as a control panel above
+            the chart instead of a range switch. */}
+        <div className="flex gap-3 text-xs font-medium">
           {RANGES.map((r) => (
             <button
               key={r}
               type="button"
               onClick={() => setRange(r)}
-              className={`rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                r === range
-                  ? "bg-aeras-blue text-white"
-                  : "text-white/50 hover:text-white"
+              className={`tabular-nums transition-colors ${
+                r === range ? "text-white" : "text-white/35 hover:text-white/70"
               }`}
             >
               {r}
@@ -146,7 +163,7 @@ export function PriceChart({
         </div>
       </div>
 
-      <div className="h-32 w-full">
+      <div className={`${heightClass} w-full`}>
         {error ? (
           <div className="flex h-full flex-col items-center justify-center px-4 text-center">
             <span className="text-xs font-medium text-white/60">
@@ -235,11 +252,14 @@ function ChartTooltip({
   if (!active || !payload || payload.length === 0) return null;
   const c = payload[0].payload;
   return (
-    <div className="rounded-md border border-aeras-border dark:border-white/10 bg-white dark:bg-white/5 px-2 py-1.5 text-xs shadow-sm">
-      <div className="font-mono tabular-nums text-aeras-900 dark:text-white">
+    // Opaque rather than a translucent glass fill: this floats over the plot
+    // area, so a see-through panel would let the chart line read through the
+    // price it is labelling.
+    <div className="rounded-md border border-white/10 bg-aeras-hero-from px-2 py-1.5 text-xs shadow-sm">
+      <div className="font-mono tabular-nums text-white">
         ${formatPrice(c.c)}
       </div>
-      <div className="text-aeras-300 dark:text-white/50">
+      <div className="text-white/50">
         {new Date(c.t * 1000).toLocaleString()}
       </div>
     </div>

@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { AmountField } from "@/components/AmountField";
 import {
   LAMPORTS_PER_SOL,
   SOLSCAN_TX_BASE,
@@ -42,16 +43,26 @@ export function SwapForm({
   prices,
   balances,
   onBalanceChange,
+  modeToggle,
+  autoFocus = false,
 }: {
   ticker: XStock;
   walletAddress: string;
   prices: JupiterPriceMap | null;
   balances: AccountBalances | null;
   onBalanceChange: () => void;
+  // Market/limit switch, rendered beside buy/sell rather than in a row of its
+  // own. Owned by AssetTradePanel, which is what the switch actually controls.
+  modeToggle?: ReactNode;
+  autoFocus?: boolean;
 }) {
   const [direction, setDirection] = useState<Direction>("buy");
   const [quoteAsset, setQuoteAsset] = useState<QuoteAsset>("USDC");
-  const [amountInput, setAmountInput] = useState("5");
+  // Starts empty, showing a placeholder zero under a blinking caret. A seeded
+  // default saves nobody a keystroke: it has to be cleared before any other
+  // figure can be typed, and it puts a number on screen the user did not
+  // choose.
+  const [amountInput, setAmountInput] = useState("");
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const signTxBase64 = useSignSolanaTxBase64();
 
@@ -100,21 +111,11 @@ export function SwapForm({
       : 0.05;
 
   useEffect(() => {
+    // Clear whenever the input asset changes: an amount typed in USDC means
+    // nothing once the field is denominated in SOL or in the stock itself, and
+    // a quote fetched for the old pair is no longer the one on offer.
+    setAmountInput("");
     setStatus({ kind: "idle" });
-  }, [ticker.mint, direction]);
-
-  useEffect(() => {
-    // Reset the input to ~the minimum whenever the input asset changes.
-    const defaultAmount = inputPriceUsd
-      ? (ULTRA_MIN_USD / inputPriceUsd) * 1.02
-      : isBuy && quoteAsset === "USDC"
-        ? ULTRA_MIN_USD
-        : 0.06;
-    const decimals = inputSymbol === "USDC" ? 2 : 4;
-    setAmountInput(defaultAmount.toFixed(decimals));
-    setStatus({ kind: "idle" });
-    // Re-init only when the input asset identity changes, not on price ticks.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [direction, quoteAsset, ticker.mint]);
 
   const inputAmount = Number(amountInput);
@@ -186,49 +187,92 @@ export function SwapForm({
 
   const inputAmountFmtDigits = inputSymbol === "USDC" ? 2 : inputSymbol === "SOL" ? 4 : 4;
 
+  // Nothing under the amount unless the amount is actually a problem. The
+  // minimum used to be stated at rest, where it told a user something they had
+  // not done wrong yet; it now appears only once a figure is typed under it.
+  const typedAmount = amountInput !== "" && inputAmount > 0;
+  const amountNote = insufficient
+    ? `Not enough ${inputSymbol}. You have ${inputBalance?.toFixed(inputAmountFmtDigits)}.`
+    : typedAmount && belowMin
+      ? `Minimum ~${minInputAmount.toFixed(inputAmountFmtDigits)} ${inputSymbol}.`
+      : null;
+
+  // Which of USDC or SOL the trade is denominated in. On a buy this is the
+  // unit of the figure being typed, so it renders as that unit; on a sell the
+  // figure is in the xStock and this is the payout, which sits lower down.
+  const quoteToggle = (
+    <div className="inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
+      {(["USDC", "SOL"] as QuoteAsset[]).map((a) => (
+        <button
+          key={a}
+          type="button"
+          onClick={() => setQuoteAsset(a)}
+          className={`rounded-md px-2 py-0.5 font-medium transition-colors ${
+            quoteAsset === a
+              ? "bg-white/10 text-white"
+              : "text-white/50 hover:text-white"
+          }`}
+        >
+          {a}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-xs font-medium uppercase tracking-wide text-white/50">
-            {isBuy ? "Buying" : "Selling"}
-          </div>
-          <div className="mt-1 text-base font-medium text-white">
-            {ticker.symbol}{" "}
-            <span className="text-white/50">· {ticker.name}</span>
-          </div>
-        </div>
-        <div className="inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
-          {(["buy", "sell"] as Direction[]).map((d) => (
-            <button
-              key={d}
-              type="button"
-              onClick={() => setDirection(d)}
-              className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                direction === d
-                  ? "bg-aeras-blue text-white"
-                  : "text-white/60 hover:text-white"
-              }`}
-            >
-              {d === "buy" ? "Buy" : "Sell"}
-            </button>
-          ))}
-        </div>
-      </div>
+      {/* No asset identity here. Both places this form renders (the Home detail
+          and the Markets row expansion) already name the asset directly above
+          it, so repeating it was the same line twice on one screen.
 
+          Direction and mode sit on the amount's own row rather than in a strip
+          above it, so the ticket opens on the figure instead of on two rows of
+          controls. They wrap underneath when the panel is too narrow. */}
       <div>
-        <div className="mb-1 flex items-baseline justify-between">
-          <label
-            htmlFor="amount"
-            className="text-xs font-medium uppercase tracking-wide text-white/50"
-          >
-            {isBuy ? "Pay with" : "Receive in"}
-          </label>
-          <span className="text-xs text-white/50">
-            {isBuy ? "Balance: " : "Sending: "}
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3">
+          <AmountField
+            id="amount"
+            ariaLabel={`Amount to ${direction} in ${inputSymbol}`}
+            autoFocus={autoFocus}
+            value={amountInput}
+            onChange={(v) => {
+              setAmountInput(v);
+              reset();
+            }}
+            unit={
+              isBuy ? (
+                quoteToggle
+              ) : (
+                <span className="text-sm text-white/40">{inputSymbol}</span>
+              )
+            }
+          />
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
+              {(["buy", "sell"] as Direction[]).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setDirection(d)}
+                  className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                    direction === d
+                      ? "bg-aeras-blue text-white"
+                      : "text-white/60 hover:text-white"
+                  }`}
+                >
+                  {d === "buy" ? "Buy" : "Sell"}
+                </button>
+              ))}
+            </div>
+            {modeToggle}
+          </div>
+        </div>
+
+        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-white/40">
+          <span>
             {inputBalance == null
               ? "..."
-              : `${inputBalance.toFixed(inputAmountFmtDigits)} ${inputSymbol}`}
+              : `${inputBalance.toFixed(inputAmountFmtDigits)} ${inputSymbol} available`}
             {inputBalanceExact != null && Number(inputBalanceExact) > 0 && (
               <button
                 type="button"
@@ -236,52 +280,23 @@ export function SwapForm({
                   setAmountInput(inputBalanceExact);
                   reset();
                 }}
-                className="ml-1 text-white/60 underline-offset-2 hover:underline"
+                className="ml-1.5 text-white/60 underline-offset-2 hover:text-white hover:underline"
               >
                 Max
               </button>
             )}
           </span>
+          {!isBuy && (
+            <span className="flex items-center gap-1.5">
+              Receive in
+              {quoteToggle}
+            </span>
+          )}
         </div>
-        <div className="mb-2 inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
-          {(["USDC", "SOL"] as QuoteAsset[]).map((a) => (
-            <button
-              key={a}
-              type="button"
-              onClick={() => setQuoteAsset(a)}
-              className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                quoteAsset === a
-                  ? "bg-aeras-blue text-white"
-                  : "text-white/60 hover:text-white"
-              }`}
-            >
-              {a}
-            </button>
-          ))}
-        </div>
-        <div className="relative">
-          <input
-            id="amount"
-            type="number"
-            inputMode="decimal"
-            min={isBuy ? minInputAmount : 0}
-            step={inputSymbol === "USDC" ? "0.01" : "0.001"}
-            value={amountInput}
-            onChange={(e) => {
-              setAmountInput(e.target.value);
-              reset();
-            }}
-            className="block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 pr-16 text-sm text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none"
-          />
-          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-white/50">
-            {inputSymbol}
-          </span>
-        </div>
-        <p className="mt-1 text-xs text-white/50">
-          {insufficient
-            ? `Insufficient ${inputSymbol}. Need ${inputAmount}, have ${inputBalanceExact}.`
-            : `Minimum ~${minInputAmount.toFixed(inputAmountFmtDigits)} ${inputSymbol} ($${ULTRA_MIN_USD} gasless minimum).`}
-        </p>
+
+        {amountNote && (
+          <p className="mt-2 text-xs text-aeras-negative">{amountNote}</p>
+        )}
       </div>
 
       {status.kind === "quoted" && (

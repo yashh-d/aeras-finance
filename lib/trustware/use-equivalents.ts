@@ -12,10 +12,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
-import { fetchEquivalentBalancesViaProxy } from "./client";
-import type { EquivalentBalances } from "./balances";
+import {
+  fetchEquivalentBalancesViaProxy,
+  type EquivalentBalancesPayload,
+} from "./client";
 
-export interface EquivalentBalancesState extends EquivalentBalances {
+export interface EquivalentBalancesState extends EquivalentBalancesPayload {
   loading: boolean;
   // Set when the scan itself failed, as opposed to individual chains being
   // unreadable (which is what unreadableChains carries).
@@ -24,13 +26,17 @@ export interface EquivalentBalancesState extends EquivalentBalances {
   refresh: () => void;
 }
 
-const EMPTY: EquivalentBalances = { held: [], unreadableChains: [] };
+const EMPTY: EquivalentBalancesPayload = {
+  held: [],
+  unreadableChains: [],
+  gold: [],
+};
 
 interface ScanResult {
   // Which address pair (and refresh generation) this result belongs to. Results
   // for a stale key are ignored rather than shown against the wrong wallet.
   key: string;
-  balances: EquivalentBalances;
+  balances: EquivalentBalancesPayload;
   error: string | null;
 }
 

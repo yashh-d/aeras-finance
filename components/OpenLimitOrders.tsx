@@ -18,12 +18,17 @@ export function OpenLimitOrders({
   auth,
   refreshKey,
   onChanged,
+  showWhenEmpty,
 }: {
   ticker: XStock;
   auth: TriggerAuth;
   // Bump to force a refetch (e.g. after a new order is placed).
   refreshKey: number;
   onChanged: () => void;
+  // Whether to keep the heading and its sign-in prompt on screen when there is
+  // nothing to list. False on the market ticket, where a heading over a line
+  // asking the user to sign in is two rows about orders they have not placed.
+  showWhenEmpty: boolean;
 }) {
   const { ensureToken, peekToken, reset: resetAuth } = auth;
   const signTxBase64 = useSignSolanaTxBase64();
@@ -86,17 +91,22 @@ export function OpenLimitOrders({
     }
   }
 
+  // Nothing loaded and nothing to say: take up no room at all.
+  if (!showWhenEmpty && !error && (orders == null || orders.length === 0)) {
+    return null;
+  }
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300 dark:text-white/50">
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Open limit orders
         </div>
         <button
           type="button"
           onClick={() => load(true)}
           disabled={loading}
-          className="text-xs text-aeras-500 dark:text-white/60 underline-offset-2 hover:text-aeras-900 dark:hover:text-white hover:underline disabled:opacity-50"
+          className="text-xs text-white/60 underline-offset-2 hover:text-white hover:underline disabled:opacity-50"
         >
           {loading ? "Loading…" : orders == null ? "Show" : "Refresh"}
         </button>
@@ -106,14 +116,14 @@ export function OpenLimitOrders({
 
       {orders == null ? (
         !error && (
-          <p className="text-xs text-aeras-300 dark:text-white/50">
+          <p className="text-xs text-white/50">
             Sign in to view your open limit orders for {ticker.symbol}.
           </p>
         )
       ) : orders.length === 0 ? (
-        <p className="text-xs text-aeras-300 dark:text-white/50">No open limit orders.</p>
+        <p className="text-xs text-white/50">No open limit orders.</p>
       ) : (
-        <div className="divide-y divide-aeras-border dark:divide-white/10 rounded-lg border border-aeras-border dark:border-white/10">
+        <div className="divide-y divide-white/10 rounded-lg border border-white/10">
           {orders.map((o) => (
             <OrderRow
               key={o.id}
@@ -156,11 +166,11 @@ function OrderRow({
           >
             {isBuy ? "Buy" : "Sell"}
           </span>
-          <span className="font-mono tabular-nums text-aeras-900 dark:text-white">
+          <span className="font-mono tabular-nums text-white">
             {amount.toFixed(isBuy ? 2 : 4)} {amountSymbol}
           </span>
         </div>
-        <div className="text-[11px] text-aeras-300 dark:text-white/50">
+        <div className="text-[11px] text-white/50">
           {order.triggerCondition === "below" ? "≤" : "≥"} $
           {order.triggerPriceUsd.toFixed(2)} · {order.orderState}
         </div>
@@ -169,7 +179,7 @@ function OrderRow({
         type="button"
         onClick={onCancel}
         disabled={cancelling}
-        className="rounded-lg border border-aeras-border dark:border-white/10 px-2.5 py-1 text-xs font-medium text-aeras-500 dark:text-white/60 transition-colors hover:bg-aeras-surface dark:hover:bg-white/5 disabled:opacity-50"
+        className="rounded-lg border border-white/10 px-2.5 py-1 text-xs font-medium text-white/60 transition-colors hover:bg-white/5 disabled:opacity-50"
       >
         {cancelling ? "Cancelling…" : "Cancel"}
       </button>

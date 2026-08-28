@@ -41,9 +41,19 @@ export interface BuildSendResult {
 
 export function getProgramIdForMint(mint: string): PublicKey {
   // USDC and other legacy SPL tokens use TOKEN_PROGRAM_ID.
-  // xStocks (Backed Finance) use Token-2022.
   if (mint === USDC_MINT) return TOKEN_PROGRAM_ID;
-  if (xstockByMint(mint)) return TOKEN_2022_PROGRAM_ID;
+  // Catalog assets carry their own program. This used to return Token-2022 for
+  // anything in the catalog, which was true while every entry was a Backed
+  // xStock and became false when the gold tokens landed: PAXG is Token-2022 and
+  // XAUt0 is classic SPL. Deriving the wrong program produces a valid-looking
+  // ATA address that holds nothing, so a send would fail on a balance the user
+  // can see in the wallet.
+  const asset = xstockByMint(mint);
+  if (asset) {
+    return asset.tokenProgram === "token-2022"
+      ? TOKEN_2022_PROGRAM_ID
+      : TOKEN_PROGRAM_ID;
+  }
   // Default to legacy if we don't recognize the mint.
   return TOKEN_PROGRAM_ID;
 }

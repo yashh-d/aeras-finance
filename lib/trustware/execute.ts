@@ -417,6 +417,14 @@ export async function executeEvmRoute(args: {
 // `supportedChains`, so an undeclared chain fails here rather than silently
 // signing on the wrong network, and the chainId read-back on the fresh
 // provider is the final guard before anything is signed.
+// Exported because reads need it too, not only signing. Anything that wants to
+// eth_call against a specific chain has to go through the same switch: a
+// provider bound to Monad answers a Ethereum balanceOf with whatever that
+// address holds on Monad, silently and wrongly. One implementation of this
+// exists on purpose; the failure mode it guards is subtle enough that a second
+// copy would drift.
+export { connectChain as connectEvmChain };
+
 async function connectChain(
   evm: EvmSigner,
   chain: string,

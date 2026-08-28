@@ -13,6 +13,8 @@ import { MarketHeader } from "@/components/MarketHeader";
 import { fetchOndoCatalog } from "@/lib/ondo/client";
 import type { OndoMarket } from "@/lib/ondo/types";
 
+import { GLASS_SURFACE } from "@/lib/ui/surface";
+
 export function OndoMarketsCard() {
   const [markets, setMarkets] = useState<OndoMarket[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -55,7 +57,7 @@ export function OndoMarketsCard() {
   }, [markets, selectedId]);
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-gradient-to-br from-aeras-hero-from to-aeras-hero-to p-5 lg:p-6">
+    <div className={`${GLASS_SURFACE} p-5 lg:p-6`}>
       <div className="flex items-baseline justify-between">
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Ondo perps

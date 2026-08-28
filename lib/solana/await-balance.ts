@@ -13,10 +13,7 @@
 // user's money and still worth depositing.
 
 import { PublicKey } from "@solana/web3.js";
-import {
-  TOKEN_2022_PROGRAM_ID,
-  getAssociatedTokenAddressSync,
-} from "@solana/spl-token";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 
 import { getConnection } from "./balances";
 
@@ -27,9 +24,14 @@ export async function awaitTokenBalance(args: {
   owner: string;
   // Stop as soon as the account holds at least this much, in atomic units.
   atLeastAtomic: string;
-  // Token program the ATA is derived under. Defaults to Token-2022 (xStocks);
-  // classic SPL mints like USDC pass TOKEN_PROGRAM_ID.
-  programId?: PublicKey;
+  // Token program the ATA is derived under. REQUIRED, with history: this used
+  // to default to Token-2022, and a caller watching USDC (classic SPL) relied
+  // on it. The wrong program derives an account that does not exist, which
+  // reads as a zero balance rather than as an error, so the watcher ran its
+  // full timeout on every call and an entire flow was blamed for it. The
+  // catalog is not uniform either way (xStocks are Token-2022, USDC and XAUt0
+  // are classic, PAXG is Token-2022), so there is no safe default to have.
+  programId: PublicKey;
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<string> {
@@ -40,7 +42,7 @@ export async function awaitTokenBalance(args: {
     new PublicKey(mint),
     new PublicKey(owner),
     false,
-    args.programId ?? TOKEN_2022_PROGRAM_ID,
+    args.programId,
   );
 
   const deadline = Date.now() + timeoutMs;

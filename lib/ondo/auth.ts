@@ -2,6 +2,8 @@
 
 import type { EIP1193Provider } from "@privy-io/react-auth";
 
+import type { OndoAuthFailure } from "./errors";
+
 // Signing in to Ondo Perps from the browser.
 //
 // Three steps, one signature, and the JWT never comes back to this side: our
@@ -139,6 +141,26 @@ async function personalSign(
   return signature;
 }
 
+// Carries the classification the route worked out, so a caller can tell a
+// refusal that will never succeed from one worth offering a retry on. Without
+// this the UI can only show the text and keep presenting a Sign in button that
+// cannot work. See lib/ondo/errors.ts.
+export class OndoAuthError extends Error {
+  readonly failure: OndoAuthFailure;
+  readonly code: string | undefined;
+
+  constructor(message: string, failure: OndoAuthFailure, code?: string) {
+    super(message);
+    this.name = "OndoAuthError";
+    this.failure = failure;
+    this.code = code;
+  }
+}
+
+export function isOndoUnavailable(err: unknown): boolean {
+  return err instanceof OndoAuthError && err.failure === "unavailable";
+}
+
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
@@ -146,9 +168,17 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
 
-  const parsed = (await res.json()) as T & { error?: string };
+  const parsed = (await res.json()) as T & {
+    error?: string;
+    failure?: OndoAuthFailure;
+    code?: string;
+  };
   if (!res.ok) {
-    throw new Error(parsed.error ?? `${path} failed: ${res.status}`);
+    throw new OndoAuthError(
+      parsed.error ?? `${path} failed: ${res.status}`,
+      parsed.failure ?? "upstream",
+      parsed.code,
+    );
   }
   return parsed;
 }

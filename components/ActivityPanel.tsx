@@ -8,6 +8,7 @@ import {
   type ActivityKind,
 } from "@/lib/solana/activity";
 import { getConnection } from "@/lib/solana/balances";
+import { GLASS_SURFACE } from "@/lib/ui/surface";
 
 // Slow background poll: each refresh fans out into getSignaturesForAddress plus
 // per-tx parsing for the page, which is what tripped the RPC's 413 "Too many
@@ -60,10 +61,10 @@ export function ActivityPanel({ walletAddress }: { walletAddress: string }) {
       <div className="space-y-1.5">
         <div className="flex items-baseline justify-between">
           <div>
-            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-aeras-300 dark:text-white/50">
+            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
               Activity
             </div>
-            <h2 className="font-light text-2xl tracking-tight text-aeras-900 dark:text-white">
+            <h2 className="font-light text-2xl tracking-tight text-white">
               Recent on-chain activity
             </h2>
           </div>
@@ -71,33 +72,33 @@ export function ActivityPanel({ walletAddress }: { walletAddress: string }) {
             type="button"
             onClick={() => refresh()}
             disabled={refreshing}
-            className="text-xs text-aeras-300 dark:text-white/50 underline-offset-2 hover:text-aeras-900 dark:hover:text-white hover:underline disabled:opacity-50"
+            className="text-xs text-white/50 underline-offset-2 hover:text-white hover:underline disabled:opacity-50"
           >
             {refreshing ? "Refreshing…" : "Refresh"}
           </button>
         </div>
-        <p className="text-sm text-aeras-300 dark:text-white/50">
+        <p className="text-sm text-white/50">
           Latest {PAGE_SIZE} signatures for your wallet. Reads from the same RPC
           as your balances. Use the Solscan link to see the full transaction.
         </p>
       </div>
 
-      <div className="rounded-2xl border border-aeras-border dark:border-white/10 bg-white dark:bg-gradient-to-br dark:from-aeras-hero-from dark:to-aeras-hero-to">
+      <div className={GLASS_SURFACE}>
         {error && (
-          <div className="border-b border-aeras-border dark:border-white/10 bg-aeras-surface dark:bg-white/5 px-5 py-3 text-xs text-aeras-500 dark:text-white/60">
+          <div className="border-b border-white/10 bg-white/5 px-5 py-3 text-xs text-white/60">
             Activity fetch interrupted. {error}
           </div>
         )}
         {entries == null ? (
-          <div className="px-5 py-10 text-center text-sm text-aeras-300 dark:text-white/50">
+          <div className="px-5 py-10 text-center text-sm text-white/50">
             Loading…
           </div>
         ) : entries.length === 0 ? (
-          <div className="px-5 py-10 text-center text-sm text-aeras-300 dark:text-white/50">
+          <div className="px-5 py-10 text-center text-sm text-white/50">
             No transactions yet for this wallet.
           </div>
         ) : (
-          <ul className="divide-y divide-aeras-border dark:divide-white/10">
+          <ul className="divide-y divide-white/10">
             {entries.map((e) => (
               <ActivityRow key={e.signature} entry={e} />
             ))}
@@ -118,16 +119,16 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
       </div>
       <div className="col-span-4 min-w-0">
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-medium tracking-tight text-aeras-900 dark:text-white">
+          <span className="text-sm font-medium tracking-tight text-white">
             {label}
           </span>
           {!succeeded && (
-            <span className="rounded-md bg-aeras-surface dark:bg-white/5 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-negative">
+            <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-negative">
               Failed
             </span>
           )}
         </div>
-        <div className="font-mono text-[11px] text-aeras-300 dark:text-white/50 truncate">
+        <div className="font-mono text-[11px] text-white/50 truncate">
           {signature.slice(0, 8)}…{signature.slice(-6)}
         </div>
       </div>
@@ -135,7 +136,7 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
         <DeltaList deltas={deltas} />
       </div>
       <div className="col-span-2 text-right">
-        <div className="text-xs text-aeras-300 dark:text-white/50">{formatTime(blockTime)}</div>
+        <div className="text-xs text-white/50">{formatTime(blockTime)}</div>
         <a
           href={`${SOLSCAN_TX_BASE}${signature}`}
           target="_blank"
@@ -151,7 +152,7 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
 
 function DeltaList({ deltas }: { deltas: ActivityEntry["deltas"] }) {
   if (deltas.length === 0) {
-    return <span className="font-mono text-[11px] text-aeras-300 dark:text-white/50">—</span>;
+    return <span className="font-mono text-[11px] text-white/50">—</span>;
   }
   return (
     <div className="space-y-0.5">
@@ -170,7 +171,7 @@ function DeltaList({ deltas }: { deltas: ActivityEntry["deltas"] }) {
         );
       })}
       {deltas.length > 3 && (
-        <div className="text-[11px] text-aeras-300 dark:text-white/50">
+        <div className="text-[11px] text-white/50">
           +{deltas.length - 3} more
         </div>
       )}
@@ -187,7 +188,7 @@ function KindIcon({
 }) {
   const bg = succeeded
     ? KIND_STYLE[kind].bg
-    : "bg-aeras-surface dark:bg-white/5 text-aeras-300 dark:text-white/50";
+    : "bg-white/5 text-white/50";
   return (
     <span
       className={`inline-flex size-7 items-center justify-center rounded-full text-xs font-medium ${bg}`}
@@ -207,11 +208,11 @@ const KIND_LABEL: Record<ActivityKind, string> = {
 };
 
 const KIND_STYLE: Record<ActivityKind, { bg: string; glyph: string }> = {
-  swap: { bg: "bg-aeras-blue-wash dark:bg-aeras-blue/20 text-aeras-blue-medium", glyph: "⇄" },
-  send: { bg: "bg-aeras-surface dark:bg-white/5 text-aeras-negative", glyph: "↑" },
-  receive: { bg: "bg-aeras-surface dark:bg-white/5 text-aeras-positive", glyph: "↓" },
-  borrow: { bg: "bg-aeras-blue-wash dark:bg-aeras-blue/20 text-aeras-blue-medium", glyph: "$" },
-  other: { bg: "bg-aeras-surface dark:bg-white/5 text-aeras-500 dark:text-white/60", glyph: "•" },
+  swap: { bg: "bg-aeras-blue/20 text-aeras-blue-medium", glyph: "⇄" },
+  send: { bg: "bg-white/5 text-aeras-negative", glyph: "↑" },
+  receive: { bg: "bg-white/5 text-aeras-positive", glyph: "↓" },
+  borrow: { bg: "bg-aeras-blue/20 text-aeras-blue-medium", glyph: "$" },
+  other: { bg: "bg-white/5 text-white/60", glyph: "•" },
 };
 
 function formatAmount(n: number): string {

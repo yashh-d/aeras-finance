@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { ondoGetChallenge } from "@/lib/ondo/server";
+import { describeOndoAuthError } from "@/lib/ondo/errors";
+import { OndoApiError, ondoGetChallenge } from "@/lib/ondo/server";
 
 export const dynamic = "force-dynamic";
 
@@ -39,8 +40,19 @@ export async function POST(request: Request) {
     const challenge = await ondoGetChallenge(walletAddress);
     return NextResponse.json(challenge);
   } catch (err) {
+    // A refusal here is not a bad gateway. Ondo answered correctly and said no,
+    // and `forbidden_country` in particular is terminal rather than transient,
+    // so the client needs to know to stop offering sign-in rather than show a
+    // retry button that cannot work. See lib/ondo/errors.ts.
+    if (err instanceof OndoApiError) {
+      const described = describeOndoAuthError(err.code, err.message);
+      return NextResponse.json(
+        { error: described.message, failure: described.failure, code: described.code },
+        { status: described.status },
+      );
+    }
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : String(err) },
+      { error: err instanceof Error ? err.message : String(err), failure: "upstream" },
       { status: 502 },
     );
   }
