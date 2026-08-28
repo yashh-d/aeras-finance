@@ -162,11 +162,8 @@ export function BorrowPanel({
         availableUsd={summary.availableUsd}
         loading={summary.loading}
         onAddFunds={onAddFunds}
-        onRepay={
-          summary.positions.length > 0
-            ? () => setRepayOpen((open) => !open)
-            : undefined
-        }
+        onRepay={() => setRepayOpen((open) => !open)}
+        hasDebt={summary.positions.length > 0}
       />
 
       {repayOpen && (
@@ -306,15 +303,17 @@ function BorrowSummaryHero({
   loading,
   onAddFunds,
   onRepay,
+  hasDebt = false,
 }: {
   debtUsd: number;
   capacityUsd: number;
   availableUsd: number;
   loading: boolean;
   onAddFunds?: () => void;
-  // Absent when nothing is owed, so the button only appears next to Add funds
-  // once there is a loan to pay down.
   onRepay?: () => void;
+  // Whether there is actually a loan to pay down. Repay renders either way, so
+  // the action is always discoverable; this only decides whether it is live.
+  hasDebt?: boolean;
 }) {
   const utilisationPct =
     capacityUsd > 0 ? Math.min(100, (debtUsd / capacityUsd) * 100) : 0;
@@ -351,28 +350,35 @@ function BorrowSummaryHero({
         </div>
       </div>
 
-      {(onAddFunds || onRepay) && (
-        <div className="flex flex-wrap items-center gap-3">
-          {onAddFunds && (
-            <button
-              type="button"
-              onClick={onAddFunds}
-              className="rounded-full bg-aeras-blue px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium"
-            >
-              Add funds
-            </button>
-          )}
-          {onRepay && (
-            <button
-              type="button"
-              onClick={onRepay}
-              className="rounded-full border border-white/15 bg-white/5 px-6 py-2.5 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/10"
-            >
-              Repay
-            </button>
-          )}
-        </div>
-      )}
+      <div className="flex flex-wrap items-center gap-3">
+        {onAddFunds && (
+          <button
+            type="button"
+            onClick={onAddFunds}
+            className="rounded-full bg-aeras-blue px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium"
+          >
+            Add funds
+          </button>
+        )}
+        {/* Repay is always rendered, and green.
+            It used to appear only once a position existed, so the way out of a
+            loan was invisible right up until you had one, and then arrived as a
+            quiet grey outline beside a solid Add funds. That put all the visual
+            encouragement on borrowing more. Paying down keeps a permanent slot
+            and the positive colour instead.
+            Disabled when nothing is owed, but never during the initial load:
+            positions arrive a beat after the page, and gating on them alone
+            made the button flick from dead to live on every visit. */}
+        <button
+          type="button"
+          onClick={onRepay}
+          disabled={!loading && !hasDebt}
+          title={!loading && !hasDebt ? "Nothing to repay yet" : undefined}
+          className="rounded-full bg-aeras-positive px-6 py-2.5 text-sm font-medium text-white transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Repay
+        </button>
+      </div>
     </div>
   );
 }

@@ -42,6 +42,12 @@ type RepayState =
   | { kind: "done"; signature: string }
   | { kind: "error"; message: string };
 
+// How close to the debt counts as paying it off. The debt is displayed to the
+// cent, and a repay that lands a fraction under it leaves dust that keeps the
+// position open and the collateral deposited. One cent is below the smallest
+// unit anyone can type, so nothing a user can express is misread as a payoff.
+const PAYOFF_EPSILON_UI = 0.01;
+
 export function RepayPanel({
   positions,
   walletUsdc,
@@ -184,7 +190,20 @@ function RepayForm({
   const combinedUsdc = sources.total;
   const maxRepayable = Math.min(debtUi, combinedUsdc);
   const overWallet = amount > combinedUsdc + 1e-9;
-  const overDebt = amount > debtUi + 1e-9;
+  // A payoff is not only "the user pressed Max". Repaying to within a cent of
+  // the debt leaves dust that keeps the position open and the collateral
+  // locked, which nobody wants, so it is treated as a payoff too.
+  //
+  // This matters because a payoff submits the SDK's max-repay SENTINEL, not the
+  // number in the field. The sentinel clears the exact on-chain balance,
+  // interest included. So the typed figure being a hair over a rounded display
+  // value is not a reason to block anything.
+  const isPayoff = payoffAll || (amount > 0 && amount >= debtUi - PAYOFF_EPSILON_UI);
+  // Only meaningful when this is genuinely a partial repay. Gating on the raw
+  // comparison disabled Repay the instant Max filled the field: the display
+  // rounds the debt up to the cent, so Max wrote a value a cent above the true
+  // debt and the panel rejected its own button.
+  const overDebt = !isPayoff && amount > debtUi + 1e-9;
   // The part the Solana USDC cannot cover, funded on submit. Monad
   // contributes first (it holds the bulk), SOL swaps for the remainder —
   // mirroring lib/borrow/fund-repay.ts so the copy matches what runs.
@@ -196,14 +215,21 @@ function RepayForm({
   const disabled = submitting || amount <= 0 || overWallet || overDebt;
   // A full payoff has to cover interest accrued between this read and the
   // signature, so it needs a little more in the wallet than the figure shown.
-  const shortForPayoff = payoffAll && combinedUsdc < debtUi * 1.001;
+  const shortForPayoff = isPayoff && combinedUsdc < debtUi * 1.001;
 
   function reset() {
     if (state.kind !== "idle") setState({ kind: "idle" });
   }
 
   function setAmount(next: number, atMax: boolean) {
-    setInput(next > 0 ? next.toFixed(2) : "");
+    // Truncate to the cent, never round. toFixed(2) rounds half-up, so a
+    // ceiling of 14.1249 was written into the field as "14.13", a cent MORE
+    // than the position owes. That disabled Repay on the Max path, and on the
+    // partial path it sent Jupiter Lend more than the debt, which the vault
+    // rejects outright with VAULT_EXCESS_DEBT_PAYBACK. Same discipline as
+    // lib/trustware/amounts.ts: never ask for more than is there.
+    const truncated = Math.floor(next * 100 + 1e-6) / 100;
+    setInput(truncated > 0 ? truncated.toFixed(2) : "");
     setPayoffAll(atMax);
     reset();
   }
@@ -215,7 +241,7 @@ function RepayForm({
       // sits on Monad. A full payoff targets a small margin over the shown
       // debt so the interest accrued while the bridge settles is covered.
       const walletAtLeastAtomic = BigInt(
-        Math.ceil((payoffAll ? debtUi * 1.002 : amount) * 1e6),
+        Math.ceil((isPayoff ? debtUi * 1.002 : amount) * 1e6),
       );
       if (walletAtLeastAtomic > BigInt(solanaUsdcAtomic || "0")) {
         await fundRepayUsdc({
@@ -248,7 +274,7 @@ function RepayForm({
         // including interest accrued in the meantime. A full payoff also passes
         // the withdraw sentinel, so the collateral returns to the wallet in the
         // same transaction instead of staying deposited with no loan behind it.
-        const sentinels = payoffAll ? await getMaxSentinels() : null;
+        const sentinels = isPayoff ? await getMaxSentinels() : null;
         ({ base64Tx } = await buildOperateTx({
           vaultId: vault.vaultId,
           positionId: nftId,
@@ -261,7 +287,7 @@ function RepayForm({
           signerAddress: walletAddress,
           connection,
         }));
-      } else if (payoffAll) {
+      } else if (isPayoff) {
         // Kamino has no atomic repay-and-withdraw, so a full payoff is two
         // transactions: clear the debt, then pull the collateral once nothing
         // is owed against it. The withdraw is built only after the repay
@@ -398,7 +424,7 @@ function RepayForm({
           <div className="flex justify-between">
             <span className="text-white/50">Debt after repay</span>
             <span className="font-mono tabular-nums text-white">
-              {payoffAll
+              {isPayoff
                 ? `0.00 ${position.debtSymbol}`
                 : `${Math.max(0, debtUi - amount).toFixed(2)} ${position.debtSymbol}`}
             </span>
