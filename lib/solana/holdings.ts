@@ -15,6 +15,8 @@ import { XSTOCKS } from "@/lib/jupiter/xstocks";
 import type { HeldEquivalent } from "@/lib/trustware/planner";
 import type { NativeHolding } from "@/lib/trustware/native";
 import { nativeUiAmount } from "@/lib/trustware/native";
+import type { StableHolding } from "@/lib/trustware/stables";
+import { stableUiAmount } from "@/lib/trustware/stables";
 import {
   ondoHoldingUiAmount,
   type OndoWalletHolding,
@@ -174,6 +176,13 @@ export function totalPortfolioUsd(
   // must pass them: a balance shown in the list and missing from the total is
   // the thing that makes someone ask where their money went.
   ondo: OndoWalletHolding[] = [],
+  // USDC held off Solana, from the same wallet scan the USDC row renders. It
+  // was missing here while being displayed there, so a wallet holding $29.90
+  // of Ethereum USDC showed it in the list and left it out of the total. That
+  // is the exact failure the note above warns about, and this is the second
+  // time it has happened, so it is a parameter rather than a lookup: every
+  // caller that renders these rows has to pass them.
+  stables: StableHolding[] = [],
 ): number | null {
   const solana = totalAccountUsd(balances, prices);
   if (solana == null) return null;
@@ -205,6 +214,14 @@ export function totalPortfolioUsd(
     const price = target ? prices?.[target.mint]?.usdPrice : undefined;
     if (!price) continue;
     total += ondoHoldingUiAmount(holding) * price;
+  }
+
+  // USDC is dollar denominated, so the balance is the USD figure. No price
+  // feed to miss and nothing to understate. Monad USDC is deliberately absent
+  // from this list and is added by the callers from their own read, so there
+  // is no double count.
+  for (const stable of stables) {
+    total += stableUiAmount(stable);
   }
 
   return total;

@@ -305,6 +305,11 @@ function SignedIn({
     walletScan.held,
     walletScan.native,
     walletScan.nativePrices,
+    // Both were missing, and both are rendered as rows by the wallet panel
+    // below. USDC withdrawn from Lighter lands on Ethereum and arrives in
+    // `stables`, so without it a withdrawal read as money vanishing.
+    walletScan.ondo,
+    walletScan.stables,
   );
   // Monad USDC at par, MON at the native price feed's rate (0 while the price
   // is loading, so the total can only understate, never invent value).
