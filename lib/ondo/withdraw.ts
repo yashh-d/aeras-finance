@@ -101,6 +101,14 @@ const RECONCILE_TOLERANCE = 0.05;
 // rather than to model a real minimum.
 const MIN_WITHDRAWAL_TOKENS = 1e-9;
 
+// What separates a holding from the arithmetic residue of having exited one.
+// See the filter above `holdings.sort` for why both bars exist and which
+// applies. Deliberately not MIN_WITHDRAWAL_TOKENS: that guards a submission,
+// this decides whether an asset is worth showing at all, and a row the card
+// renders as "0" is never worth showing.
+const DUST_USD = 0.01;
+const MIN_DISPLAY_TOKENS = 1e-8;
+
 // Deposit statuses that mean the tokens are credited and spendable.
 //
 // Ondo's published enum for a deposit is exactly `pending | confirmed`, which
@@ -461,8 +469,25 @@ export function buildWithdrawalView(args: {
     });
   }
 
-  // Largest first, so the asset a hedge is collateralized with leads.
-  holdings.sort((a, b) => (b.marketValueUsd ?? 0) - (a.marketValueUsd ?? 0));
+  // Largest first, so the asset a hedge is collateralized with leads, and
+  // residues dropped entirely.
+  //
+  // A ledger quantity is deposits minus withdrawals, so exiting an asset
+  // completely leaves a float residue rather than a clean zero. One live
+  // account kept a SPCXon row at well under a billionth of a token after a full
+  // exit; because every other row was zero too it sorted first, so the card
+  // opened on an asset the user did not hold, priced it at $0.00, and explained
+  // at length why Ondo credited it at "100% below mark". Nothing there was
+  // wrong, and all of it was noise.
+  //
+  // Judged on value where a mark exists, because that is the question actually
+  // being asked, and on displayable size where one does not.
+  const live = holdings.filter((h) =>
+    h.marketValueUsd !== null
+      ? h.marketValueUsd >= DUST_USD
+      : h.quantity >= MIN_DISPLAY_TOKENS,
+  );
+  live.sort((a, b) => (b.marketValueUsd ?? 0) - (a.marketValueUsd ?? 0));
 
   const registeredAddresses = args.addressBook.map((a) => a.toLowerCase());
   const limitRemainingUsd = args.limits
@@ -473,7 +498,7 @@ export function buildWithdrawalView(args: {
     : null;
 
   return {
-    holdings,
+    holdings: live,
     registeredAddresses,
     ownAddress: args.ownAddress,
     ownAddressRegistered: registeredAddresses.includes(args.ownAddress.toLowerCase()),

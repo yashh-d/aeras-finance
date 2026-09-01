@@ -114,10 +114,19 @@ export function buildOndoHedgeViews(input: {
     const resolved = resolveHedgeRoute(route, input.markets);
     const market = resolved?.market ?? null;
 
+    // Only collateral Ondo publishes as accepted margin, which is SPYon and
+    // QQQon. Their token config lists five more (CRCLon, SPCXon, SNDKon,
+    // GLDon, SLVon) and the route table maps all of them, so without the
+    // `documented` check this offered "post this holding as its own margin"
+    // for assets that would bridge and then credit nothing. The funding
+    // picker in margin-sources.ts applies the same filter; the two have to
+    // agree, or the hedge tab promises margin the Add form will not fund.
     const collateral =
       route.collateralSymbol === null
         ? null
-        : (input.collateral.find((c) => c.symbol === route.collateralSymbol) ?? null);
+        : (input.collateral.find(
+            (c) => c.symbol === route.collateralSymbol && c.documented,
+          ) ?? null);
 
     // What the holding would be worth as margin. Quantity is the whole holding,
     // not the hedged portion: the entire position is posted as collateral even

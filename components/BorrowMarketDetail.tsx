@@ -95,7 +95,7 @@ export function MarketDetailHeader({
 // The active-pill look, shared with the submit button that takes this slot so
 // the control does not change shape when it changes job.
 export const BORROW_PILL_CLASS =
-  "w-full rounded-full px-4 py-2.5 text-sm font-medium text-white transition-colors bg-aeras-blue hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-40";
+  "aeras-press w-full rounded-full px-4 py-2.5 text-sm font-medium text-white bg-aeras-blue hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-40";
 
 function ModeButton({
   label,
@@ -114,7 +114,7 @@ function ModeButton({
       onClick={onClick}
       disabled={disabled}
       aria-pressed={active}
-      className={`rounded-full px-4 py-2.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+      className={`aeras-press rounded-full px-4 py-2.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40 ${
         active
           ? "bg-aeras-blue text-white hover:bg-aeras-blue-medium"
           : "border border-white/15 bg-white/5 text-white/70 hover:border-white/25 hover:text-white"

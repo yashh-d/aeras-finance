@@ -24,7 +24,7 @@ import { useJupiterPrices } from "@/lib/jupiter/use-prices";
 import { useLighterBalance } from "@/lib/lighter/use-lighter-balance";
 import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
 import { totalPortfolioUsd } from "@/lib/solana/holdings";
-import { useWalletScan } from "@/lib/trustware/use-wallet-scan";
+import { useWalletScan, type WalletScan } from "@/lib/trustware/use-wallet-scan";
 import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 import {
@@ -537,6 +537,7 @@ function SignedIn({
           ) : activeSection === "markets" ? (
             <MarketsSection
               prices={prices}
+              scan={walletScan}
               pricesError={pricesError}
               balances={balances}
               walletAddress={walletAddress ?? null}
@@ -564,7 +565,15 @@ function SignedIn({
                 </p>
               </div>
 
-              {/* Top row on desktop: Wallet | Assets (3/4 cols) */}
+              {/* Top row on desktop: Wallet | Assets.
+                  Three columns split 1/2, so the asset list gets two thirds of
+                  the row. It briefly ran as five split 2/3 to line the seam up
+                  with the Chart | Borrow row below, which breaks at two fifths.
+                  That bought the alignment by taking 79px off the asset list
+                  (measured at a 1440px viewport, so a 1160px content column),
+                  and the list is what the row is for. The seam is back at a
+                  third, so the two rows break 79px apart rather than on the
+                  same line. Same figure either way: it is one seam moving. */}
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
                 <Card className="lg:col-span-1">
                   <WalletPanel
@@ -585,6 +594,7 @@ function SignedIn({
                       xstock={openAsset}
                       prices={prices}
                       balances={balances}
+                      scan={walletScan}
                       walletAddress={walletAddress}
                       auth={auth}
                       onRefresh={settleAll}
@@ -653,12 +663,15 @@ function MarketsSection({
   prices,
   pricesError,
   balances,
+  scan,
   walletAddress,
   onRefresh,
 }: {
   prices: JupiterPriceMap | null;
   pricesError: string | null;
   balances: AccountBalances | null;
+  // Forwarded to the buy ticket so off-Solana USDC can pay for a purchase.
+  scan: WalletScan;
   walletAddress: string | null;
   onRefresh: () => void;
 }) {
@@ -828,6 +841,7 @@ function MarketsSection({
                           xstock={x}
                           prices={prices}
                           balances={balances}
+                          scan={scan}
                           walletAddress={walletAddress}
                           auth={auth}
                           onRefresh={onRefresh}
@@ -1000,6 +1014,7 @@ function MarketsRowExpanded({
   xstock,
   prices,
   balances,
+  scan,
   walletAddress,
   auth,
   onRefresh,
@@ -1007,6 +1022,7 @@ function MarketsRowExpanded({
   xstock: XStock;
   prices: JupiterPriceMap | null;
   balances: AccountBalances | null;
+  scan: WalletScan;
   walletAddress: string | null;
   auth: ReturnType<typeof useTriggerAuth>;
   onRefresh: () => void;
@@ -1018,7 +1034,9 @@ function MarketsRowExpanded({
             draws it, and the trade panel beside it has no card either, so the
             grey box was the only thing on this row pretending to be a surface
             inside a row that is already inside one. */}
-        <PriceChart ticker={xstock} heightClass="h-72" />
+        {/* No logo in the heading: the row above this one already draws it, and
+            a second badge lands a few pixels under the first. */}
+        <PriceChart ticker={xstock} heightClass="h-72" showLogo={false} />
 
         <div className="space-y-4">
           {/* Opening a market is a decision to trade it, so the amount field
@@ -1030,6 +1048,7 @@ function MarketsRowExpanded({
             xstock={xstock}
             prices={prices}
             balances={balances}
+            scan={scan}
             walletAddress={walletAddress}
             auth={auth}
             onRefresh={onRefresh}
@@ -1048,6 +1067,7 @@ function HomeAssetDetail({
   xstock,
   prices,
   balances,
+  scan,
   walletAddress,
   auth,
   onRefresh,
@@ -1056,6 +1076,7 @@ function HomeAssetDetail({
   xstock: XStock;
   prices: JupiterPriceMap | null;
   balances: AccountBalances | null;
+  scan: WalletScan;
   walletAddress: string | undefined;
   auth: ReturnType<typeof useTriggerAuth>;
   onRefresh: () => void;
@@ -1115,6 +1136,7 @@ function HomeAssetDetail({
         xstock={xstock}
         prices={prices}
         balances={balances}
+        scan={scan}
         walletAddress={walletAddress ?? null}
         auth={auth}
         onRefresh={onRefresh}

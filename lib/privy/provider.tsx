@@ -36,7 +36,17 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
     <PrivyProvider
       appId={appId}
       config={{
-        loginMethods: ["email", "wallet"],
+        // This list only filters what the dashboard already enables, so Google
+        // must also be on as a login method for this app ID or the button does
+        // not render. Array order does not set UI order (the parameter that did
+        // that, loginMethodsAndOrder, is deprecated); Privy renders in dashboard
+        // order. Google is safe to add without touching the access gate because
+        // it links a verified email, which is the merge key for the users table:
+        // both app/app/page.tsx and extractEmail in lib/privy/auth.ts already
+        // read user.google.email. A social login that carries no email (X, for
+        // one) would instead land every such user on the "Add your email"
+        // prompt, so weigh that before adding one.
+        loginMethods: ["email", "google", "wallet"],
         appearance: {
           theme: "light",
           // Both chain types, so an EVM wallet (MetaMask and friends) can sign

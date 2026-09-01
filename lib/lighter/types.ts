@@ -109,8 +109,21 @@ export interface LighterMarket {
   baseInterestRate: string;
   // Empty string means the market never closes.
   tradingHours: string;
+  // BASE units, not dollars. Multiply by markPrice for the USD figure.
+  //
+  // Undocumented, so it was derived on 2026-08-31: daily_quote_token_volume
+  // equals daily_base_token_volume × mark_price to within 0.1% on every market
+  // sampled, which fixes daily_base_token_volume as base units, and
+  // open_interest sits on the same scale (SPY 5752 against 8205 of base volume,
+  // BTC 1989 against 8157). The resulting dollar figures are plausible too:
+  // $156M on BTC, $4.4M on SPY.
   openInterest: number;
+  // Already USD. The venue states it directly, so it is not derived.
   dailyQuoteVolume: number;
+  // PERCENT over 24 hours, not an absolute move: BTC reports 1.31 against a
+  // $78,000 mark. Signed, so the caller reads direction off it rather than
+  // comparing prices.
+  dailyPriceChange: number;
 }
 
 // A Lighter account, keyed by the L1 address that funded it. Provisioned by the

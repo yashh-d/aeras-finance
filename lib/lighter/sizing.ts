@@ -83,15 +83,11 @@ export type HedgeSizeLimit =
   | "below-min-notional"
   | "quote-limit";
 
-export interface HedgeSizeInput {
-  // Tokens of the xStock being hedged.
-  quantity: string;
-  // USD price of one token of that xStock, not of the perp. For a proxy route
-  // these differ by an order of magnitude.
-  tokenPriceUsd: string;
-  // Portion of the exposure to offset, 0 to 1.
-  hedgeRatio: number;
-  // Mark price of the perp being shorted.
+// The market's own constraints on an order. Every field is read straight off
+// LighterMarket, and every one of them differs per market: passing another
+// market's decimals or minimums is the failure mode this whole module exists to
+// prevent.
+export interface MarketLimits {
   marketPriceUsd: string;
   sizeDecimals: number;
   minBaseAmount: string;
@@ -99,7 +95,7 @@ export interface HedgeSizeInput {
   orderQuoteLimit: string;
 }
 
-export interface HedgeSize {
+export interface OrderSize {
   // Order size in the perp's own units, aligned to the market increment. "0"
   // means no order should be sent.
   size: string;
@@ -109,38 +105,28 @@ export interface HedgeSize {
   notionalUsd: string;
   // What we asked for before rounding and caps.
   targetNotionalUsd: string;
-  // Full value of the holding being hedged.
-  exposureNotionalUsd: string;
   limitedBy: HedgeSizeLimit;
-  // Portion of the exposure the order actually offsets. Diverges from the
-  // requested ratio whenever a cap or an increment binds, and the UI must show
-  // the achieved figure rather than the requested one.
-  effectiveRatio: number;
 }
 
-export function computeHedgeSize(input: HedgeSizeInput): HedgeSize {
-  const { hedgeRatio } = input;
-  if (!(hedgeRatio > 0) || hedgeRatio > 1) {
-    throw new Error(`Hedge ratio must be between 0 and 1, got ${hedgeRatio}`);
-  }
-
-  const marketPrice = parseDecimal(input.marketPriceUsd);
+// A USD notional to an order Lighter will accept.
+//
+// The one place the exchange's three limits are enforced, shared by the hedge
+// path and the perps ticket. A hedge arrives here having already turned a
+// holding into a notional; a ticket arrives with the notional the user typed.
+// Neither should be able to enforce the minimums differently from the other.
+function sizeForNotional(
+  targetNotional: bigint,
+  limits: MarketLimits,
+): OrderSize {
+  const marketPrice = parseDecimal(limits.marketPriceUsd);
   if (marketPrice <= 0n) {
-    throw new Error("Market has no usable price, refusing to size a hedge");
+    throw new Error("Market has no usable price, refusing to size an order");
   }
 
-  const quantity = parseDecimal(input.quantity);
-  const tokenPrice = parseDecimal(input.tokenPriceUsd);
-  const increment = incrementFor(input.sizeDecimals);
-  const minBase = parseDecimal(input.minBaseAmount);
-  const minQuote = parseDecimal(input.minQuoteAmount);
-  const quoteLimit = parseDecimal(input.orderQuoteLimit);
-
-  const exposureNotional = multiply(quantity, tokenPrice);
-  // toFixed keeps a UI-supplied float (0.75, 1/3) from carrying binary noise
-  // into the order size.
-  const ratio = parseDecimal(hedgeRatio.toFixed(6));
-  const targetNotional = multiply(exposureNotional, ratio);
+  const increment = incrementFor(limits.sizeDecimals);
+  const minBase = parseDecimal(limits.minBaseAmount);
+  const minQuote = parseDecimal(limits.minQuoteAmount);
+  const quoteLimit = parseDecimal(limits.orderQuoteLimit);
 
   let limitedBy: HedgeSizeLimit = "none";
   let target = targetNotional;
@@ -155,14 +141,12 @@ export function computeHedgeSize(input: HedgeSizeInput): HedgeSize {
   const size = floorTo(divide(target, marketPrice), increment);
   const notional = multiply(size, marketPrice);
 
-  const rejected = (reason: HedgeSizeLimit): HedgeSize => ({
+  const rejected = (reason: HedgeSizeLimit): OrderSize => ({
     size: "0",
     baseAmount: "0",
     notionalUsd: "0",
     targetNotionalUsd: formatDecimal(targetNotional),
-    exposureNotionalUsd: formatDecimal(exposureNotional),
     limitedBy: reason,
-    effectiveRatio: 0,
   });
 
   // Both minimums are checked because either can bind first depending on the
@@ -176,10 +160,74 @@ export function computeHedgeSize(input: HedgeSizeInput): HedgeSize {
     baseAmount: (size / increment).toString(),
     notionalUsd: formatDecimal(notional),
     targetNotionalUsd: formatDecimal(targetNotional),
-    exposureNotionalUsd: formatDecimal(exposureNotional),
     limitedBy,
+  };
+}
+
+// Sizing an order the user asked for in dollars, which is what the perps ticket
+// does. No holding, no ratio: the notional is the input rather than something
+// derived from an exposure.
+//
+// Throws on a notional that is not a positive decimal, in keeping with the rest
+// of this module: a caller previewing an order as the user types has to guard
+// its own input rather than be handed a silently zeroed size.
+export function computeOrderSize(
+  input: { notionalUsd: string } & MarketLimits,
+): OrderSize {
+  const target = parseDecimal(input.notionalUsd);
+  if (target <= 0n) {
+    throw new Error(`Order notional must be positive, got ${input.notionalUsd}`);
+  }
+  return sizeForNotional(target, input);
+}
+
+// marketPriceUsd here is the mark of the perp being shorted, not the price of
+// the token being hedged. On a proxy route the two differ by an order of
+// magnitude, which is why both appear.
+export interface HedgeSizeInput extends MarketLimits {
+  // Tokens of the xStock being hedged.
+  quantity: string;
+  // USD price of one token of that xStock, not of the perp.
+  tokenPriceUsd: string;
+  // Portion of the exposure to offset, 0 to 1.
+  hedgeRatio: number;
+}
+
+export interface HedgeSize extends OrderSize {
+  // Full value of the holding being hedged.
+  exposureNotionalUsd: string;
+  // Portion of the exposure the order actually offsets. Diverges from the
+  // requested ratio whenever a cap or an increment binds, and the UI must show
+  // the achieved figure rather than the requested one.
+  effectiveRatio: number;
+}
+
+export function computeHedgeSize(input: HedgeSizeInput): HedgeSize {
+  const { hedgeRatio } = input;
+  if (!(hedgeRatio > 0) || hedgeRatio > 1) {
+    throw new Error(`Hedge ratio must be between 0 and 1, got ${hedgeRatio}`);
+  }
+
+  const quantity = parseDecimal(input.quantity);
+  const tokenPrice = parseDecimal(input.tokenPriceUsd);
+
+  const exposureNotional = multiply(quantity, tokenPrice);
+  // toFixed keeps a UI-supplied float (0.75, 1/3) from carrying binary noise
+  // into the order size.
+  const ratio = parseDecimal(hedgeRatio.toFixed(6));
+  const targetNotional = multiply(exposureNotional, ratio);
+
+  // A hedge is a notional like any other order once the exposure has been
+  // turned into one. What it adds is the two figures only a hedge has: the
+  // exposure it is measured against, and the portion of it actually offset.
+  const sized = sizeForNotional(targetNotional, input);
+  const notional = parseDecimal(sized.notionalUsd);
+
+  return {
+    ...sized,
+    exposureNotionalUsd: formatDecimal(exposureNotional),
     effectiveRatio:
-      exposureNotional > 0n
+      exposureNotional > 0n && notional > 0n
         ? Number(formatDecimal(divide(notional, exposureNotional)))
         : 0,
   };

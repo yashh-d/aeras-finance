@@ -1,13 +1,23 @@
 "use client";
 
-// Selector plus live stat strip for one perps market. Presentational: the
+// Selector plus live stat strip for one Ondo perps market. Presentational: the
 // caller owns the catalog and the selection.
 //
 // Shared by both surfaces that show a market. The perps tab already holds the
 // catalog in its own hook, and the hedge tab fetches its own, so neither should
 // be forced to adopt the other's data flow just to reuse the header.
+//
+// The cells come from PerpsTerminal rather than being defined here, so an Ondo
+// stat and a Lighter stat are the same object on screen. Only the figures
+// behind them differ, which is the point: Ondo states a funding rate and a
+// disabled flag, Lighter states a fee of zero.
+//
+// The rail scrolls sideways rather than wrapping. Wrapping added a row at some
+// widths and not others, which changed the height of everything below it as the
+// window moved.
 
 import { MarketSelector } from "@/components/MarketSelector";
+import { TerminalStat } from "@/components/PerpsTerminal";
 import { marketTicker } from "@/lib/tokens/market-logos";
 import type { OndoMarket } from "@/lib/ondo/types";
 
@@ -16,7 +26,7 @@ function stat(
   fmt: (n: number) => string,
 ): string {
   const n = Number(v);
-  return v != null && Number.isFinite(n) ? fmt(n) : "\u2014";
+  return v != null && Number.isFinite(n) ? fmt(n) : "—";
 }
 
 const usd = (n: number) =>
@@ -50,84 +60,80 @@ export function MarketHeader({
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
-        <MarketSelector
-          markets={markets}
-          selected={selected}
-          onSelect={onSelect}
-          loading={loading}
-        />
+      <div className="flex items-center gap-4">
+        <div className="shrink-0">
+          <MarketSelector
+            markets={markets}
+            selected={selected}
+            onSelect={onSelect}
+            loading={loading}
+          />
+        </div>
 
         {selected && (
-          <>
-            <Stat label="Price" value={stat(selected.price, usd)} mono />
-            <Stat
-              label="24h Change"
+          <div className="flex min-w-0 flex-1 items-center gap-6 overflow-x-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <TerminalStat
+              label="Mark price"
+              value={stat(selected.price, usd)}
+              emphasis
+            />
+            <TerminalStat
+              label="24h change"
               value={
                 Number.isFinite(change)
-                  ? `${change >= 0 ? "\u25b2" : "\u25bc"} ${Math.abs(change).toFixed(2)}%`
-                  : "\u2014"
+                  ? `${change >= 0 ? "+" : ""}${change.toFixed(2)}%`
+                  : "—"
               }
               tone={changeUp ? "positive" : "negative"}
-              mono
             />
-            <Stat
-              label="24h Volume"
+            <TerminalStat
+              label="24h volume"
               value={stat(selected.usdVolume, compact)}
-              mono
             />
-            <Stat
-              label="Open Interest"
+            <TerminalStat
+              label="Open interest"
               value={stat(selected.openInterestUsd, compact)}
-              mono
             />
-            <Stat
+            <TerminalStat
               label="Funding"
               value={stat(
                 selected.fundingRate,
-                (n) => `${(n * 100).toFixed(5)}%`,
+                (n) => `${(n * 100).toFixed(4)}%`,
               )}
-              mono
+              hint="hourly"
             />
-          </>
+            <TerminalStat
+              label="Taker fee"
+              value={stat(
+                selected.takerFee,
+                (n) => `${(n * 10_000).toFixed(1)} bps`,
+              )}
+            />
+            <TerminalStat
+              label="Max leverage"
+              value={
+                selected.maxLeverage ? `${selected.maxLeverage}×` : "—"
+              }
+            />
+            {/* Markets follow the underlying exchange calendars, so a closed
+                market is the normal overnight state rather than a fault. A
+                market order needs an open book, so it is worth stating on the
+                header rather than only in the ticket's warning. */}
+            <TerminalStat
+              label="State"
+              value={selected.isClosed ? "Closed" : "Open"}
+              tone={selected.isClosed ? "negative" : undefined}
+            />
+          </div>
         )}
       </div>
 
       {selected && !selected.tradeable && (
-        <p className="mt-3 text-[11px] text-aeras-warning">
+        <p className="mt-2 text-[11px] text-aeras-warning">
           {marketTicker(selected.market)} is disabled by Ondo right now, so it
           cannot be traded even though it is listed.
         </p>
       )}
     </>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  tone,
-  mono,
-}: {
-  label: string;
-  value: string;
-  tone?: "positive" | "negative";
-  mono?: boolean;
-}) {
-  const color =
-    tone === "positive"
-      ? "text-aeras-positive"
-      : tone === "negative"
-        ? "text-aeras-negative"
-        : "text-white";
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-[0.12em] text-white/40">
-        {label}
-      </div>
-      <div className={`mt-0.5 text-sm ${mono ? "font-mono" : ""} ${color}`}>
-        {value}
-      </div>
-    </div>
   );
 }

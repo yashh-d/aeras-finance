@@ -49,8 +49,10 @@ import {
 } from "@/lib/trustware/client";
 import { TRUSTWARE_DEFAULT_SLIPPAGE } from "@/lib/trustware/constants";
 import {
+  executeEvmRoute,
   submitTrustwareReceipt,
   trackTrustwareSettlement,
+  type EvmSigner,
   type SolanaSigner,
 } from "@/lib/trustware/execute";
 import {
@@ -66,10 +68,19 @@ import { provisionOndoDepositAddress } from "./client";
 import type { OndoCollateral } from "./collateral";
 import { creditedMargin } from "./collateral";
 
-export type { SolanaSigner } from "@/lib/trustware/execute";
+export type { EvmSigner, SolanaSigner } from "@/lib/trustware/execute";
 
 // Ondo credits margin on Ethereum only.
 const ETHEREUM_CHAIN = "1";
+
+// Trustware's id for the Solana chain, which is the one source that signs with
+// the Solana wallet. Everything else is an EVM chain and goes through
+// executeEvmRoute.
+const SOLANA_CHAIN = "solana-mainnet-beta";
+
+export function isSolanaFundingSource(chain: string): boolean {
+  return chain === SOLANA_CHAIN;
+}
 
 // Refuse a route that delivers less than 90% of the value put into it, measured
 // against Ondo's own mark rather than the bridge's USD estimate. Set here
@@ -360,7 +371,11 @@ export type OndoFundingProgress =
 // because this resolved.
 export async function executeOndoFunding(args: {
   plan: OndoFundingPlan;
-  solana: SolanaSigner;
+  // Required for a Solana source, unused for an EVM one, and vice versa. Which
+  // signer is needed is decided by the plan's own source chain rather than by
+  // the caller, so a surface cannot pass the wrong one silently.
+  solana?: SolanaSigner;
+  evm?: EvmSigner;
   onProgress?: (progress: OndoFundingProgress) => void;
   signal?: AbortSignal;
 }): Promise<{ txHash: string; status: TrustwareStatusResponse }> {
@@ -372,11 +387,17 @@ export async function executeOndoFunding(args: {
       "Ondo margin funding is disabled. It stays off until one live deposit confirms Ondo credits a bridge-delivered transfer.",
     );
   }
-  if (plan.source.chain !== "solana-mainnet-beta") {
-    // Only the Solana source is wired. An EVM source would need an allowance
-    // and a chain switch, which is the machinery lib/trustware/execute.ts
-    // already owns and this module deliberately does not duplicate.
-    throw new Error(`Ondo funding from ${plan.source.chain} is not supported yet.`);
+
+  // An EVM source needs an ERC-20 allowance and a wallet-level chain switch
+  // before the source leg can be signed. That machinery lives in
+  // lib/trustware/execute.ts and is reused rather than duplicated here, which
+  // is what the Monad return leg in lib/morpho/fund.ts already does.
+  if (!isSolanaFundingSource(plan.source.chain)) {
+    return executeEvmOndoFunding({ ...args, plan });
+  }
+
+  if (!solana) {
+    throw new Error("A Solana signer is required to fund from Solana.");
   }
 
   report({ step: "routing" });
@@ -415,6 +436,76 @@ export async function executeOndoFunding(args: {
 
   report({ step: "delivered", txHash });
   return { txHash, status };
+}
+
+// The EVM half of the same deposit.
+//
+// Delivers to the very same Ondo deposit address the Solana path uses, so the
+// crediting behaviour and every guard in planOndoFunding apply unchanged. What
+// differs is only the source leg: an ERC-20 allowance and a wallet-level chain
+// switch have to happen before anything can be signed, and executeEvmRoute owns
+// both.
+//
+// Unlike the Solana path this one costs the user gas on the source chain, and
+// the embedded EVM wallet is born with none. There is no automatic top-up here:
+// funding from Ethereum means the wallet already holds ETH, which is true of a
+// wallet that received USDC there but not of a fresh one. The error that
+// surfaces when it does not is the wallet's own, and it is left to speak for
+// itself rather than being pre-empted with a guess at the gas price.
+async function executeEvmOndoFunding(args: {
+  plan: OndoFundingPlan;
+  evm?: EvmSigner;
+  onProgress?: (progress: OndoFundingProgress) => void;
+  signal?: AbortSignal;
+}): Promise<{ txHash: string; status: TrustwareStatusResponse }> {
+  const { plan, evm } = args;
+  const report = args.onProgress ?? (() => {});
+
+  if (!evm) {
+    throw new Error(
+      `A ${plan.source.symbol} deposit from ${plan.source.chain} is signed with your Ethereum wallet, which is not available.`,
+    );
+  }
+
+  const result = await executeEvmRoute({
+    request: {
+      fromChain: plan.source.chain,
+      toChain: ETHEREUM_CHAIN,
+      fromToken: plan.source.token,
+      toToken: plan.collateral.contractAddress,
+      fromAmount: plan.source.amountAtomic,
+      fromAddress: plan.source.ownerAddress,
+      toAddress: plan.depositAddress,
+      slippage: TRUSTWARE_DEFAULT_SLIPPAGE,
+    },
+    evm,
+    describe: plan.source.symbol,
+    // The floor the user was shown when the plan was priced. A route that has
+    // moved below it since is re-quoted rather than signed, which is the same
+    // protection the Solana path gets from re-planning before it signs.
+    minDeliveredAtomic: BigInt(plan.deliveredMinAtomic || "0"),
+    signal: args.signal,
+    onProgress: (progress) => {
+      if (progress.stage === "routing") {
+        report({ step: "routing" });
+      } else if (progress.stage === "approving" || progress.stage === "signing") {
+        report({ step: "signing" });
+      } else if (progress.sourceTxHash) {
+        report({ step: "broadcast", txHash: progress.sourceTxHash });
+      }
+    },
+  });
+
+  // executeEvmRoute only resolves once Trustware reports settlement, so this
+  // reads the terminal status rather than waiting for one. The callback is a
+  // no-op for the same reason: there is no intermediate state left to report.
+  const status = await trackTrustwareSettlement(
+    result.intentId,
+    args.signal,
+    () => {},
+  );
+  report({ step: "delivered", txHash: result.sourceTxHash });
+  return { txHash: result.sourceTxHash, status };
 }
 
 async function defaultProvision(symbol: string) {

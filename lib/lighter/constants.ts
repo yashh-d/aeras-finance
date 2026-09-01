@@ -133,6 +133,30 @@ export const LIGHTER_TX_TYPE_CHANGE_PUBKEY = 8;
 export const LIGHTER_TX_TYPE_WITHDRAW = 13;
 export const LIGHTER_TX_TYPE_CREATE_ORDER = 14;
 export const LIGHTER_TX_TYPE_CANCEL_ORDER = 15;
+export const LIGHTER_TX_TYPE_UPDATE_LEVERAGE = 20;
+
+// The four tags above plus this one were read from lighter-go's
+// types/txtypes/constants.go at commit cef81af, which is the exact commit
+// public/lighter/main.wasm was built from (see signer.ts). Pinning the read to
+// that commit is the point: the tag has to match the binary that signs, not
+// whatever upstream main happens to be. The other four agreeing with values
+// that were already in production is what makes the fifth trustworthy.
+//
+// Verified by scripts/lighter-leverage-check.mts.
+
+// Margin mode on an UpdateLeverage transaction. Cross is Lighter's default and
+// what an account uses when no UpdateLeverage was ever sent for a market.
+//
+// These are NOT interchangeable in the way the name suggests. Under cross, the
+// whole account balance backs a position and liquidation is driven by the
+// MAINTENANCE fraction against total equity, so raising the initial margin
+// fraction reserves more capital and moves the liquidation price not at all.
+// Under isolated, only the posted margin backs the position, so the initial
+// fraction sets both the margin and the liquidation price. A hedge preview that
+// quotes margin and a liquidation price from the same leverage number is
+// describing isolated margin whether it says so or not.
+export const LIGHTER_MARGIN_MODE_CROSS = 0;
+export const LIGHTER_MARGIN_MODE_ISOLATED = 1;
 
 // Wire ids a withdrawal names, from lighter-go (types/txtypes): USDC is asset
 // index 3 at 1e6 scale, and route 0 is the perps balance, which is the only

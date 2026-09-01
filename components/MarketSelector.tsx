@@ -103,7 +103,9 @@ export function MarketSelector({
     if (open) inputRef.current?.focus();
   }, [open]);
 
-  // Cmd-K opens, matching the hint in the panel footer.
+  // Cmd-K opens. Undocumented in the panel now that the shortcut footer is
+  // gone, but kept: it costs nothing and the arrow, Enter and Escape handling
+  // below is what makes the list navigable once it is open.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -291,27 +293,9 @@ export function MarketSelector({
                 );
               })}
             </div>
-
-            <div className="flex items-center gap-4 border-t border-white/10 px-4 py-2 text-[11px] text-white/40">
-              <Hint keys="⌘K" label="Open" />
-              <Hint keys="↓ ↑" label="Navigate" />
-              <Hint keys="Enter" label="Select" />
-              <Hint keys="Esc" label="Close" />
-            </div>
           </div>
         </>
       )}
     </div>
-  );
-}
-
-function Hint({ keys, label }: { keys: string; label: string }) {
-  return (
-    <span className="flex items-center gap-1.5">
-      <kbd className="rounded border border-white/15 bg-white/5 px-1.5 py-0.5 font-sans text-[10px] text-white/70">
-        {keys}
-      </kbd>
-      {label}
-    </span>
   );
 }

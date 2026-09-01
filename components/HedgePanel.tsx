@@ -31,6 +31,7 @@
 import { useMemo, useState } from "react";
 
 import { LighterChart } from "@/components/LighterChart";
+import { LighterMarginCard } from "@/components/LighterMarginCard";
 import { OndoMarketsCard } from "@/components/OndoMarketsCard";
 import { AssetLogo } from "@/components/AssetLogo";
 import { assetIdentity, XSTOCKS } from "@/lib/jupiter/xstocks";
@@ -46,7 +47,7 @@ import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { AccountBalances } from "@/lib/solana/balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
 import type { HedgeView } from "@/lib/lighter/exposure";
-import { closeHedge, placeHedge } from "@/lib/lighter/order";
+import { closeHedge, HEDGE_LEVERAGE, placeHedge } from "@/lib/lighter/order";
 import {
   estimateFundingFromInterest,
   liquidationDistance,
@@ -64,10 +65,11 @@ interface Props {
   scan: WalletScan;
 }
 
-// Leverage the hedge is opened at. 2x rather than the market maximum: a hedge
-// held against a stock is a long-lived position, and the margin saved by opening
-// it at 20x is the same margin that keeps it alive through a rally.
-const HEDGE_LEVERAGE = 2;
+// HEDGE_LEVERAGE is imported from lib/lighter/order rather than declared here.
+// It used to be a local constant, and since placeHedge never sent an
+// UpdateLeverage transaction, this panel drew margin and a liquidation price for
+// a position the exchange never opened. Keeping the number next to the code that
+// signs it is what stops that recurring.
 
 const RATIOS = [0.25, 0.5, 0.75, 1] as const;
 
@@ -266,7 +268,12 @@ export function HedgePanel({ balances, prices, scan }: Props) {
       {venue === "ondo" ? (
         <div className="mt-3 space-y-3">
           <OndoMarketsCard />
-          <OndoHedgeSection hedge={ondo} />
+          <OndoHedgeSection
+            hedge={ondo}
+            balances={balances}
+            prices={prices}
+            scan={scan}
+          />
         </div>
       ) : (
         // Called, not rendered as <LighterBody />. A function declared inside a
@@ -290,7 +297,10 @@ export function HedgePanel({ balances, prices, scan }: Props) {
         shortNotionalUsd={hedge.totals.shortNotionalUsd}
         coverageRatio={hedge.totals.coverageRatio}
         collateralUsd={collateralUsd}
-        walletUsd={margin.funding.readyUsd}
+        // Every USDC balance that can reach Lighter, not just the Solana one.
+        // Each road is priced separately in the margin card; this figure is
+        // what the user could post in total, which is what the strip is for.
+        walletUsd={margin.totalUsd}
         onAddMargin={
           hedge.onboarding.status === "no-wallet"
             ? undefined
@@ -332,7 +342,7 @@ export function HedgePanel({ balances, prices, scan }: Props) {
             Waiting for the embedded wallet to provision.
           </div>
         ) : (
-          <MarginCard
+          <LighterMarginCard
             margin={margin}
             needsAccount={hedge.onboarding.status === "needs-deposit"}
             open={marginOpen}
@@ -571,169 +581,6 @@ function Metric({
         {value}
       </div>
       {hint && <div className="mt-0.5 text-[11px] text-white/30">{hint}</div>}
-    </div>
-  );
-}
-
-// Funding margin, in the app.
-//
-// The old version of this card printed Lighter's deposit address and asked the
-// user to send USDC to it by hand. The address is a bare token account, so that
-// was both a chore and a way to lose funds to a mistyped character. The wallet
-// is already connected and the address is already known, so the transfer is ours
-// to make.
-function MarginCard({
-  margin,
-  needsAccount,
-  open,
-  onClose,
-}: {
-  margin: ReturnType<typeof useMarginFunding>;
-  needsAccount: boolean;
-  // Controlled by the Add button on the stat strip. The card renders nothing
-  // when closed: its two figures already live on the strip, and repeating them
-  // in a bar of their own pushed the hedge rows below the fold.
-  open: boolean;
-  onClose: () => void;
-}) {
-  const [amount, setAmount] = useState("");
-  const { funding, block, status } = margin;
-
-  const showForm = needsAccount || open;
-
-  const entered = Number(amount);
-  const overBalance = entered > funding.readyUsd;
-  const underMinimum = entered > 0 && entered < funding.minimumUsd;
-  const canSubmit =
-    margin.ready &&
-    status.kind !== "sending" &&
-    entered > 0 &&
-    !overBalance &&
-    !underMinimum;
-
-  if (!showForm) return null;
-
-  return (
-    <div className={`${PANEL} p-4`}>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h3 className="text-sm font-medium text-white">
-            {needsAccount ? "Fund your Lighter margin" : "Add margin"}
-          </h3>
-          <p className="mt-1 text-sm leading-relaxed text-white/45">
-            Hedges are margined with USDC held on Lighter, which is separate from
-            the USDC in your wallet. This moves it for you and credits in about
-            15 to 20 minutes.
-          </p>
-        </div>
-        {!needsAccount && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-xs text-white/35 transition-colors hover:text-white/70"
-          >
-            Close
-          </button>
-        )}
-      </div>
-
-      {status.kind === "sent" ? (
-        <div className="mt-3">
-          <Notice tone="success">
-            {usd(Number(amount))} USDC sent to Lighter. Solana signature{" "}
-            <span className="font-mono">{status.signature.slice(0, 10)}…</span>.
-            Your margin appears once Lighter credits it.
-          </Notice>
-          <button
-            type="button"
-            onClick={() => {
-              setAmount("");
-              margin.reset();
-            }}
-            className="mt-2 text-xs text-white/40 transition-colors hover:text-white/70"
-          >
-            Send more
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <div className="flex min-w-[180px] flex-1 items-center rounded-lg border border-white/10 bg-black/40 px-3 py-2 focus-within:border-white/25">
-              <input
-                inputMode="decimal"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ""))}
-                placeholder="0.00"
-                className="w-full bg-transparent font-mono text-base tabular-nums text-white outline-none placeholder:text-white/20"
-              />
-              <span className="ml-2 text-xs text-white/35">USDC</span>
-            </div>
-            {([0.25, 0.5, 1] as const).map((fraction) => (
-              <button
-                key={fraction}
-                type="button"
-                onClick={() =>
-                  setAmount(String(Math.floor(funding.readyUsd * fraction * 100) / 100))
-                }
-                disabled={funding.readyUsd <= 0}
-                className="rounded-lg border border-white/10 px-2.5 py-2 text-[11px] text-white/55 transition-colors hover:border-white/20 hover:text-white disabled:opacity-30"
-              >
-                {fraction === 1 ? "Max" : `${fraction * 100}%`}
-              </button>
-            ))}
-            <button
-              type="button"
-              onClick={() => void margin.deposit(amount)}
-              disabled={!canSubmit}
-              className="rounded-lg bg-white px-4 py-2 text-sm font-medium text-black transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-30"
-            >
-              {status.kind === "sending" ? "Sending…" : "Deposit"}
-            </button>
-          </div>
-
-          <div className="mt-2 text-[11px] text-white/35">
-            {overBalance
-              ? `That is more than the ${usd(funding.readyUsd)} USDC in your wallet.`
-              : underMinimum
-                ? `Lighter's minimum deposit is ${usd(funding.minimumUsd)}.`
-                : `${usd(funding.readyUsd)} USDC available on Solana.`}
-          </div>
-
-          {status.kind === "error" && (
-            <div className="mt-3">
-              <Notice tone="error">{status.message}</Notice>
-            </div>
-          )}
-
-          {block.kind === "bridge-first" && (
-            <div className="mt-3">
-              <Notice tone="info">
-                You hold {usd(block.bridgeableUsd)} USDC off Solana. Move it to
-                your Solana wallet and it becomes available here.
-              </Notice>
-            </div>
-          )}
-
-          {funding.sources.some((s) => s.route === "bridge-then-transfer") && (
-            <div className="mt-3 space-y-1">
-              <div className={LABEL}>Elsewhere</div>
-              {funding.sources
-                .filter((s) => s.route === "bridge-then-transfer")
-                .map((source) => (
-                  <div
-                    key={source.chain}
-                    className="flex items-center justify-between text-xs text-white/45"
-                  >
-                    <span>{source.chainLabel}</span>
-                    <span className="font-mono tabular-nums">
-                      {usd(source.amountUsd)}
-                    </span>
-                  </div>
-                ))}
-            </div>
-          )}
-        </>
-      )}
     </div>
   );
 }

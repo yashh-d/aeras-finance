@@ -55,17 +55,55 @@ export function AssetLogo({
   );
 }
 
+// Copy for the badge's hover card. Sized to wrap to two lines at w-60; longer
+// than this runs to three and the card stops reading as a caption on the mark.
+// USDC rather than "stablecoins" because it is the single borrow asset at both
+// venues (KAMINO_USDC_BORROW, and every Jupiter vault's borrowSymbol).
+const LENDING_TITLE = "Usable as collateral";
+const LENDING_BODY =
+  "Post it as collateral and borrow USDC against it without selling.";
+// How far left of the badge the hover card's own left edge sits. Left-anchored
+// rather than centred: the badge is a few characters in from the card's padding
+// and a 15rem card centred on it would hang off the card entirely.
+const LENDING_TIP_INSET = 10;
+
 // Marks an asset that can be borrowed against, in the asset lists on Home and
 // Markets. Green rather than the blue used for interactive affordances: this is
 // a property of the asset, not something to click.
 export function LendingBadge({ size = 13 }: { size?: number }) {
   return (
-    <CircleDollarSign
-      className="shrink-0 text-aeras-positive"
-      style={{ width: size, height: size }}
-      aria-label="Can be lent against"
-      role="img"
-    />
+    // The mark on its own says nothing about what it means, so it carries a
+    // hover card. Spans with pointer events off, not a popover component: this
+    // renders INSIDE the row button on both surfaces, where a focusable or
+    // block-level child would be invalid markup and would eat the row's click.
+    <span className="group/lend relative inline-flex shrink-0 items-center">
+      <CircleDollarSign
+        className="shrink-0 text-aeras-positive"
+        style={{ width: size, height: size }}
+        aria-label={`${LENDING_TITLE}. ${LENDING_BODY}`}
+        role="img"
+      />
+      <span
+        aria-hidden="true"
+        style={{ left: -LENDING_TIP_INSET }}
+        className="pointer-events-none absolute bottom-full z-30 mb-2 w-60 translate-y-1 opacity-0 transition-[opacity,transform] duration-150 ease-out group-hover/lend:translate-y-0 group-hover/lend:opacity-100 motion-reduce:transition-none"
+      >
+        <span className="block rounded-xl border border-white/10 bg-aeras-900/95 p-3 shadow-[0_8px_24px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+          <span className="block text-[11px] font-medium tracking-tight text-white">
+            {LENDING_TITLE}
+          </span>
+          <span className="mt-1 block text-[11px] leading-snug text-white/60">
+            {LENDING_BODY}
+          </span>
+        </span>
+        {/* Points back at the badge. Sized off `size` so it stays on the
+            badge's centre at either of the two sizes callers pass. */}
+        <span
+          style={{ left: LENDING_TIP_INSET + size / 2 }}
+          className="absolute top-full size-2 -translate-x-1/2 -translate-y-1/2 rotate-45 border-b border-r border-white/10 bg-aeras-900"
+        />
+      </span>
+    </span>
   );
 }
 

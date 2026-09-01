@@ -50,6 +50,7 @@ export function LighterChart({
   symbol,
   markPrice,
   marker,
+  fill,
 }: {
   marketId: number | null;
   symbol: string;
@@ -57,6 +58,10 @@ export function LighterChart({
   // flight so the header is never empty, and it is the fresher of the two.
   markPrice?: number;
   marker?: LighterChartMarker;
+  // Take the height of whatever contains this rather than the fixed 224px the
+  // hedge tab wants. The perps terminal sizes its own chart column, so the plot
+  // has to stretch into it; the hedge tab passes nothing and is unchanged.
+  fill?: boolean;
 }) {
   const [range, setRange] = useState<CandleRange>("1D");
   const { series, loading, error } = useCandles(marketId, range);
@@ -91,8 +96,12 @@ export function LighterChart({
   }, [candles]);
 
   return (
-    <div className="rounded-xl border border-white/[0.07] bg-[#111415]">
-      <div className="flex flex-wrap items-baseline justify-between gap-3 px-4 pt-3.5">
+    <div
+      className={`rounded-xl border border-white/[0.07] bg-[#111415] ${
+        fill ? "flex h-full flex-col" : ""
+      }`}
+    >
+      <div className="flex shrink-0 flex-wrap items-baseline justify-between gap-3 px-4 pt-3.5">
         <div className="flex items-baseline gap-3">
           <span className="text-sm font-medium text-white/90">{symbol}</span>
           <span className="font-mono text-xl font-light tabular-nums text-white">
@@ -127,7 +136,11 @@ export function LighterChart({
         </div>
       </div>
 
-      <div className="h-56 w-full px-1 pb-2 pt-2">
+      <div
+        className={`w-full px-1 pb-2 pt-2 ${
+          fill ? "min-h-0 flex-1" : "h-56"
+        }`}
+      >
         {marketId == null ? (
           <Empty>No Lighter market for this holding</Empty>
         ) : error && candles.length === 0 ? (
@@ -184,7 +197,7 @@ export function LighterChart({
       </div>
 
       {series && candles.length > 0 && (
-        <div className="flex items-center justify-between border-t border-white/[0.05] px-4 py-1.5 text-[10px] uppercase tracking-[0.12em] text-white/30">
+        <div className="flex shrink-0 items-center justify-between border-t border-white/[0.05] px-4 py-1.5 text-[10px] uppercase tracking-[0.12em] text-white/30">
           <span>
             {candles.length} bars · {series.resolution}
           </span>

@@ -28,7 +28,16 @@ export function OndoUnwindCard({ unwind }: { unwind: UseOndoUnwind }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [amount, setAmount] = useState("");
 
-  const { holdings, status } = unwind;
+  const { status } = unwind;
+  // Only what this card can actually act on.
+  //
+  // A holding with no registered Solana equivalent had nothing to offer but a
+  // sentence saying so, which is a dead end wearing the costume of a control.
+  // USDC is the live case: it is not in the hedge route table, because that
+  // table maps tokenized equities, and it is already shown in the wallet
+  // panel's own USDC row. So it is dropped here rather than displayed as an
+  // action that cannot be taken.
+  const holdings = unwind.holdings.filter((h) => h.xstockSymbol);
   const holding = holdings.find((h) => h.symbol === selected) ?? holdings[0] ?? null;
 
   if (unwind.loading && holdings.length === 0) {
@@ -109,13 +118,7 @@ export function OndoUnwindCard({ unwind }: { unwind: UseOndoUnwind }) {
         <Line label="Gas available" value={`${gasEth.toFixed(6)} ETH`} />
       </div>
 
-      {!holding.xstockSymbol ? (
-        <p className="mt-2 text-[11px] leading-relaxed text-white/45">
-          Aeras has no Solana equivalent registered for {holding.symbol}, so it
-          cannot be brought back automatically. It is safe in your Ethereum
-          wallet and can be moved from there.
-        </p>
-      ) : status.kind === "ready" ? (
+      {status.kind === "ready" ? (
         <Plan unwind={unwind} />
       ) : (
         <>

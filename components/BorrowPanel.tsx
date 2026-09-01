@@ -358,7 +358,7 @@ function BorrowSummaryHero({
           <button
             type="button"
             onClick={onAddFunds}
-            className="rounded-full bg-aeras-blue px-6 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium"
+            className="aeras-press rounded-full bg-aeras-blue px-6 py-2.5 text-sm font-medium text-white hover:bg-aeras-blue-medium"
           >
             Add funds
           </button>
@@ -377,7 +377,7 @@ function BorrowSummaryHero({
           onClick={onRepay}
           disabled={!loading && !hasDebt}
           title={!loading && !hasDebt ? "Nothing to repay yet" : undefined}
-          className="rounded-full bg-aeras-repay px-6 py-2.5 text-sm font-medium text-aeras-repay-ink transition-colors hover:bg-aeras-repay-medium disabled:cursor-not-allowed disabled:opacity-40"
+          className="aeras-press rounded-full bg-aeras-repay px-6 py-2.5 text-sm font-medium text-aeras-repay-ink hover:bg-aeras-repay-medium disabled:cursor-not-allowed disabled:opacity-40"
         >
           Repay
         </button>
@@ -1757,12 +1757,9 @@ function ClosePositionControl({
             : "Closing position…"
           : `Close · repay ${debtUi.toFixed(4)} ${vault.borrowSymbol} + withdraw ${colUi.toFixed(4)} ${vault.collateralSymbol}`}
       </button>
-      {canRepayDirect ? (
-        <p className="text-[11px] text-white/50">
-          Repays the loan from your wallet {vault.borrowSymbol} and returns your{" "}
-          {vault.collateralSymbol} in full.
-        </p>
-      ) : canRepayFromWallet ? (
+      {/* Nothing under the button in the direct case: it already names the
+          exact amounts repaid and withdrawn. */}
+      {canRepayDirect ? null : canRepayFromWallet ? (
         // Funded from the other balances automatically; the button's progress
         // copy narrates the legs, so no standing explainer is needed.
         <p className="text-[11px] text-white/50">Takes a few minutes.</p>

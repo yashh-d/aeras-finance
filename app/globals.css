@@ -337,3 +337,70 @@
     transform: none;
   }
 }
+
+/* Buttons that grow and lift under the pointer rather than pressing in. Same
+   gesture as the range thumb above, and the same reasoning: the control is
+   being picked up and carried, not pushed, so a recessed active state fights
+   it. The two differ only in how far they travel. A thumb is a 28px disc and
+   can take the thumb's own 1.12/1.2 scale; a 200px pill at that scale reads as
+   the layout breaking, so the steps here are small and the shadow carries most
+   of the depth.
+
+   What actually makes it read as an object rather than a coloured rectangle is
+   the pair of insets, not the drop shadow: a lit top edge and a shaded bottom
+   one, which is what a raised surface does under a light source above it.
+
+   The transition list carries COLOUR as well as the lift. This class is
+   unlayered, so it outranks every Tailwind utility including `transition-colors`
+   — declaring only the lift here would silently kill the hover fill's fade on
+   every caller. Callers drop `transition-colors` and use this instead. */
+.aeras-press {
+  --press-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.2),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.16);
+  --press-shadow-lift:
+    0 6px 16px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.16);
+
+  box-shadow: var(--press-shadow);
+  transition:
+    transform 130ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 130ms ease,
+    filter 130ms ease,
+    background-color 130ms ease,
+    border-color 130ms ease,
+    color 130ms ease;
+}
+
+.aeras-press:hover:not(:disabled) {
+  transform: scale(1.025);
+  box-shadow: var(--press-shadow-lift);
+  filter: brightness(1.05);
+}
+
+/* Grabbed: lifts further rather than sinking, exactly as the thumb does. */
+.aeras-press:active:not(:disabled) {
+  transform: scale(1.06);
+  box-shadow: var(--press-shadow-lift);
+  filter: brightness(1.08);
+}
+
+/* Nothing to pick up, so it sits flat on the surface. */
+.aeras-press:disabled {
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aeras-press {
+    transition:
+      box-shadow 130ms ease,
+      filter 130ms ease,
+      background-color 130ms ease,
+      border-color 130ms ease,
+      color 130ms ease;
+  }
+  .aeras-press:hover:not(:disabled),
+  .aeras-press:active:not(:disabled) {
+    transform: none;
+  }
+}

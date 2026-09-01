@@ -1,3 +1,4 @@
+import { LIGHTER_MARGIN_FRACTION_SCALE } from "./constants";
 import type { LighterMarket } from "./types";
 
 // What a hedge costs to open and what would kill it.
@@ -41,6 +42,32 @@ export function marginForLeverage(
     leverage: allowed,
     clamped: allowed < leverage,
   };
+}
+
+// The same leverage as the integer an UpdateLeverage transaction carries.
+//
+// InitialMarginFraction is a uint16 on the wire, scaled so 10000 is 100%, and
+// lighter-go rejects anything outside 1..10000 (ErrInitialMarginFractionTooLow
+// and ...TooHigh). 2x is 5000. Clamped to the market's own maximum through
+// marginForLeverage rather than computed inline, so the figure a panel displays
+// and the figure the exchange is told cannot drift apart: both come from here.
+//
+// Rounds DOWN the fraction, which rounds leverage UP toward the market maximum
+// only to the nearest tick. The alternative direction would ask for a fraction
+// finer than the exchange's own tick and be rejected.
+export function wireInitialMarginFraction(
+  leverage: number,
+  market: LighterMarket,
+): { fraction: number; leverage: number } {
+  const { leverage: allowed } = marginForLeverage(1, leverage, market);
+  const fraction = Math.floor(LIGHTER_MARGIN_FRACTION_SCALE / allowed);
+
+  if (fraction < 1 || fraction > LIGHTER_MARGIN_FRACTION_SCALE) {
+    throw new Error(
+      `Leverage ${leverage}x maps to margin fraction ${fraction}, outside 1..${LIGHTER_MARGIN_FRACTION_SCALE}`,
+    );
+  }
+  return { fraction, leverage: allowed };
 }
 
 // Price at which a lone position is liquidated.

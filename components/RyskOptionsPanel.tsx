@@ -89,17 +89,19 @@ export function RyskOptionsCard() {
             Sell volatility on what you hold
           </div>
         </div>
-        <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-warning">
-          High risk
-        </span>
+        {/* Two pills, saying different things. "Coming soon" is about this
+            panel: the chain below is live and browsable, but nothing here can
+            open a position yet. "High risk" is about the product itself and
+            outlives the first one. */}
+        <div className="flex items-baseline gap-1.5">
+          <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-white/50">
+            Coming soon
+          </span>
+          <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-warning">
+            High risk
+          </span>
+        </div>
       </div>
-
-      <p className="text-xs text-white/50">
-        Rysk lists European options on crypto majors, not on tokenized stocks.
-        Writing one locks collateral until expiry and pays a premium up front. In
-        exchange you give up the upside above a call strike, or agree to buy at a
-        put strike.
-      </p>
 
       <SideTabs isPut={isPut} onPick={pickSide} />
 
@@ -168,14 +170,6 @@ export function RyskOptionsCard() {
         )
       )}
 
-      <p className="text-[11px] text-white/50">
-        Options settle physically on Ethereum and HyperEVM, not on Solana.
-        Positions cannot be closed before expiry. Premium is shown at the best
-        maker bid, which is what a seller receives, and moves between refreshes.
-        Indicative APY is Rysk&apos;s own model and is quoted on a basis they do
-        not publish, so it does not match the yield derived from the bid. Placing
-        these trades is not enabled yet, so this panel is read only.
-      </p>
     </div>
   );
 }
@@ -446,13 +440,6 @@ function Ticket({
       </div>
 
       <div className="space-y-1 border-t border-white/10 pt-3 text-[11px] text-white/60">
-        {ticket.premiumUsd === null && (
-          <p className="text-white/40">
-            No maker is quoting this strike right now, so the premium is unknown.
-            Rysk prices by request, and the indicative APY above is their model
-            rather than an offer.
-          </p>
-        )}
         <p>{outcome.ifAssigned}</p>
         <p>{outcome.ifNotAssigned}</p>
         <p className="text-white/40">

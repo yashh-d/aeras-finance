@@ -82,6 +82,27 @@ const LIGHTER_MARGIN_DESTINATIONS: Record<string, string> = {
   "8453": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
 };
 
+// Canonical USDC a margin deposit may be funded FROM, by chain. Solana is the
+// wallet the app fills first; Ethereum and Base are the EVM chains
+// lib/trustware/stables.ts scans, so a balance the wallet panel shows is a
+// balance this shape accepts.
+//
+// This is an allowlist of exact contracts, not "any token on these chains".
+// Widening the source of the margin shape is the one change here that lets a
+// caller spend something other than USDC, so the addresses are pinned and
+// lower-cased for comparison.
+//
+// All three chains stables.ts scans are here, each verified to return a
+// signable route to Arbitrum by scripts/lighter-margin-sources-check.mts
+// (2026-08-31). BNB Chain's USDC is 18 decimals rather than 6, which is the
+// detail that made a first measurement call it unroutable; see the note in
+// lib/lighter/margin-sources.ts.
+const LIGHTER_MARGIN_SOURCES: Record<string, string> = {
+  "1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+  "8453": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+  "56": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+};
+
 // Margin destinations for Ondo Perps, delivered to the deposit address Ondo
 // provisioned for the user's account. Ethereum only: Ondo credits no other
 // network, and `provision_address` answers service_unavailable for Solana.
@@ -239,14 +260,16 @@ export function validateTrustwareRequest(
     SOLANA_ADDRESS.test(req.toAddress!);
   if (isOndoUnwind) return null;
 
-  // lighter margin  borrowed Solana USDC -> canonical USDC on a chain Lighter
-  //                 accepts deposits from, delivered to the intent address
-  //                 Lighter provisioned for the user.
+  // lighter margin  canonical USDC the user holds -> canonical USDC on a chain
+  //                 Lighter accepts deposits from, delivered to the intent
+  //                 address Lighter provisioned for the user.
   //
-  // The narrowest shape in this function, deliberately. The source is pinned to
-  // Solana USDC and nothing else, because this leg only ever carries the
-  // proceeds of a borrow. The destination is pinned to the canonical USDC of two
-  // chains, so a caller cannot use it to deliver an arbitrary token anywhere.
+  // The source was Solana USDC and nothing else while this leg only carried the
+  // proceeds of a borrow. The Add-margin card now funds from any wallet the
+  // user actually holds USDC in, so the source is an allowlist of canonical
+  // USDC contracts (LIGHTER_MARGIN_SOURCES) rather than a single mint. Both
+  // sides stay pinned: a caller cannot use this to move an arbitrary token, in
+  // either direction.
   //
   // The recipient is NOT the user's own wallet, which it shares with the Ondo
   // margin shape above and for the same reason: Lighter's intent address is
@@ -260,9 +283,11 @@ export function validateTrustwareRequest(
   // route handler cannot tell a real Lighter intent address from any other. That
   // guarantee comes from the caller fetching it over /api/lighter/account, which
   // gets it from Lighter and never from the browser.
+  const fromIsMarginUsdc =
+    (req.fromChain === TRUSTWARE_SOLANA_CHAIN && req.fromToken === USDC_MINT) ||
+    LIGHTER_MARGIN_SOURCES[req.fromChain!] === req.fromToken!.toLowerCase();
   const isLighterMargin =
-    req.fromChain === TRUSTWARE_SOLANA_CHAIN &&
-    req.fromToken === USDC_MINT &&
+    fromIsMarginUsdc &&
     LIGHTER_MARGIN_DESTINATIONS[req.toChain] === req.toToken.toLowerCase() &&
     EVM_ADDRESS.test(req.toAddress!);
   if (isLighterMargin) return null;

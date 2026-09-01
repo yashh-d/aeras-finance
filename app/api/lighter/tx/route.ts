@@ -4,6 +4,7 @@ import {
   LIGHTER_TX_TYPE_CANCEL_ORDER,
   LIGHTER_TX_TYPE_CHANGE_PUBKEY,
   LIGHTER_TX_TYPE_CREATE_ORDER,
+  LIGHTER_TX_TYPE_UPDATE_LEVERAGE,
   LIGHTER_TX_TYPE_WITHDRAW,
 } from "@/lib/lighter/constants";
 import { lighterSendTx } from "@/lib/lighter/server";
@@ -52,11 +53,17 @@ export const dynamic = "force-dynamic";
 // pay nothing but the account's own L1 address, so the worst a hostile caller
 // can do with a stolen signature is send a user their own money. L2 transfers
 // (type 12) remain excluded, because those CAN name another account.
+//
+// UpdateLeverage (20) is admitted because the hedge path sets isolated 2x before
+// every order. It moves no funds and names no counterparty: the only thing it can
+// change is the margin requirement on the signer's own account in one market. The
+// worst a stolen signature achieves is re-setting a leverage the user chose.
 const RELAYABLE_TX_TYPES = new Set([
   LIGHTER_TX_TYPE_CHANGE_PUBKEY,
   LIGHTER_TX_TYPE_WITHDRAW,
   LIGHTER_TX_TYPE_CREATE_ORDER,
   LIGHTER_TX_TYPE_CANCEL_ORDER,
+  LIGHTER_TX_TYPE_UPDATE_LEVERAGE,
 ]);
 
 export async function POST(request: Request) {

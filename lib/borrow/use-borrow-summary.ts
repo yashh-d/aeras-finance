@@ -70,6 +70,11 @@ export interface BorrowSummary {
   // The caller's Kamino obligation, fetched here so the summary and the Kamino
   // card don't each pay for the same read.
   kaminoPosition: KaminoPosition | null;
+  // Every mint the account has posted as collateral at any venue, in UI units,
+  // summed across venues. Deposited stock is still price exposure, so the
+  // positions card reads this to tell a hedge apart from an outright short once
+  // the stock backing it has left the wallet.
+  collateralByMint: Record<string, number>;
   loading: boolean;
   refresh: () => void;
 }
@@ -120,6 +125,127 @@ async function readVaultPosition(
   return await fetchPositionState(vault, scannedId, connection);
 }
 
+// ── Shared snapshot ────────────────────────────────────────────────────────
+//
+// One account-wide read of every borrow venue, shared by every consumer in the
+// session. Home renders two surfaces off this data now, the borrow panel and
+// the positions card, and the Jupiter side costs one getProgramAccounts per
+// vault, thirteen of them, so a second mount doubled the heaviest read on the
+// page. Same shape as the account-state cache in lib/lighter/client.ts: a short
+// TTL held over the promise, so concurrent mounts share one in-flight read and
+// a later mount is served from memory rather than from chain.
+interface BorrowSnapshot {
+  debtUsd: number;
+  positions: OpenBorrowPosition[];
+  pledged: PledgedCollateral[];
+  kaminoPosition: KaminoPosition | null;
+}
+
+const SNAPSHOT_TTL_MS = 20_000;
+
+const snapshotCache = new Map<
+  string,
+  { at: number; snapshot: Promise<BorrowSnapshot> }
+>();
+
+function loadBorrowSnapshot(walletAddress: string): Promise<BorrowSnapshot> {
+  const cached = snapshotCache.get(walletAddress);
+  if (cached && Date.now() - cached.at < SNAPSHOT_TTL_MS) return cached.snapshot;
+  const snapshot = readBorrowSnapshot(walletAddress);
+  snapshotCache.set(walletAddress, { at: Date.now(), snapshot });
+  // A rejected read must not be handed to every caller for the rest of the TTL.
+  snapshot.catch(() => snapshotCache.delete(walletAddress));
+  return snapshot;
+}
+
+async function readBorrowSnapshot(
+  walletAddress: string,
+): Promise<BorrowSnapshot> {
+  const connection = getConnection();
+  let debt = 0;
+  const collateral: PledgedCollateral[] = [];
+  const open: OpenBorrowPosition[] = [];
+  // A holder rather than a bare `let`, so the value assigned inside the Kamino
+  // task is visibly the one returned below.
+  const kaminoResult: { position: KaminoPosition | null } = { position: null };
+
+  const jupiter = XSTOCK_BORROW_VAULTS.map(async (vault) => {
+    try {
+      const position = await readVaultPosition(walletAddress, vault, connection);
+      if (!position) return;
+      const debtUi = fromAtomicBN(position.debtAtomic, vault.borrowDecimals);
+      debt += debtUi;
+      const amountUi = fromAtomicBN(
+        position.collateralAtomic,
+        vault.collateralDecimals,
+      );
+      if (debtUi > 0) {
+        open.push({
+          key: `jupiter:${vault.vaultId}`,
+          venueLabel: "Jupiter Lend",
+          collateralSymbol: vault.collateralSymbol,
+          collateralMint: vault.collateralMint,
+          collateralUi: amountUi,
+          debtUi,
+          debtSymbol: vault.borrowSymbol,
+          ref: { venue: "jupiter", vault, nftId: position.nftId },
+        });
+      }
+      if (amountUi > 0) {
+        collateral.push({
+          mint: vault.collateralMint,
+          amountUi,
+          ltvFraction: vault.collateralFactor / 1000,
+        });
+      }
+    } catch (err) {
+      console.error("[borrow summary jupiter]", err);
+    }
+  });
+
+  const kamino = (async () => {
+    try {
+      const p = await fetchKaminoPosition(walletAddress);
+      kaminoResult.position = p;
+      if (!p) return;
+      debt += p.debtUsdc;
+      if (p.debtUsdc > 0) {
+        open.push({
+          key: `kamino:${p.collateral.reserve}`,
+          venueLabel: "Kamino",
+          collateralSymbol: p.collateral.symbol,
+          collateralMint: p.collateral.collateralMint,
+          collateralUi: p.collateralUi,
+          debtUi: p.debtUsdc,
+          debtSymbol: "USDC",
+          ref: { venue: "kamino", position: p },
+        });
+      }
+      if (p.collateralUi > 0) {
+        collateral.push({
+          mint: p.collateral.collateralMint,
+          amountUi: p.collateralUi,
+          ltvFraction: p.collateral.maxLtvSnapshot,
+        });
+      }
+    } catch (err) {
+      console.error("[borrow summary kamino]", err);
+    }
+  })();
+
+  await Promise.all([...jupiter, kamino]);
+  // The venue reads settle concurrently, so sort rather than relying on the
+  // order they happened to finish in.
+  open.sort((a, b) => b.debtUi - a.debtUi);
+
+  return {
+    debtUsd: debt,
+    positions: open,
+    pledged: collateral,
+    kaminoPosition: kaminoResult.position,
+  };
+}
+
 // Account-wide borrow position: what is owed, and what could still be drawn.
 //
 // Reads every venue once on mount rather than waiting for a card to be expanded,
@@ -148,97 +274,30 @@ export function useBorrowSummary({
   const [loading, setLoading] = useState(true);
   const [tick, setTick] = useState(0);
 
-  const refresh = useCallback(() => setTick((n) => n + 1), []);
+  // Drops the shared snapshot before re-running, so a refresh after a borrow or
+  // repay goes to chain instead of replaying the pre-settlement read.
+  const refresh = useCallback(() => {
+    snapshotCache.delete(walletAddress);
+    setTick((n) => n + 1);
+  }, [walletAddress]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    (async () => {
-      const connection = getConnection();
-      let debt = 0;
-      const collateral: PledgedCollateral[] = [];
-      const open: OpenBorrowPosition[] = [];
-
-      const jupiter = XSTOCK_BORROW_VAULTS.map(async (vault) => {
-        try {
-          const position = await readVaultPosition(
-            walletAddress,
-            vault,
-            connection,
-          );
-          if (!position) return;
-          const debtUi = fromAtomicBN(position.debtAtomic, vault.borrowDecimals);
-          debt += debtUi;
-          const amountUi = fromAtomicBN(
-            position.collateralAtomic,
-            vault.collateralDecimals,
-          );
-          if (debtUi > 0) {
-            open.push({
-              key: `jupiter:${vault.vaultId}`,
-              venueLabel: "Jupiter Lend",
-              collateralSymbol: vault.collateralSymbol,
-              collateralMint: vault.collateralMint,
-              collateralUi: amountUi,
-              debtUi,
-              debtSymbol: vault.borrowSymbol,
-              ref: { venue: "jupiter", vault, nftId: position.nftId },
-            });
-          }
-          if (amountUi > 0) {
-            collateral.push({
-              mint: vault.collateralMint,
-              amountUi,
-              ltvFraction: vault.collateralFactor / 1000,
-            });
-          }
-        } catch (err) {
-          console.error("[borrow summary jupiter]", err);
-        }
+    loadBorrowSnapshot(walletAddress)
+      .then((snapshot) => {
+        if (cancelled) return;
+        setDebtUsd(snapshot.debtUsd);
+        setPositions(snapshot.positions);
+        setPledged(snapshot.pledged);
+        setKaminoPosition(snapshot.kaminoPosition);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("[borrow summary]", err);
+        setLoading(false);
       });
-
-      const kamino = (async () => {
-        try {
-          const p = await fetchKaminoPosition(walletAddress);
-          if (cancelled) return;
-          setKaminoPosition(p);
-          if (p) {
-            debt += p.debtUsdc;
-            if (p.debtUsdc > 0) {
-              open.push({
-                key: `kamino:${p.collateral.reserve}`,
-                venueLabel: "Kamino",
-                collateralSymbol: p.collateral.symbol,
-                collateralMint: p.collateral.collateralMint,
-                collateralUi: p.collateralUi,
-                debtUi: p.debtUsdc,
-                debtSymbol: "USDC",
-                ref: { venue: "kamino", position: p },
-              });
-            }
-            if (p.collateralUi > 0) {
-              collateral.push({
-                mint: p.collateral.collateralMint,
-                amountUi: p.collateralUi,
-                ltvFraction: p.collateral.maxLtvSnapshot,
-              });
-            }
-          }
-        } catch (err) {
-          console.error("[borrow summary kamino]", err);
-        }
-      })();
-
-      await Promise.all([...jupiter, kamino]);
-      if (cancelled) return;
-      setDebtUsd(debt);
-      // The venue reads settle concurrently, so sort rather than relying on the
-      // order they happened to finish in.
-      open.sort((a, b) => b.debtUi - a.debtUi);
-      setPositions(open);
-      setPledged(collateral);
-      setLoading(false);
-    })();
     return () => {
       cancelled = true;
     };
@@ -279,12 +338,23 @@ export function useBorrowSummary({
     return capacity;
   }, [pledged, prices, balances, equivalents]);
 
+  // Summed rather than taken per entry: both venues take the same mints, so a
+  // stock deposited at each appears twice in `pledged`.
+  const collateralByMint = useMemo(() => {
+    const byMint: Record<string, number> = {};
+    for (const p of pledged) {
+      byMint[p.mint] = (byMint[p.mint] ?? 0) + p.amountUi;
+    }
+    return byMint;
+  }, [pledged]);
+
   return {
     debtUsd,
     positions,
     capacityUsd,
     availableUsd: Math.max(0, capacityUsd - debtUsd),
     kaminoPosition,
+    collateralByMint,
     loading,
     refresh,
   };

@@ -10,9 +10,15 @@
 //
 //   solana-direct        USDC already in the Privy Solana wallet. One SPL
 //                        transfer to the intent account. Seconds, no fee.
-//   bridge-then-transfer USDC on Ethereum or BNB Chain. Trustware settles it to
-//                        the user's own Solana wallet first, then the same
-//                        transfer runs.
+//   bridge-then-transfer USDC on another chain Lighter settles. Trustware
+//                        settles it to the user's own Solana wallet first,
+//                        then the same transfer runs.
+//
+// Only chains Lighter itself settles native USDC on are offered: Ethereum,
+// Arbitrum, Base and Avalanche C-Chain, plus Solana. See LIGHTER_USDC_CHAINS.
+// Note this is a narrower list than what Trustware could physically bridge
+// from, and deliberately so: a balance shown as a funding source should be one
+// this venue can hold, not merely one a bridge can move.
 //
 // The bridge deliberately lands in the user's own wallet rather than sending
 // straight to Lighter's intent address. The intent address is a bare SPL token
@@ -25,6 +31,28 @@ import { USDC_DECIMALS } from "@/lib/jupiter/constants";
 import type { StableHolding } from "@/lib/trustware/stables";
 
 import { LIGHTER_MIN_CCTP_DEPOSIT_USDC } from "./constants";
+
+// The chains Lighter settles native USDC on: Ethereum, Arbitrum, Base and
+// Avalanche C-Chain, plus Solana. Keyed by Trustware chain id, which is what
+// StableHolding carries.
+//
+// This is the venue's own list, not ours. LIGHTER_INTENT_CHAIN_IDS holds four
+// of them (Solana, Arbitrum, Base, Avalanche); Ethereum is absent there only
+// because createIntentAddress rejects it and it uses the direct deposit
+// contract instead, so it belongs here all the same.
+//
+// BNB Chain is the one the stables registry scans that Lighter does not
+// settle, and it is why this filter exists at all.
+const LIGHTER_USDC_CHAINS: ReadonlySet<string> = new Set([
+  // Ethereum mainnet.
+  "1",
+  // Arbitrum One.
+  "42161",
+  // Base.
+  "8453",
+  // Avalanche C-Chain.
+  "43114",
+]);
 
 export type FundingRoute = "solana-direct" | "bridge-then-transfer";
 
@@ -79,6 +107,7 @@ export function resolveMarginFunding(input: {
   }
 
   const bridgeable = input.stables
+    .filter((holding) => LIGHTER_USDC_CHAINS.has(holding.chain))
     .map<FundingSource>((holding) => ({
       route: "bridge-then-transfer",
       chain: holding.chain,

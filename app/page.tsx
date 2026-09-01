@@ -163,7 +163,11 @@ export default function LandingPage() {
   const [pendingLaunch, setPendingLaunch] = useState(false);
   const [waitlistOpen, setWaitlistOpen] = useState(false);
 
-  const userEmail = user?.email?.address;
+  // Either source, because Google login links an email under `google` and none
+  // under `email`. Reading only the latter handed the waitlist dialog an empty,
+  // editable field to a user whose address is already verified, and let them
+  // type a different one than the gate in app/app/page.tsx will match on.
+  const userEmail = user?.email?.address ?? user?.google?.email;
   const walletAddress = user?.linkedAccounts.find(
     (account): account is WalletWithMetadata =>
       account.type === "wallet" &&

@@ -17,14 +17,19 @@ import { hedgeRouteFor } from "./hedge";
 //
 // Two mappings, and they are not symmetrical:
 //
-//   USDC anywhere -> USDC on Ethereum. No haircut, no cap, no basis risk. It is
-//   the best margin on the venue and the default this ranks first.
+//   USDC on a network Ondo settles -> USDC on Ethereum. No haircut, no cap, no
+//   basis risk. It is the best margin on the venue and the default this ranks
+//   first. Ondo issues USDC deposit addresses on avalanche, ethereum and
+//   solana only, so USDC held on BNB Chain or Base is not offered.
 //
-//   A tokenized equity -> the Ondo token for the same underlying, when Ondo
-//   credits one. SPYx becomes SPYon; AAPLx becomes nothing, because Ondo does
-//   not accept AAPLon as margin even though AAPL-USD.P is a live market. The
-//   route table already knows which underlyings have a collateral token, so
-//   that answer is read from it rather than restated here.
+//   A tokenized equity -> the Ondo token for the same underlying, for the two
+//   Ondo publishes as accepted margin: SPYx becomes SPYon and QQQx becomes
+//   QQQon, both on Ethereum. AAPLx becomes nothing, because Ondo does not
+//   accept AAPLon even though AAPL-USD.P is a live market, and neither do the
+//   five tokens their config lists without documenting (CRCLon, SPCXon,
+//   SNDKon, GLDon, SLVon). The route table decides which underlyings have a
+//   collateral token; the collateral registry's `documented` flag decides
+//   which of those actually credit.
 //
 // Pure. What can actually be signed today is a separate question, answered by
 // `executable` below rather than by dropping the source from the list: telling
@@ -49,11 +54,15 @@ export interface OndoMarginSource {
   balanceUsd: number | null;
   // The Ondo collateral asset this becomes.
   target: OndoCollateral;
-  // Whether the source leg can be signed today. Solana sources can: one
-  // signature, no gas, no chain switch. An EVM source needs an allowance and a
-  // chain switch, which lib/trustware/execute.ts owns and lib/ondo/fund.ts does
-  // not yet call.
+  // Whether the source leg can be signed today. Both kinds now can, but they
+  // are not the same trade: a Solana source is one signature with no gas and no
+  // chain switch, while an EVM source costs gas on its own chain and may need
+  // an ERC-20 approval first. `needsGas` is what the UI warns on; this flag is
+  // reserved for a source that genuinely cannot be signed at all.
   executable: boolean;
+  // True for an EVM source: the embedded wallet pays gas on the source chain
+  // and is born holding none.
+  needsGas: boolean;
 }
 
 export interface MarginSourceInput {
@@ -75,6 +84,23 @@ export interface MarginSourceInput {
 const USDC_DECIMALS = 6;
 const SOLANA_USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 
+// The networks Ondo will issue a USDC deposit address on, from the `network`
+// enum on POST /v1/wallet/deposit_address/list: avalanche, ethereum, solana.
+//
+// Our own route always delivers to Ethereum, so this is not what decides where
+// the money lands. It decides what is worth OFFERING: USDC on a chain Ondo
+// does not settle is not margin the user can post, and listing it as a funding
+// source promises a deposit this venue has no address for. BNB Chain and Base
+// are in the stables registry and are deliberately absent here.
+const ONDO_USDC_NETWORKS: ReadonlySet<string> = new Set([
+  TRUSTWARE_SOLANA_CHAIN,
+  // Ethereum mainnet.
+  "1",
+  // Avalanche C-Chain. Listed for completeness; the stables registry does not
+  // scan it today, so nothing resolves to it yet.
+  "43114",
+]);
+
 export function marginSources(input: MarginSourceInput): OndoMarginSource[] {
   const usdc = collateralBySymbol(input.collateral, "USDC");
   const sources: OndoMarginSource[] = [];
@@ -94,13 +120,15 @@ export function marginSources(input: MarginSourceInput): OndoMarginSource[] {
       balanceUsd: Number(input.solanaUsdcAtomic) / 10 ** USDC_DECIMALS,
       target: usdc,
       executable: true,
+      needsGas: false,
     });
   }
 
-  // 2. USDC anywhere else. Same destination, longer leg.
+  // 2. USDC on the other networks Ondo settles. Same destination, longer leg.
   if (usdc) {
     for (const stable of input.stables) {
       if (BigInt(stable.balanceAtomic || "0") <= 0n) continue;
+      if (!ONDO_USDC_NETWORKS.has(stable.chain)) continue;
       sources.push({
         id: `usdc:${stable.chain}:${stable.contract}`,
         kind: "usdc",
@@ -115,7 +143,10 @@ export function marginSources(input: MarginSourceInput): OndoMarginSource[] {
         // 18 decimals, and reading it at 6 reports 250 USDC as 250 trillion.
         balanceUsd: Number(stable.balanceAtomic) / 10 ** stable.decimals,
         target: usdc,
-        executable: false,
+        // Signable now: lib/ondo/fund.ts routes an EVM source through
+        // executeEvmRoute, which grants the allowance and switches the chain.
+        executable: true,
+        needsGas: true,
       });
     }
   }
@@ -144,6 +175,7 @@ export function marginSources(input: MarginSourceInput): OndoMarginSource[] {
       balanceUsd: price === undefined ? null : quantity * price,
       target,
       executable: true,
+      needsGas: false,
     });
   }
 
@@ -168,7 +200,8 @@ export function marginSources(input: MarginSourceInput): OndoMarginSource[] {
       // collateral price would be wrong for a proxy route. Left null.
       balanceUsd: null,
       target,
-      executable: equivalent.source.kind === "solana",
+      executable: true,
+      needsGas: equivalent.source.kind !== "solana",
     });
   }
 
@@ -192,7 +225,21 @@ function collateralFor(
   const route = hedgeRouteFor(xstockSymbol);
   if (!route?.collateralSymbol) return undefined;
 
-  return collateralBySymbol(collateral, route.collateralSymbol);
+  const target = collateralBySymbol(collateral, route.collateralSymbol);
+
+  // Only what Ondo publishes as accepted margin, which is SPYon and QQQon.
+  //
+  // Their token config lists five more (CRCLon, SPCXon, SNDKon, GLDon, SLVon)
+  // and Trustware will happily route to all of them, so this filter is the
+  // only thing standing between a user and a bridged deposit that arrives and
+  // credits nothing. `documented` is the registry's record of exactly that
+  // distinction: listed and routable, versus confirmed to credit as margin.
+  //
+  // The deposit itself always lands on Ethereum, which is the only network
+  // Ondo takes these two on, so no separate chain check is needed here.
+  if (!target?.documented) return undefined;
+
+  return target;
 }
 
 // USDC first, then what can be signed today, then by size.
@@ -203,7 +250,10 @@ function collateralFor(
 // a rally hits the margin from both sides.
 function rank(a: OndoMarginSource, b: OndoMarginSource): number {
   if (a.kind !== b.kind) return a.kind === "usdc" ? -1 : 1;
-  if (a.executable !== b.executable) return a.executable ? -1 : 1;
+  // Gasless before gas-paying. Both are signable now, but a Solana source costs
+  // one signature and nothing else, while an EVM one needs the wallet to hold
+  // native gas it may not have.
+  if (a.needsGas !== b.needsGas) return a.needsGas ? 1 : -1;
   return (b.balanceUsd ?? 0) - (a.balanceUsd ?? 0);
 }
 
@@ -219,6 +269,6 @@ export function bestMarginSource(
 // number that decides whether "add margin" is a one-click action or a bridge.
 export function readyMarginUsd(sources: OndoMarginSource[]): number {
   return sources
-    .filter((s) => s.executable)
+    .filter((s) => s.executable && !s.needsGas)
     .reduce((sum, s) => sum + (s.balanceUsd ?? 0), 0);
 }

@@ -10,6 +10,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { AssetLogo } from "@/components/AssetLogo";
 import { fetchChartViaProxy, type OhlcCandle } from "@/lib/jupiter/charts";
 import type { XStock } from "@/lib/jupiter/xstocks";
 
@@ -44,11 +45,16 @@ export function PriceChart({
   // names the asset and shows its price, so the chart does not restate both a
   // second time with a slightly different number.
   showHeading = true,
+  // Drop just the logo badge, keeping the heading. Narrower than showHeading and
+  // set for a different reason: the Markets row draws its own logo immediately
+  // above the chart, so a second one lands a few pixels below the first.
+  showLogo = true,
 }: {
   ticker: XStock;
   marker?: PriceChartMarker;
   heightClass?: string;
   showHeading?: boolean;
+  showLogo?: boolean;
 }) {
   const [range, setRange] = useState<Range>("1D");
   const [candles, setCandles] = useState<OhlcCandle[] | null>(null);
@@ -118,29 +124,40 @@ export function PriceChart({
   return (
     <div className="space-y-3">
       <div
-        className={`flex items-baseline ${
-          showHeading ? "justify-between" : "justify-end"
+        className={`flex ${
+          showHeading
+            ? // Centred, not baseline-aligned. The heading carries a logo badge
+              // now, and a flex row starting with an image has no text baseline
+              // to share, so the browser synthesises one from the badge's bottom
+              // edge and drops the range switch a row below the price.
+              "items-center justify-between"
+            : "items-baseline justify-end"
         }`}
       >
         {showHeading && (
-          <div>
-            <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-              {ticker.name} price
-            </div>
-            <div className="mt-1 flex items-baseline gap-3">
-              <span className="font-mono text-2xl font-light tracking-tight text-white tabular-nums">
-                {last != null ? `$${formatPrice(last)}` : "—"}
-              </span>
-              {change != null && (
-                <span
-                  className={`font-mono text-xs tabular-nums ${
-                    positive ? "text-aeras-positive" : "text-aeras-negative"
-                  }`}
-                >
-                  {positive ? "+" : ""}
-                  {change.toFixed(2)}% · {range}
+          // Logo beside the name, same pairing and sizing the asset rows use, so
+          // the chart heading reads as the same asset the list above named.
+          <div className="flex items-center gap-2.5">
+            {showLogo && <AssetLogo xstock={ticker} size={32} />}
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+                {ticker.name} price
+              </div>
+              <div className="mt-1 flex items-baseline gap-3">
+                <span className="font-mono text-2xl font-light tracking-tight text-white tabular-nums">
+                  {last != null ? `$${formatPrice(last)}` : "—"}
                 </span>
-              )}
+                {change != null && (
+                  <span
+                    className={`font-mono text-xs tabular-nums ${
+                      positive ? "text-aeras-positive" : "text-aeras-negative"
+                    }`}
+                  >
+                    {positive ? "+" : ""}
+                    {change.toFixed(2)}% · {range}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         )}

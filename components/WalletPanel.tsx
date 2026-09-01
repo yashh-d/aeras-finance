@@ -201,6 +201,9 @@ export function WalletPanel({
     scan.native,
     scan.nativePrices,
     scan.ondo,
+    // Rendered in the USDC row above as a per-chain part, so it has to be in
+    // the total too.
+    scan.stables,
   );
   // Mirrors the header total in app/app/page.tsx: a missing Lighter read
   // counts as 0, so the total can only understate.

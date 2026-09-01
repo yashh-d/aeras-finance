@@ -15,6 +15,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 
+import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import { useEmbeddedSolanaWallet } from "@/lib/privy/solana";
 
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
@@ -28,6 +29,7 @@ import type { AccountBalances } from "@/lib/solana/balances";
 import type { OndoCollateral } from "./collateral";
 import {
   executeOndoFunding,
+  isSolanaFundingSource,
   planOndoFunding,
   ONDO_FUNDING_ENABLED,
   type OndoFundingPlan,
@@ -82,6 +84,10 @@ export function useOndoMargin(params: {
   // transaction, so the generic send path is the right one here.
   const sendSolanaTx = useSendSolanaTxBase64();
   const { wallet: solanaWallet } = useEmbeddedSolanaWallet();
+  // The signer for an EVM source leg. Never indexed off the wallets array: this
+  // hook pins to the embedded wallet, and it resolves the provider through a
+  // ref so a chain switch cannot strand a stale one.
+  const evmWallet = useEmbeddedEvmWallet();
   const [status, setStatus] = useState<MarginStatus>({ kind: "idle" });
 
   const priceUsdByMint = useMemo(() => {
@@ -113,10 +119,15 @@ export function useOndoMargin(params: {
         setStatus({ kind: "error", message: "No Solana wallet available to sign." });
         return;
       }
-      if (!source.executable) {
+      // The address that holds the source, which is not always the Solana one.
+      // Quoting an EVM leg with a Solana `fromAddress` asks Trustware to route
+      // from an address that does not exist on that chain.
+      const fromSolana = isSolanaFundingSource(source.chain);
+      const ownerAddress = fromSolana ? solanaWallet.address : evmWallet.address;
+      if (!ownerAddress) {
         setStatus({
           kind: "error",
-          message: `Funding from ${source.chainLabel} needs an on-chain approval Aeras does not sign yet. Move it to Solana, or use a Solana holding.`,
+          message: `No ${fromSolana ? "Solana" : "Ethereum"} wallet available to fund from ${source.chainLabel}.`,
         });
         return;
       }
@@ -144,7 +155,7 @@ export function useOndoMargin(params: {
                 ? null
                 : (source.balanceUsd * Number(amountAtomic)) /
                   Number(source.balanceAtomic),
-            ownerAddress: solanaWallet.address,
+            ownerAddress,
           },
         });
 
@@ -167,7 +178,7 @@ export function useOndoMargin(params: {
         });
       }
     },
-    [solanaWallet],
+    [solanaWallet, evmWallet.address],
   );
 
   const confirm = useCallback(async () => {
@@ -181,6 +192,16 @@ export function useOndoMargin(params: {
           address: solanaWallet.address,
           signAndSendBase64: sendSolanaTx,
         },
+        // Used only when the plan's source is an EVM chain. Resolved through
+        // the ref-backed hook so a chain switch mid-flow cannot leave this
+        // holding a provider bound to the old chain.
+        evm: evmWallet.address
+          ? {
+              address: evmWallet.address,
+              switchChain: evmWallet.switchChain,
+              getProvider: evmWallet.getProvider,
+            }
+          : undefined,
         onProgress: (progress: OndoFundingProgress) => {
           setStatus({ kind: "working", message: describe(progress) });
         },
@@ -194,7 +215,7 @@ export function useOndoMargin(params: {
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [status, solanaWallet, sendSolanaTx, params]);
+  }, [status, solanaWallet, sendSolanaTx, evmWallet, params]);
 
   return {
     sources,

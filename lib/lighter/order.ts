@@ -21,16 +21,22 @@
 
 import type { EIP1193Provider } from "@privy-io/react-auth";
 
-import { fetchLighterAccountState, submitLighterTx } from "./client";
-import { LIGHTER_TX_TYPE_CREATE_ORDER } from "./constants";
+import { submitLighterTx } from "./client";
+import {
+  LIGHTER_MARGIN_MODE_ISOLATED,
+  LIGHTER_TX_TYPE_CREATE_ORDER,
+  LIGHTER_TX_TYPE_UPDATE_LEVERAGE,
+} from "./constants";
 import { ensureTradingKey } from "./onboarding";
-import { signMarketOrder } from "./signer";
+import { wireInitialMarginFraction } from "./risk";
+import { signMarketOrder, signUpdateLeverage } from "./signer";
 import {
   computeHedgeSize,
   slippageBoundPrice,
   toWireInteger,
   type HedgeSize,
 } from "./sizing";
+import { currentNonce } from "./trade";
 import type { LighterMarket } from "./types";
 
 // A hedge is a taker order on a book we do not control, so some bound is
@@ -38,6 +44,29 @@ import type { LighterMarket } from "./types";
 // sat inside 10 bps when measured, and tight enough that a thin book cannot fill
 // the whole order at an arbitrary price.
 export const HEDGE_SLIPPAGE_BPS = 50;
+
+// Leverage a hedge is opened at, and the margin mode that makes it mean
+// something. 2x rather than the market maximum: a hedge held against a stock is
+// a long-lived position, and margin not posted is margin not protecting it.
+//
+// This lives here, next to the code that SENDS it, rather than in the panel that
+// draws it. It used to live in HedgePanel.tsx, and because placeHedge never sent
+// an UpdateLeverage at all, the panel quoted margin and a liquidation price for a
+// 2x isolated position while the exchange opened a cross position at the market
+// default of 6.66%. On a $14.62 hedge the panel said $7.31 and Lighter reserved
+// $0.97. Every consumer now reads the same constant as the transaction.
+//
+// Isolated, not cross, and that is the whole point rather than a detail. Under
+// cross, the initial margin fraction changes what is reserved and nothing else:
+// liquidation runs off the maintenance fraction against total account equity, so
+// a 2x cross hedge would lock up $7.31 and still liquidate where a 15x one does.
+// The panel's two figures are only simultaneously true under isolated margin.
+//
+// The cost is real and belongs in the UI, not in a comment: an isolated hedge is
+// walled off, so it liquidates sooner than a cross one and cannot draw on the
+// rest of the balance to survive a rally.
+export const HEDGE_LEVERAGE = 2;
+export const HEDGE_MARGIN_MODE = LIGHTER_MARGIN_MODE_ISOLATED;
 
 // A hedge sells the perp. Long the stock, short the perp. Closing one buys it
 // back.
@@ -115,7 +144,49 @@ export async function placeHedge(
     params.market.priceDecimals,
   );
 
+  // ONE nonce read for BOTH transactions, incremented locally for the second.
+  // Reading it again would not work: fetchLighterAccountState caches for four
+  // seconds and the leverage transaction lands well inside that window, so the
+  // second read returns the nonce the first transaction just spent and the order
+  // is rejected. The increment is safe because the leverage submit is awaited,
+  // so the sequencer has accepted nonce N before N+1 is signed.
   const nonce = await currentNonce(params.l1Address);
+
+  // Leverage before the order, because the margin requirement is applied at
+  // fill: an order that lands first is margined at whatever the market default
+  // was, which is the bug this whole path exists to fix.
+  //
+  // Sent on every hedge rather than only when it differs. The setting is per
+  // account per market and no endpoint reports its current value, so "already
+  // 2x isolated" is not a state this code can observe. It costs a nonce and a
+  // round trip, and Lighter charges no fee for it.
+  const leverage = wireInitialMarginFraction(HEDGE_LEVERAGE, params.market);
+  const leverageTx = await signUpdateLeverage({
+    accountIndex,
+    marketIndex: params.market.marketId,
+    initialMarginFraction: leverage.fraction,
+    marginMode: HEDGE_MARGIN_MODE,
+    nonce,
+  });
+
+  try {
+    await submitLighterTx(LIGHTER_TX_TYPE_UPDATE_LEVERAGE, leverageTx.txInfo);
+  } catch (error) {
+    // Deliberately fatal rather than falling through to the order. Placing it
+    // anyway would open the position at the market default while the panel
+    // showed 2x figures, which is exactly the divergence this replaced.
+    //
+    // OPEN QUESTION, needs a live test: most venues refuse a margin-mode change
+    // while a position is open in that market. If adding to an existing hedge
+    // starts failing here, that is the cause, and the fix is to skip this step
+    // when the account already holds a position in this market (and to send the
+    // order under `nonce`, not `nonce + 1`, since a rejected transaction spends
+    // no nonce).
+    throw new Error(
+      `Could not set ${leverage.leverage}x isolated margin on ${params.market.symbol}, ` +
+        `so the hedge was not placed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 
   const tx = await signMarketOrder({
     accountIndex,
@@ -124,7 +195,7 @@ export async function placeHedge(
     baseAmount: size.baseAmount,
     slippageBoundPrice: bound.wirePrice,
     isAsk: IS_ASK,
-    nonce,
+    nonce: nonce + 1,
   });
 
   const orderTxHash = await submitLighterTx(
@@ -185,15 +256,4 @@ export async function closeHedge(params: {
   );
 
   return { kind: "submitted", txHash: orderTxHash };
-}
-
-// Re-read rather than trusting the nonce the panel rendered with. Between render
-// and submit the user may have hedged something else in another tab, and every
-// order through our slot advances the same counter.
-async function currentNonce(l1Address: string): Promise<number> {
-  const state = await fetchLighterAccountState(l1Address);
-  if (!state.account) {
-    throw new Error("Lighter account disappeared before the order was signed");
-  }
-  return state.nextNonce;
 }

@@ -57,6 +57,7 @@ function toMarket(detail: LighterOrderBookDetail): LighterMarket {
     tradingHours: detail.market_config?.trading_hours ?? "",
     openInterest: detail.open_interest,
     dailyQuoteVolume: detail.daily_quote_token_volume,
+    dailyPriceChange: detail.daily_price_change,
   };
 }
 

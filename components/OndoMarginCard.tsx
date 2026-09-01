@@ -15,12 +15,37 @@
 // those numbers after the signature would be showing them too late, and the
 // haircut in particular surprises people: $1,000 of SPYon is $900 of margin.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
+import { FundMenu, type FundGroup } from "@/components/FundMenu";
+import { assetIdentity } from "@/lib/jupiter/xstocks";
+import { tokenLogoBySymbol } from "@/lib/tokens/logos";
 import type { OndoMarginSource } from "@/lib/ondo/margin-sources";
 import type { UseOndoMargin } from "@/lib/ondo/use-ondo-margin";
 
 import { INSET_PANEL } from "@/lib/ui/surface";
+
+// Chain marks for the menu's group headers, keyed by the chain label the
+// source registry produces.
+const CHAIN_LOGOS: Record<string, string> = {
+  Solana: "/logos/solana.png",
+  Ethereum: "/logos/eth.png",
+  "BNB Chain": "/logos/bnb.png",
+  Base: "/logos/eth.png",
+};
+
+// The mark for one source. USDC and the other stables resolve by symbol; a
+// tokenized equity resolves through the xStock catalog, which is where its
+// company logo lives. An Ondo token carries the "on" suffix, so it is asked
+// for under its xStock name.
+function sourceLogo(source: OndoMarginSource): string | undefined {
+  const bySymbol = tokenLogoBySymbol(source.symbol);
+  if (bySymbol) return bySymbol;
+  const xstockSymbol = source.symbol.endsWith("on")
+    ? `${source.symbol.slice(0, -2)}x`
+    : source.symbol;
+  return assetIdentity(source.token, xstockSymbol).logo;
+}
 
 const PANEL = INSET_PANEL;
 const LABEL =
@@ -29,10 +54,43 @@ const LABEL =
 export function OndoMarginCard({ margin }: { margin: UseOndoMargin }) {
   const [selected, setSelected] = useState<OndoMarginSource | null>(null);
   const [amount, setAmount] = useState("");
-  const [picking, setPicking] = useState(false);
 
   const source = selected ?? margin.best ?? null;
   const status = margin.status;
+
+  // Grouped by chain, same shape as the wallet's Fund menu: which chain, then
+  // which asset, with a mark against each so the chain is recognised before the
+  // label is read. The registry already sorts USDC first and gasless sources
+  // ahead of gas-paying ones, so group order follows the list rather than a
+  // second opinion about ranking.
+  const groups = useMemo<FundGroup[]>(() => {
+    const byChain = new Map<string, OndoMarginSource[]>();
+    for (const s of margin.sources) {
+      const existing = byChain.get(s.chainLabel);
+      if (existing) existing.push(s);
+      else byChain.set(s.chainLabel, [s]);
+    }
+    return [...byChain.entries()].map(([chainLabel, sources]) => ({
+      chain: chainLabel,
+      chainLogo: CHAIN_LOGOS[chainLabel],
+      options: sources.map((s) => ({
+        id: s.id,
+        label: s.symbol,
+        hint:
+          s.balanceUsd === null
+            ? `becomes ${s.target.symbol}`
+            : `${usd(s.balanceUsd)} · becomes ${s.target.symbol}${
+                s.needsGas ? " · needs gas" : ""
+              }`,
+        logo: sourceLogo(s),
+        onSelect: () => {
+          setSelected(s);
+          setAmount("");
+          margin.reset();
+        },
+      })),
+    }));
+  }, [margin]);
 
   // Pre-filled with the whole balance. Someone adding margin is usually adding
   // what they have, and an empty field is one more thing to do before the click
@@ -63,50 +121,12 @@ export function OndoMarginCard({ margin }: { margin: UseOndoMargin }) {
               : `Posts as ${source.target.symbol}, credited at ${(100 - source.target.haircut * 100).toFixed(0)}% of mark`}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setPicking((v) => !v)}
-          className="shrink-0 rounded-lg border border-white/10 px-2.5 py-1 text-[11px] text-white/55 transition-colors hover:border-white/20 hover:text-white"
-        >
-          {source.symbol} on {source.chainLabel}
-        </button>
-      </div>
-
-      {picking && (
-        <div className="mt-3 divide-y divide-white/[0.06] rounded-lg border border-white/[0.07]">
-          {margin.sources.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => {
-                setSelected(s);
-                setAmount("");
-                setPicking(false);
-                margin.reset();
-              }}
-              className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors hover:bg-white/[0.03]"
-            >
-              <div className="min-w-0">
-                <div className="text-xs text-white/80">
-                  {s.symbol}{" "}
-                  <span className="text-white/35">on {s.chainLabel}</span>
-                </div>
-                <div className="text-[11px] text-white/30">
-                  {/* Not dropped from the list. Telling someone they have
-                      nothing when their money is one chain away is the wrong
-                      answer; telling them it needs another step is not. */}
-                  {s.executable
-                    ? `becomes ${s.target.symbol}`
-                    : "needs an on-chain approval, not signed here yet"}
-                </div>
-              </div>
-              <div className="shrink-0 font-mono text-xs tabular-nums text-white/70">
-                {s.balanceUsd === null ? "—" : usd(s.balanceUsd)}
-              </div>
-            </button>
-          ))}
+        {/* The wallet's Fund control, reused rather than restyled. Same
+            question in the same shape: which chain, then which asset. */}
+        <div className="w-40 shrink-0">
+          <FundMenu label={`${source.symbol} on ${source.chainLabel}`} groups={groups} />
         </div>
-      )}
+      </div>
 
       {status.kind === "ready" ? (
         <Plan margin={margin} />
@@ -145,6 +165,18 @@ export function OndoMarginCard({ margin }: { margin: UseOndoMargin }) {
           {status.kind === "error" && (
             <p className="mt-2 text-[11px] leading-relaxed text-red-300">
               {status.message}
+            </p>
+          )}
+
+          {/* The one way an EVM source is not like a Solana one. It is stated
+              before the button rather than discovered as a failed signature:
+              the embedded wallet is born with no gas, and unlike the Monad
+              path there is no inbound leg to attach a top-up to. */}
+          {source.needsGas && (
+            <p className="mt-2 text-[11px] leading-relaxed text-white/45">
+              Funding from {source.chainLabel} is signed with your Ethereum
+              wallet and pays gas there, possibly after an approval. Your Solana
+              USDC needs neither.
             </p>
           )}
 

@@ -46,7 +46,14 @@ import { collateralTicker } from "@/lib/tokens/market-logos";
 import { ONDO_FUNDING_ENABLED } from "@/lib/ondo/fund";
 import { AssetLogo } from "@/components/AssetLogo";
 import { MarketLogo } from "@/components/MarketLogo";
+import { OndoMarginCard } from "@/components/OndoMarginCard";
+import { OndoWithdrawCard } from "@/components/OndoWithdrawCard";
+import { useOndoMargin } from "@/lib/ondo/use-ondo-margin";
+import { useOndoWithdraw } from "@/lib/ondo/use-ondo-withdraw";
 import { assetIdentity } from "@/lib/jupiter/xstocks";
+import type { JupiterPriceMap } from "@/lib/jupiter/prices";
+import type { AccountBalances } from "@/lib/solana/balances";
+import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
 
 import { INSET_PANEL } from "@/lib/ui/surface";
 
@@ -86,10 +93,48 @@ function creditedCollateralUsd(account: OndoAccountSnapshot): number {
   return account.collateralHealth.nonUsdcMarginValueUsd;
 }
 
-export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
+export function OndoHedgeSection({
+  hedge,
+  balances,
+  prices,
+  scan,
+}: {
+  hedge: UseOndoHedge;
+  // Only for the margin card: what funds a deposit is whatever the user holds
+  // anywhere, which is the same cross-chain scan the rest of the app shares.
+  balances: AccountBalances | null;
+  prices: JupiterPriceMap | null;
+  scan: WalletScan;
+}) {
   const wallet = useEmbeddedEvmWallet();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
   const [signingIn, setSigningIn] = useState(false);
+  // Add and Withdraw, one at a time: both describe the same balance, so showing
+  // both at once would be two forms arguing over one number. Mirrors the
+  // Lighter body's pair in HedgePanel.
+  const [marginOpen, setMarginOpen] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
+
+  const hasSession =
+    hedge.status === "needs-margin" || hedge.status === "ready";
+
+  // The same hooks the Perps tab uses. Funding and withdrawing are properties
+  // of the Ondo account, not of the surface it is reached from, so a user who
+  // hedges here should not have to cross to another tab to pay for it.
+  const margin = useOndoMargin({
+    balances,
+    prices,
+    scan,
+    collateral: hedge.collateral,
+    onDelivered: () => void hedge.refresh(),
+  });
+
+  // Gated on a session for the reason the Perps tab gates it: the read behind
+  // it fans out to eight Ondo calls and answers nothing before sign-in.
+  const withdraw = useOndoWithdraw({
+    enabled: hasSession,
+    onWithdrawn: () => void hedge.refresh(),
+  });
   // Ondo refusing to serve this account or location at all. Not a transient
   // error, so it replaces the sign-in offer rather than sitting above it.
   const [unavailable, setUnavailable] = useState<string | null>(null);
@@ -414,7 +459,28 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
         onSignIn={() => void onSignIn()}
         selfCollateralizableUsd={hedge.totals.selfCollateralizableUsd}
         marginUsd={hedge.marginUsd}
+        onAddMargin={
+          hasSession
+            ? () => {
+                setWithdrawOpen(false);
+                setMarginOpen((v) => !v);
+              }
+            : undefined
+        }
+        onWithdrawMargin={
+          // Needs a session and something to withdraw. Before that the button
+          // would only open a form that refuses.
+          hasSession && hedge.marginUsd > 0
+            ? () => {
+                setMarginOpen(false);
+                setWithdrawOpen((v) => !v);
+              }
+            : undefined
+        }
       />
+
+      {marginOpen && hasSession && <OndoMarginCard margin={margin} />}
+      {withdrawOpen && hasSession && <OndoWithdrawCard withdraw={withdraw} />}
 
       {hedge.loading ? (
         <div className={`${PANEL} p-4 text-sm text-white/45`}>
@@ -468,6 +534,26 @@ export function OndoHedgeSection({ hedge }: { hedge: UseOndoHedge }) {
 
 // Where the user is in the Ondo flow. Sign-in is a signature rather than a
 // transaction: nothing is spent, and it is what every account read is gated on.
+// Same shape as the Add/Withdraw pills on the Lighter strip, so the two venues
+// offer the same affordance in the same place.
+function PillButton({
+  onClick,
+  children,
+}: {
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-full border border-white/15 bg-white/5 px-2.5 py-1 text-[11px] font-medium text-white/70 transition-colors hover:border-white/25 hover:text-white"
+    >
+      {children}
+    </button>
+  );
+}
+
 function SessionCard({
   status,
   signingIn,
@@ -475,6 +561,8 @@ function SessionCard({
   onSignIn,
   selfCollateralizableUsd,
   marginUsd,
+  onAddMargin,
+  onWithdrawMargin,
 }: {
   status: UseOndoHedge["status"];
   signingIn: boolean;
@@ -483,6 +571,9 @@ function SessionCard({
   onSignIn: () => void;
   selfCollateralizableUsd: number;
   marginUsd: number;
+  // Absent when the action cannot succeed yet, which is what hides the button.
+  onAddMargin?: () => void;
+  onWithdrawMargin?: () => void;
 }) {
   if (status === "no-wallet") {
     return (
@@ -533,7 +624,12 @@ function SessionCard({
   if (status === "needs-margin") {
     return (
       <div className={`${PANEL} p-4`}>
-        <h3 className="text-sm font-medium text-white">No margin posted yet</h3>
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="text-sm font-medium text-white">
+            No margin posted yet
+          </h3>
+          {onAddMargin && <PillButton onClick={onAddMargin}>Add</PillButton>}
+        </div>
         {selfCollateralizableUsd > 0 && (
           <div className="mt-3">
             <Metric
@@ -550,7 +646,21 @@ function SessionCard({
   return (
     <div className={`${PANEL} p-4`}>
       <div className="flex flex-wrap items-baseline justify-between gap-4">
-        <Metric label="Margin available" value={usd(marginUsd)} />
+        {/* The margin stat carries its own actions, as the Lighter strip does:
+            the stat is where the eye already goes when margin is short, so the
+            buttons belong on it rather than on a separate bar. */}
+        <div>
+          <div className={LABEL}>Margin available</div>
+          <div className="mt-1 flex items-center gap-2">
+            <span className="font-mono text-base tabular-nums text-white">
+              {usd(marginUsd)}
+            </span>
+            {onAddMargin && <PillButton onClick={onAddMargin}>Add</PillButton>}
+            {onWithdrawMargin && (
+              <PillButton onClick={onWithdrawMargin}>Withdraw</PillButton>
+            )}
+          </div>
+        </div>
         {selfCollateralizableUsd > 0 && (
           <Metric
             label="Postable collateral"

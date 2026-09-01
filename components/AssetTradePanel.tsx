@@ -9,6 +9,7 @@ import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
 import type { XStock } from "@/lib/jupiter/xstocks";
 import type { AccountBalances } from "@/lib/solana/balances";
+import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
 
 // Buy and sell one asset, at market or on a trigger, with the wallet's open
 // orders for it underneath. Shared by the Markets row expansion and the Home
@@ -17,6 +18,7 @@ export function AssetTradePanel({
   xstock,
   prices,
   balances,
+  scan,
   walletAddress,
   auth,
   onRefresh,
@@ -25,6 +27,9 @@ export function AssetTradePanel({
   xstock: XStock;
   prices: JupiterPriceMap | null;
   balances: AccountBalances | null;
+  // Passed through to the buy ticket, which offers off-Solana USDC as a way
+  // to pay. Optional so a caller without a scan still renders.
+  scan?: WalletScan;
   walletAddress: string | null;
   auth: ReturnType<typeof useTriggerAuth>;
   onRefresh: () => void;
@@ -75,6 +80,7 @@ export function AssetTradePanel({
           walletAddress={walletAddress}
           prices={prices}
           balances={balances}
+          scan={scan}
           onBalanceChange={onRefresh}
           modeToggle={modeToggle}
           autoFocus={autoFocus}

@@ -195,8 +195,50 @@ These exist in the repo and are past the "do not build" line. They are listed he
 - Leveraged looping and unwinding against the Jupiter Lend borrow vaults (`lib/jupiter/multiply.ts`, surfaced by `components/LoopingPanel.tsx`).
 - Kamino borrow against xStock collateral, through Kamino's isolated xStocks Market.
 - Perps hedging, so a user long an xStock can open an offsetting short without selling. Two venues, both live, kept deliberately. `lib/lighter` has the shipped hedge tab: USDC margin funded natively from Solana, zero maker and taker fees, permissionless. `lib/ondo` is the second venue as of 2026-08-25: SIWE session in an httpOnly cookie, authenticated reads, market orders carrying builder code `aeras`, margin funding, and a venue toggle on the hedge tab. `components/HedgePanel.tsx` keeps the Lighter body untouched and renders `components/OndoHedgeSection.tsx` beside it rather than behind a shared abstraction, because the venues differ in ways worth showing. Ondo's edge is that it pays builder commission and accepts the tokenized stock itself as margin, so the stock can pay for its own hedge; its cost is that deposits are Ethereum-only. Read `docs/ondo-perps.md` before touching it, especially the builder-code section: every way that field earns nothing is silent. Ondo's `disabled` flags and collateral list are **state, not configuration**, and both changed materially in August 2026, so `lib/ondo/hedge.ts` resolves each route against the live catalog and `lib/ondo/collateral.ts` discovers the credited collateral set from `tokenConfig` rather than hardcoding either. Margin funding (`lib/ondo/fund.ts`) converts a Solana holding into the Ondo collateral token on Ethereum and delivers it straight to the deposit address Ondo provisioned, so the user signs once on Solana and never needs ETH. Two traps that guard it: a provisioned deposit address is **not** proof an asset is credited (Ondo issues one for TSLAon, which earns nothing), and some routes are badly lossy (SNDKon delivers about half its mark), so the plan refuses past a value-loss bound.
-- A Perps tab (`components/PerpsPanel.tsx`, `lib/ondo/use-perps.ts`), trading Ondo's markets directly rather than offsetting a holding. Market picker over every tradeable Ondo market, price chart, dollar-sized long/short ticket with per-market leverage, and open positions. Shares the order route with the hedge path so the builder code cannot be dropped from one and kept on the other.
-- Ondo withdrawals (`lib/ondo/withdraw.ts`, `app/api/ondo/withdraw`, `app/api/ondo/address-book`, `components/OndoWithdrawCard.tsx`), closing the one-way door that margin funding had opened. Two steps: register a payout address with a SIWE signature, then `POST /v1/withdraw`, which Ondo executes and pays the Ethereum gas for. **Assets land on Ethereum; the bridge back to Solana is not built.** Three things to know before touching it, all in `docs/ondo-perps.md`. `withdrawableMargin` is not a token cap and reading it as one tells a user with no positions and no debt they can withdraw nothing, which is backwards. Ondo exposes no per-asset balance anywhere, so held quantity is reconstructed from the deposit and withdrawal ledgers and cross-checked against credited margin, taking the smaller, because auto-exchange sells collateral with no ledger record. And the withdrawal destination is never caller-supplied: the challenge route takes no body and registers only the session's own wallet, which is the mirror of the deposit-address guard in `fund.ts` and means Aeras deliberately cannot withdraw to an external address.
+- A Perps tab (`components/PerpsPanel.tsx`), trading a venue's markets directly
+  rather than offsetting a holding. Two venues behind a toggle, the same shape
+  the hedge tab uses and for the same reason. **Lighter is the default**
+  (`components/LighterPerpsSection.tsx`, `lib/lighter/use-lighter-perps.ts`,
+  `lib/lighter/trade.ts`, as of 2026-08-28): permissionless, zero maker and
+  taker fees, USDC margin funded natively from Solana, its own candles. Ondo is
+  the second (`lib/ondo/use-perps.ts`): builder commission and the tokenized
+  stock accepted as margin, at the cost of a SIWE sign-in and an Ethereum leg.
+  Each is a market picker, price chart, dollar-sized long/short ticket and open
+  positions. The Ondo body shares its order route with the hedge path so the
+  builder code cannot be dropped from one and kept on the other; the Lighter
+  body shares `computeOrderSize` in `lib/lighter/sizing.ts` with `placeHedge`,
+  so both enforce the exchange's two minimums and its per-order quote cap in one
+  place. Only the venue hook for the selected venue runs, so the tab does not
+  poll a catalog nobody is looking at. **The Lighter ticket has no leverage
+  control**: setting leverage there is an `UpdateLeverage` transaction rather
+  than an API call as it is on Ondo, so the ticket sizes margin at the market's
+  own `initialMarginFraction`. That is what an account reserves when no
+  `UpdateLeverage` was ever sent for the market, which since 2026-08-31 is no
+  longer true of every market: see Hedge leverage below.
+- Hedge leverage on Lighter (`lib/lighter/order.ts`), as of 2026-08-31.
+  `placeHedge` sends an `UpdateLeverage` (tag 20) setting **isolated 2x** before
+  every hedge order. It previously sent none, so the panel drew margin and a
+  liquidation price for a 2x isolated position while the exchange opened a cross
+  one at the market default: on a $14.62 hedge the panel said $7.31 of margin and
+  Lighter reserved $0.97. `HEDGE_LEVERAGE` therefore lives in `order.ts` next to
+  the code that signs it, not in the panel that draws it, and everything reads
+  that one constant. Verified by `scripts/lighter-leverage-check.mts`, which
+  pins its reading of `TxTypeL2UpdateLeverage` to lighter-go commit `cef81af`,
+  the commit `public/lighter/main.wasm` was built from, and parses the signed
+  `txInfo` back out to prove the argument order.
+
+  Three things to know before touching it. **Cross and isolated are not a
+  detail**: under cross, the initial margin fraction changes what is reserved and
+  moves the liquidation price not at all, because liquidation runs off the
+  maintenance fraction against total account equity, so the panel's margin and
+  liquidation figures are only simultaneously true under isolated. **The nonce is
+  read once for both transactions** and incremented locally, because
+  `fetchLighterAccountState` caches for four seconds and a second read returns the
+  nonce the leverage transaction just spent. And **the setting is per account per
+  market, not per position**, which is a live gap: a market the user has hedged
+  stays isolated 2x for the Perps tab too, where margin is still priced at the
+  market default. Documented at the top of `components/LighterPerpsSection.tsx`.
+- Ondo withdrawals (`lib/ondo/withdraw.ts`, `app/api/ondo/withdraw`, `app/api/ondo/address-book`, `components/OndoWithdrawCard.tsx`), closing the one-way door that margin funding had opened. Two steps: register a payout address with a SIWE signature, then `POST /v1/withdraw`, which Ondo executes and pays the Ethereum gas for. **Assets land on Ethereum**, and the leg home is `lib/ondo/unwind.ts` ("Move to Solana"), which the card points at rather than leaving the user on Ethereum wondering. The card is deliberately small: it withdrew nothing that the haircut, the two balance reconstructions and the conditional fee needed explaining above the amount field, and saying all of it made the form unusable. Only what a user can act on stays. Zero rows are filtered too, because a ledger quantity is deposits minus withdrawals and a full exit leaves a float residue, which once made the card open on an asset the user no longer held. Three things to know before touching it, all in `docs/ondo-perps.md`. `withdrawableMargin` is not a token cap and reading it as one tells a user with no positions and no debt they can withdraw nothing, which is backwards. Ondo exposes no per-asset balance anywhere, so held quantity is reconstructed from the deposit and withdrawal ledgers and cross-checked against credited margin, taking the smaller, because auto-exchange sells collateral with no ledger record. And the withdrawal destination is never caller-supplied: the challenge route takes no body and registers only the session's own wallet, which is the mirror of the deposit-address guard in `fund.ts` and means Aeras deliberately cannot withdraw to an external address.
 - A Rain virtual card (`/spend`).
 - Morpho-on-Monad earn (`lib/morpho`, `app/api/morpho`). Curated USDC Morpho Vaults V2 on Monad mainnet as Earn options (V2, not V1 MetaMorpho — the indexer serves them under `vaultV2s`, and near-empty V1 twins of the same vaults exist; see `lib/morpho/vaults.ts`). All three layers are in: the read layer (live APY, on-chain positions), ERC-4626 deposit/withdraw through the embedded EVM wallet (`lib/morpho/deposit.ts`), and Trustware funding of a deposit from the wallet's Solana USDC, including a one-time native-MON gas top-up because the embedded wallet is born with no gas (`lib/morpho/fund.ts`, verified live by `scripts/morpho-fund-check.mts`). Funding runs both ways: a return leg (`sendMonadUsdcToSolana`, executed by `executeEvmRoute` in `lib/trustware/execute.ts`) brings Monad USDC back to the Solana wallet. This is the exception to Solana-only positions described under Chain Assumptions.
 - Morpho-on-Ethereum gold borrow (`lib/morpho/gold-*.ts`, `app/api/morpho/gold-*`,
