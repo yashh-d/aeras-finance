@@ -10,18 +10,32 @@ import { lighterSendTx } from "@/lib/lighter/server";
 
 export const dynamic = "force-dynamic";
 
-// Frankfurt. This is a compliance choice, not a latency one.
+// This function must run in Frankfurt. The region is set in vercel.json, NOT
+// here, and that distinction is the whole reason it works.
 //
 // Lighter geo-blocks sendTx and only sendTx: every read, and even
 // createIntentAddress, answers normally from a blocked region. Vercel defaults
-// to iad1 in Virginia, which is blocked, so without this line every hedge fails
-// with code 20558 no matter where the user is.
+// to iad1 in Virginia, which is blocked, so in the wrong region every hedge
+// fails with code 20558 no matter where the user is. A VPN on the user's
+// machine changes nothing, because the browser never talks to sendTx; this
+// relay does, from wherever Vercel placed it.
+//
+// `export const preferredRegion` was here and did nothing. Next.js deprecated
+// it, and on Vercel it only ever applied to the (also deprecated) edge runtime,
+// so on the nodejs runtime it is silently ignored: the build succeeds, the
+// function ships to iad1, and the only symptom is 20558 in production while
+// localhost works, since a dev server sends from the developer's own IP.
+// Region for a Node function comes from vercel.json `regions` or the project's
+// Function Regions setting, nowhere else.
 //
 // Several Vercel regions are unusable for the same reason. Lighter's terms name
 // the United States, Canada, the United Kingdom and China among others, which
 // rules out iad1, cle1, pdx1, sfo1, lhr1 and hkg1. dub1, arn1, cdg1 and sin1
 // would all work as well as fra1.
-export const preferredRegion = "fra1";
+//
+// vercel.json sets `regions` project-wide, so every function moves with this
+// one. That is deliberate: a per-function override in `functions` counts as a
+// second region and fails the build on a single-region plan.
 
 // Relays a transaction the browser already signed.
 //
