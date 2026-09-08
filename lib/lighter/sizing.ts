@@ -61,6 +61,15 @@ function floorTo(value: bigint, increment: bigint): bigint {
   return (value / increment) * increment;
 }
 
+// Rounding up to the increment. The mirror of floorTo, and used only for
+// answering "what is the smallest order that would work", never for sizing one:
+// an order rounded up is larger than asked for, which is exactly what floorTo
+// exists to prevent.
+function ceilTo(value: bigint, increment: bigint): bigint {
+  if (increment <= 0n) return value;
+  return ((value + increment - 1n) / increment) * increment;
+}
+
 function incrementFor(decimals: number): bigint {
   if (decimals < 0 || decimals > SCALE) {
     throw new Error(`Unsupported decimals: ${decimals}`);
@@ -179,6 +188,40 @@ export function computeOrderSize(
     throw new Error(`Order notional must be positive, got ${input.notionalUsd}`);
   }
   return sizeForNotional(target, input);
+}
+
+// The smallest order this market will actually accept, in USD.
+//
+// This is NOT min_quote_amount, and the difference is the whole point. Sizing
+// floors the base size to the market increment, so a notional sitting exactly
+// on the minimum rounds DOWN through it and is refused: $10 of SPY is
+// 0.01315357 SPY, floored to 0.0131, worth $9.96. Every market carries a $10
+// minimum, so $10 is the one figure a user is most likely to type and the one
+// that can never fill.
+//
+// Answering it needs the same arithmetic as sizing, run upward: the first
+// increment that clears the base minimum, raised until its value clears the
+// quote minimum. The final check is not redundant, because ceilTo works on the
+// size and the comparison happens on the size times the price, and those can
+// disagree in the last place.
+export function minimumFillableNotional(limits: MarketLimits): string {
+  const marketPrice = parseDecimal(limits.marketPriceUsd);
+  if (marketPrice <= 0n) {
+    throw new Error("Market has no usable price, refusing to size an order");
+  }
+
+  const increment = incrementFor(limits.sizeDecimals);
+  const minBase = parseDecimal(limits.minBaseAmount);
+  const minQuote = parseDecimal(limits.minQuoteAmount);
+
+  let size = ceilTo(minBase, increment);
+  if (size <= 0n) size = increment;
+
+  const clearingQuote = ceilTo(divide(minQuote, marketPrice), increment);
+  if (clearingQuote > size) size = clearingQuote;
+  if (multiply(size, marketPrice) < minQuote) size += increment;
+
+  return formatDecimal(multiply(size, marketPrice));
 }
 
 // marketPriceUsd here is the mark of the perp being shorted, not the price of
