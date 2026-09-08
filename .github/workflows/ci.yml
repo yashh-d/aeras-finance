@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch supersedes the run already in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege, set explicitly rather than inherited.
+#
+# The repo default is already read-only, but a default is a setting somebody can
+# change later, and a workflow that states its own needs keeps working when they
+# do. Nothing here writes to the repo, comments on a PR or publishes anything, so
+# read access to the contents is the whole requirement.
+#
+# Note this workflow uses `pull_request`, not `pull_request_target`. The latter
+# runs with a writable token AND checks out the fork's code, which is how a fork
+# PR ends up executing untrusted code with push rights. Do not switch it.
+permissions:
+  contents: read
+
+jobs:
+  # Blocking. Both steps are green on the commit that added this workflow, so a
+  # red run here means the change under review broke something.
+  verify:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Actions are pinned to commit SHAs, not tags. A tag is mutable: whoever
+      # controls the action's repo can repoint v7 at new code, and it runs here
+      # with our token on the next build. The trailing comment is the human
+      # readable version, and the SHA is what actually executes. Re-pin
+      # deliberately when upgrading; do not "tidy" these back to tags.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Do not leave the token in .git/config once checkout is done. Nothing
+          # later in this job pushes, so no step needs to be able to.
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          # No packageManager field in package.json, so the version is named
+          # here. Keep it in step with the pnpm that writes pnpm-lock.yaml.
+          version: 10
+
+      # Must come after pnpm/action-setup: the pnpm cache cannot be located
+      # before pnpm exists.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # vitest 5 wants Node >=22, next 16 wants >=20.9. 22 is the LTS that
+          # satisfies both. Bump this and the lint job together.
+          node-version: 22
+          cache: pnpm
+
+      # Two guards, doing different jobs.
+      #
+      # --frozen-lockfile fails rather than silently resolving a package.json
+      # that has drifted from the lockfile, so a dependency cannot enter the
+      # build without being in the reviewed diff.
+      #
+      # --ignore-scripts stops every dependency's pre/post-install script from
+      # executing here. Install scripts are the standard delivery mechanism for
+      # a compromised package, and they run before any test does. Verified to
+      # work on this tree: nothing typecheck or vitest touches needs a native
+      # build. Adding `next build` to this job would change that (sharp needs
+      # its binary), so revisit it then rather than dropping this flag by reflex.
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      # lib/**/*.test.ts only: the pure arithmetic behind positions, order
+      # sizing and cross-chain amounts. No network, no secrets, no fixtures to
+      # refresh. The live-API checks in scripts/*.mts are deliberately NOT run
+      # here; they need real keys and hit third-party endpoints, so they stay a
+      # manual step (see CLAUDE.md).
+      - name: Unit tests
+        run: pnpm test:run
+
+  # NOT blocking yet, deliberately.
+  #
+  # `pnpm lint` reports 33 errors on the tree this workflow was added to, none
+  # of them introduced by it. 31 are a single rule, react-hooks/set-state-in-effect,
+  # spread across 20 files: the hand-rolled useEffect + setInterval polling that
+  # every data hook in lib/ and components/ currently uses. Fixing that is a real
+  # refactor, not a lint pass.
+  #
+  # Running it anyway is the point. The output is visible on every PR, so the
+  # count can be driven down deliberately, and the day it reaches zero this job
+  # loses `continue-on-error` and starts gating merges alongside verify.
+  lint:
+    name: Lint (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Lint
+        run: pnpm lint

@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored, not ours. public/lighter/wasm_exec.js is the Go toolchain's
+    // own WASM bridge, shipped beside the lighter main.wasm it loads. Linting
+    // generated third-party output produces findings nobody can act on without
+    // diverging from upstream.
+    "public/**",
   ]),
 ]);
 
