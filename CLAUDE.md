@@ -105,6 +105,8 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      against the real endpoint rather than trusting a doc.
 /supabase            SQL migrations
 /docs                Integration docs (read these before writing code)
+  asset-catalog.md   Every xStock and Ondo token on every chain, the cross-issuer
+                     overlap, and route counts derived from the issuer lists
   asset-routes.md    Every conversion route by destination, with measured status
                      and the test order for new issuers and Monad xStocks
   jupiter-borrow.md
