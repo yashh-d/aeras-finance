@@ -28,8 +28,9 @@ import {
   MORPHO_IRM_ABI,
   MORPHO_ORACLE_ABI,
 } from "./gold-abi";
+import { ethCall, rpcBatch } from "@/lib/ethereum/rpc";
+
 import {
-  ETHEREUM_RPC_URL,
   MORPHO_BLUE,
   marketParamsTuple,
   type MorphoBlueMarket,
@@ -50,44 +51,10 @@ const ERC20_BALANCE_ABI = [
   },
 ] as const;
 
-interface RpcCall {
-  method: string;
-  params: unknown[];
-}
-
-// One batched JSON-RPC round trip. Public endpoints rate-limit per request
-// rather than per payload, and a full position read is eight calls, so batching
-// is the difference between one request and eight.
-async function rpcBatch(calls: RpcCall[]): Promise<Hex[]> {
-  const res = await fetch(ETHEREUM_RPC_URL, {
-    method: "POST",
-    cache: "no-store",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(
-      calls.map((c, i) => ({ jsonrpc: "2.0", id: i, ...c })),
-    ),
-  });
-  if (!res.ok) throw new Error(`Ethereum RPC ${res.status}`);
-  const json = (await res.json()) as
-    | { id: number; result?: Hex; error?: { message: string } }[]
-    | { error?: { message: string } };
-  if (!Array.isArray(json)) {
-    throw new Error(json.error?.message ?? "Ethereum RPC: unexpected response");
-  }
-  // Batch responses are not required to come back in request order.
-  const byId = new Map(json.map((r) => [r.id, r]));
-  return calls.map((_, i) => {
-    const entry = byId.get(i);
-    if (!entry) throw new Error(`Ethereum RPC: no response for call ${i}`);
-    if (entry.error) throw new Error(entry.error.message);
-    if (!entry.result) throw new Error(`Ethereum RPC: empty result for call ${i}`);
-    return entry.result;
-  });
-}
-
-function call(to: string, data: Hex): RpcCall {
-  return { method: "eth_call", params: [{ to, data }, "latest"] };
-}
+// The batched round trip and the gas price read used to be defined here. They
+// moved to lib/ethereum/rpc.ts when the Aave venue needed them too; `call` is
+// the same helper under its shared name.
+const call = ethCall;
 
 export interface GoldMarketRead {
   // Totals brought forward to the latest block.
@@ -247,11 +214,6 @@ export async function readGoldWallet(
   };
 }
 
-// Current gas price, wei. The gold funding planner sizes its ETH top-up from
-// this rather than from a constant, because Ethereum gas moves by an order of
-// magnitude within a week and a hardcoded top-up would be either wasteful or
-// useless depending on when it was written.
-export async function readGasPrice(): Promise<bigint> {
-  const [hex] = await rpcBatch([{ method: "eth_gasPrice", params: [] }]);
-  return BigInt(hex);
-}
+// The gas price read moved with the batch helper; re-exported so the position
+// route keeps its import.
+export { readGasPrice } from "@/lib/ethereum/rpc";

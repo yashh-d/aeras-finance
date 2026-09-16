@@ -46,9 +46,11 @@ Morpho-on-Monad earn is the second, larger exception, and here a *position* real
 
 Two things separate it from the Monad venue and are easy to get backwards. It is a Morpho Blue **market**, not an ERC-4626 vault: different contract, different math, and **collateral in it earns nothing** (only USDT suppliers earn, and they are a different party). And the exit is open in both directions, so it is not a one-way door: Trustware routes Ethereum USDT back to Solana USDC at about 0.3%. Read `docs/morpho-gold.md` before touching any of it, especially the sections on decimals, USDT's non-compliant `approve`, and why a full repayment is sized in shares.
 
-EVM code is confined to three files. `lib/privy/evm.ts` resolves the embedded EVM wallet and hands back its EIP-1193 provider. `lib/trustware/evm-tx.ts` translates a Trustware route payload into `eth_sendTransaction` params. `lib/trustware/execute.ts` grants ERC-20 allowances, switches the wallet's active chain, broadcasts the source leg, and tracks the route to settlement. Nothing outside those files should reach for an EVM provider. (The Morpho earn modules `lib/morpho/deposit.ts` and `lib/morpho/fund.ts` also sign EVM transactions, but only through the signer shape `lib/privy/evm.ts` exposes.)
+**Aave-on-Ethereum earn is the fourth exception**, the second *earn* position off Solana. Users deposit USDC or USDT into two kinds of Aave ERC-4626 vault: the stata token (`waEthUSDC`, the Aave V3 Core supply rate, instant exit) and the Umbrella stake token (`stkwaEthUSDC`, the same rate plus safety incentives, in exchange for taking first loss on Aave's bad debt and a **20-day cooldown plus 2-day window** to leave). `lib/aave` holds the registry, the on-chain read layer and the write path; `app/api/aave` serves rates and positions read from Ethereum; `components/AaveVaultsCard.tsx` is the venue inside the Earn table. Funding is the Monad machinery pointed at Ethereum, with ETH for gas bought through `lib/trustware/eth-gas.ts` (shared with the gold market). Read `docs/aave.md` before touching it. **It was built without live verification** (the session could not reach Ethereum), so `scripts/aave-check.mts` must pass before the venue is shown to anyone.
 
-Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do not use the public mainnet-beta endpoint for anything beyond local prototyping. There is no EVM RPC of our own. Trustware proxies allowance reads and cross-chain balance scans, which is what the `/sdk/rpc/evm` and `/data` endpoints in `lib/trustware/constants.ts` are for.
+EVM code is confined to four files. `lib/privy/evm.ts` resolves the embedded EVM wallet and hands back its EIP-1193 provider. `lib/trustware/evm-tx.ts` translates a Trustware route payload into `eth_sendTransaction` params. `lib/trustware/execute.ts` grants ERC-20 allowances, switches the wallet's active chain, broadcasts the source leg, and tracks the route to settlement. `lib/ethereum/tx.ts` is the Ethereum-mainnet version of that plumbing for the venues that call contracts directly: chain switch with read-back, send, receipt wait, and a USDT-aware approval. Nothing outside those files should reach for an EVM provider. (The venue modules `lib/morpho/deposit.ts`, `lib/morpho/fund.ts`, `lib/morpho/gold-borrow.ts` and `lib/aave/deposit.ts` also sign EVM transactions, but only through the signer shape `lib/privy/evm.ts` exposes.)
+
+Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do not use the public mainnet-beta endpoint for anything beyond local prototyping. There is no EVM RPC of our own for signing. Trustware proxies allowance reads and cross-chain balance scans, which is what the `/sdk/rpc/evm` and `/data` endpoints in `lib/trustware/constants.ts` are for. Two server-only read endpoints exist for the EVM venues, `MONAD_RPC_URL` and `ETHEREUM_RPC_URL` (`lib/ethereum/constants.ts`, batched through `lib/ethereum/rpc.ts`), each falling back to a public node.
 
 ## Repo Layout
 
@@ -66,6 +68,8 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
     /morpho          Monad vault metrics (indexer) and per-wallet positions
                      (Monad RPC reads); gold-market and gold-position for the
                      Ethereum Blue market (Ethereum RPC reads)
+    /aave            Ethereum vault rates (Pool and Umbrella emissions) and
+                     per-wallet positions, cooldowns and rewards (RPC reads)
     /lighter         Lighter perps market catalog
     /ondo            Ondo perps: market catalog, SIWE session, account
                      snapshot, terms, orders, deposit address, withdrawal
@@ -77,7 +81,13 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
 /components          UI components
   /ui                shadcn primitives
 /lib
+  /aave              Aave on Ethereum: the curated stata and Umbrella vault
+                     registry, ABIs, rate and cooldown math, server reads,
+                     the write path and Trustware funding
   /borrow            Borrow summary and market stats hooks
+  /ethereum          Ethereum mainnet constants, batched server-side RPC reads,
+                     and the client transaction plumbing shared by the venues
+                     that settle there (Morpho gold, Aave)
   /jupiter           Ultra client, Lend earn/borrow, looping, triggers,
                      prices, curated xStock list
   /kamino            Reserve metadata, kvaults, positions, borrow helpers
@@ -96,7 +106,8 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      pricing) and send-confirm.ts (sendAndConfirm)
   /supabase          Server-only admin client (service role key)
   /trustware         Cross-chain conversion: equivalents, planner, execution,
-                     plus the curated swap registry and its pricing
+                     plus the curated swap registry and its pricing, and the
+                     ETH gas top-up planner (eth-gas.ts) the Ethereum venues share
   users.ts           Supabase user model (signup, Privy sync, approval)
   waitlist.ts        Waitlist form validation
 /spend               Rain virtual card. Sits at the top level, not under /lib,
@@ -105,6 +116,7 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      against the real endpoint rather than trusting a doc.
 /supabase            SQL migrations
 /docs                Integration docs (read these before writing code)
+  aave.md
   jupiter-borrow.md
   kamino.md
   morpho-gold.md
@@ -115,7 +127,7 @@ CLAUDE.md            This file
 
 ## Integration Notes
 
-These are the things that are easy to get wrong. Read the relevant file in `docs/` before writing integration code, and verify against the live docs if anything looks stale. Coverage is partial: there is a doc for Jupiter borrow, Kamino, Ondo perps, and Privy, and none for Trustware or Lighter. For those two, the module comments and the matching script in `scripts/` are the record.
+These are the things that are easy to get wrong. Read the relevant file in `docs/` before writing integration code, and verify against the live docs if anything looks stale. Coverage is partial: there is a doc for Aave, Jupiter borrow, Kamino, Morpho gold, Ondo perps, and Privy, and none for Trustware or Lighter. For those two, the module comments and the matching script in `scripts/` are the record.
 
 For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json` pointing at `https://developers.jup.ag/docs/mcp`. Prefer it over web fetches when checking Jupiter API behavior:
 
@@ -263,15 +275,29 @@ These exist in the repo and are past the "do not build" line. They are listed he
   as of 2026-08-28. See Chain Assumptions: it is a source of funds with a return
   leg, not a venue, and it is listed only because the return leg works.
 - Waitlist signup, Privy-backed user sync, admin approval, and referral codes.
+- Aave-on-Ethereum earn (`lib/aave`, `app/api/aave`, `components/AaveVaultsCard.tsx`),
+  as of 2026-09-16. USDC and USDT into the Aave V3 Core stata tokens (instant) and
+  the Umbrella stake tokens (higher rate, slashable, 20-day cooldown). See Chain
+  Assumptions and `docs/aave.md`. Rates are read from the Pool and the Umbrella
+  RewardsController on-chain, never from Aave's API. Umbrella deposits and exits go
+  through BGD's `UmbrellaBatchHelper` so wrapping and staking is one transaction.
+  Building it moved three things into shared homes without changing them: the
+  Ethereum chain constants and batched RPC reads (`lib/ethereum`), the client
+  transaction plumbing that `gold-borrow.ts` had (`lib/ethereum/tx.ts`), and the ETH
+  gas planner that `gold-fund.ts` had (`lib/trustware/eth-gas.ts`, now taking the
+  venue's gas budget as an argument). Aave's third "vault" product, Stable Vaults,
+  is a B2B fixed-rate offering where Aeras would be the operator; it needs an
+  agreement with Aave Labs, not code, and is not here. **Not yet verified live:**
+  run `scripts/aave-check.mts` first.
 
 ## Out of Scope
 
 These will come later. Do not build them now, even if it seems easy.
 
 - Fiat on-ramp
-- Additional lending venues beyond Kamino, Jupiter Lend, Morpho-on-Monad, and the
-  Morpho-on-Ethereum gold market (MarginFi, Save, etc.)
+- Additional lending venues beyond Kamino, Jupiter Lend, Morpho-on-Monad, the
+  Morpho-on-Ethereum gold market, and Aave-on-Ethereum (MarginFi, Save, etc.)
 - Portfolio analytics beyond a single position view
 - Mobile-specific UI
-- EVM chains as a destination for a position, **except** the two Morpho venues described under Chain Assumptions: earn on Monad, and the gold borrow market on Ethereum. Outside those two, a position never settles off Solana. Swapping out to an EVM chain is also allowed and is described under Chain Assumptions.
+- EVM chains as a destination for a position, **except** the three EVM venues described under Chain Assumptions: Morpho earn on Monad, the Morpho gold borrow market on Ethereum, and the Aave vaults on Ethereum. Outside those three, a position never settles off Solana. Swapping out to an EVM chain is also allowed and is described under Chain Assumptions.
 - Notifications and email

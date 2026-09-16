@@ -15,11 +15,14 @@
 // same asset. That is now resolved in the cell instead: the column shows the
 // best-paying vault and names it, and the choice between vaults moves into the
 // expanded row (MorphoVenuePanel), which is where a venue's internals belong.
-// Morpho is also the one EVM venue here - the embedded EVM wallet signs its
-// deposits and Trustware funds them from Solana USDC.
+// Morpho and Aave are the two EVM venues here - the embedded EVM wallet signs
+// their deposits and Trustware funds them from Solana USDC. Aave (Ethereum) got
+// the same treatment as Morpho: several vaults per asset resolved in the cell,
+// the choice between them in the expanded row (AaveVenuePanel). Its two vaults
+// differ in kind rather than curator, and the Umbrella one leaves through a
+// cooldown, which is why that panel carries a state machine the others lack.
 //
-// Looping (multiply / unwind) lives in LoopingPanel. Aave stays off until it
-// gets the same treatment.
+// Looping (multiply / unwind) lives in LoopingPanel.
 
 import { useCallback, useEffect, useState } from "react";
 import BN from "bn.js";
@@ -70,6 +73,16 @@ import {
   type MorphoEarn,
 } from "@/components/MorphoVaultsCard";
 import { morphoVaultsForAsset, type MorphoVault } from "@/lib/morpho/vaults";
+import {
+  AaveVenuePanel,
+  aaveBestVault,
+  aavePositionAtomic,
+  aaveTotalPositionAtomic,
+  aaveVaultApy,
+  useAaveEarn,
+  type AaveEarn,
+} from "@/components/AaveVaultsCard";
+import { aaveVaultsForAsset, type AaveVault } from "@/lib/aave/vaults";
 import {
   atomicToUiString,
   getConnection,
@@ -336,11 +349,17 @@ function VaultsCard({
   // Held here, not inside a Morpho component, because the Morpho column has to
   // draw a rate on every row whether or not anything is expanded.
   const morpho = useMorphoEarn(walletAddress);
+  const aave = useAaveEarn(walletAddress);
 
   const handleMorphoSettled = useCallback(async () => {
     await morpho.refresh();
     await onRefresh();
   }, [morpho, onRefresh]);
+
+  const handleAaveSettled = useCallback(async () => {
+    await aave.refresh();
+    await onRefresh();
+  }, [aave, onRefresh]);
 
   return (
     <div className={`${GLASS_SURFACE} p-5 lg:p-6`}>
@@ -360,22 +379,28 @@ function VaultsCard({
       )}
 
       <div className="mt-5 divide-y divide-white/10">
-        <div className="grid grid-cols-12 gap-2 pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          <div className="col-span-3">Asset</div>
-          <div className="col-span-2 flex items-center justify-end gap-1.5">
+        <div
+          className={`${EARN_GRID} pb-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50`}
+        >
+          <div>Asset</div>
+          <div className="flex items-center justify-end gap-1.5">
             <VenueMark src={VENUE_LOGOS.jupiter} />
             Jupiter
           </div>
-          <div className="col-span-2 flex items-center justify-end gap-1.5">
+          <div className="flex items-center justify-end gap-1.5">
             <VenueMark src={VENUE_LOGOS.kamino} />
             Kamino
           </div>
-          <div className="col-span-2 flex items-center justify-end gap-1.5">
+          <div className="flex items-center justify-end gap-1.5">
             <VenueMark src={VENUE_LOGOS.morpho} />
             Morpho
           </div>
-          <div className="col-span-2 text-right">Your deposit</div>
-          <div className="col-span-1" />
+          <div className="flex items-center justify-end gap-1.5">
+            <VenueMark src={VENUE_LOGOS.aave} />
+            Aave
+          </div>
+          <div className="text-right">Your deposit</div>
+          <div />
         </div>
         {EARN_ASSETS.map((meta) => {
           const kaminoMeta = kaminoVaultByAsset(meta.assetMint);
@@ -393,6 +418,9 @@ function VaultsCard({
               }
               morphoVaults={morphoVaultsForAsset(meta.symbol)}
               morpho={morpho}
+              aaveVaults={aaveVaultsForAsset(meta.symbol)}
+              aave={aave}
+              onAaveSettled={handleAaveSettled}
               solanaUsdcAtomic={solanaBalances?.usdcAtomic ?? "0"}
               onMorphoSettled={handleMorphoSettled}
               balances={balances}
@@ -412,13 +440,21 @@ function VaultsCard({
   );
 }
 
-type Venue = "jupiter" | "kamino" | "morpho";
+type Venue = "jupiter" | "kamino" | "morpho" | "aave";
 
 const VENUE_NAMES: Record<Venue, string> = {
   jupiter: "Jupiter",
   kamino: "Kamino",
   morpho: "Morpho",
+  aave: "Aave",
 };
+
+// One track per column, shared by the header and every row so they cannot
+// drift. Was a 12-column grid with col-spans; a fifth venue did not divide
+// into 12, so the tracks are named instead. The asset column is the widest,
+// the chevron is fixed at the icon's width.
+const EARN_GRID =
+  "grid grid-cols-[minmax(0,2.4fr)_repeat(5,minmax(0,1.6fr))_1.25rem] items-center gap-2";
 
 function VaultRow({
   meta,
@@ -428,6 +464,9 @@ function VaultRow({
   kaminoPosition,
   morphoVaults,
   morpho,
+  aaveVaults,
+  aave,
+  onAaveSettled,
   solanaUsdcAtomic,
   onMorphoSettled,
   balances,
@@ -445,6 +484,11 @@ function VaultRow({
   // but USDC today.
   morphoVaults: readonly MorphoVault[];
   morpho: MorphoEarn;
+  // Empty for every asset Aave has no curated vault for: two each for USDC
+  // and USDT, none otherwise.
+  aaveVaults: readonly AaveVault[];
+  aave: AaveEarn;
+  onAaveSettled: () => Promise<void>;
   solanaUsdcAtomic: string;
   onMorphoSettled: () => Promise<void>;
   balances: EarnWalletBalances | null;
@@ -478,6 +522,14 @@ function VaultRow({
     ),
   );
 
+  // Aave, like Morpho, carries several vaults for one asset: the column shows
+  // the best-paying one and the row-level position sums all of them.
+  const aaveBest = aaveBestVault(aaveVaults, aave.metrics);
+  const aaveApy = aaveBest?.metric?.totalApy ?? null;
+  const aavePositionUi = Number(
+    atomicToUiString(aaveTotalPositionAtomic(aaveVaults, aave.positions).toString(), 6),
+  );
+
   // Whichever venue pays more gets the green rate. This falls out of the data
   // rather than being asserted anywhere, so the USDT row correctly shows
   // Jupiter ahead without a special case. Ties go to the leftmost venue.
@@ -487,26 +539,31 @@ function VaultRow({
     ["jupiter", jupiterApy],
     ["kamino", kaminoApy],
     ["morpho", morphoApy],
+    ["aave", aaveApy],
   ];
   const bestApy = Math.max(...apyByVenue.map(([, a]) => a ?? -Infinity));
   const leader =
     apyByVenue.find(([, a]) => a !== null && a === bestApy)?.[0] ?? null;
 
-  const totalPositionUi = positionUi + kaminoPositionUi + morphoPositionUi;
+  const totalPositionUi =
+    positionUi + kaminoPositionUi + morphoPositionUi + aavePositionUi;
   const positionByVenue: Array<[Venue, number]> = [
     ["jupiter", positionUi],
     ["kamino", kaminoPositionUi],
     ["morpho", morphoPositionUi],
+    ["aave", aavePositionUi],
   ];
   const heldVenues = positionByVenue.filter(([, p]) => p > 0);
   const decimalsShown = meta.decimals === 9 ? 4 : 2;
 
   const kaminoUsable = Boolean(kaminoMeta && kaminoVault);
   const morphoUsable = morphoVaults.length > 0;
+  const aaveUsable = aaveVaults.length > 0;
   const usableByVenue: Record<Venue, boolean> = {
     jupiter: Boolean(vault),
     kamino: kaminoUsable,
     morpho: morphoUsable,
+    aave: aaveUsable,
   };
 
   // Default the expanded form to the venue the user already has money in, then
@@ -539,8 +596,21 @@ function VaultRow({
       )
     : 0;
 
+  // Same again for Aave: the held vault first, then the best rate, and only
+  // sticks once the user picks.
+  const [pickedAave, setPickedAave] = useState<string | null>(null);
+  const aaveHeld = aaveVaults.find(
+    (v) => aavePositionAtomic(v, aave.positions) !== "0",
+  );
+  const aaveVault =
+    aaveVaults.find((v) => v.address === pickedAave) ?? aaveHeld ?? aaveBest?.vault;
+  const aaveVaultApyValue = aaveVault ? aaveVaultApy(aaveVault, aave.metrics) : null;
+  const aaveVaultPositionUi = aaveVault
+    ? Number(atomicToUiString(aavePositionAtomic(aaveVault, aave.positions), 6))
+    : 0;
+
   const canOpen = Boolean(
-    (vault || kaminoUsable || morphoUsable) && walletAddress,
+    (vault || kaminoUsable || morphoUsable || aaveUsable) && walletAddress,
   );
 
   // Withdraw falls back to deposit when the selected venue holds nothing, so
@@ -551,7 +621,9 @@ function VaultRow({
       ? positionUi
       : venue === "kamino"
         ? kaminoPositionUi
-        : morphoVaultPositionUi;
+        : venue === "morpho"
+          ? morphoVaultPositionUi
+          : aaveVaultPositionUi;
   const mode: EarnMode =
     pickedMode === "withdraw" && venuePositionUi <= 0 ? "deposit" : pickedMode;
   const venueApy =
@@ -559,13 +631,17 @@ function VaultRow({
       ? jupiterApy
       : venue === "kamino"
         ? kaminoApy
-        : morphoVaultApy;
+        : venue === "morpho"
+          ? morphoVaultApy
+          : aaveVaultApyValue;
   const venueLabel =
     venue === "jupiter"
       ? "Jupiter Lend"
       : venue === "kamino"
         ? (kaminoMeta?.name ?? "Kamino")
-        : (morphoVault?.name ?? "Morpho");
+        : venue === "morpho"
+          ? (morphoVault?.name ?? "Morpho")
+          : (aaveVault?.name ?? "Aave");
 
   return (
     <div>
@@ -581,11 +657,11 @@ function VaultRow({
         aria-expanded={open}
         aria-label={open ? `Close ${meta.symbol}` : `Manage ${meta.symbol}`}
         title={!walletAddress ? "Waiting for wallet" : undefined}
-        className={`group grid w-full grid-cols-12 items-center gap-2 py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed ${
+        className={`group w-full ${EARN_GRID} py-2.5 text-left text-sm transition-colors disabled:cursor-not-allowed ${
           open ? "bg-white/[0.03]" : "enabled:hover:bg-white/5"
         }`}
       >
-        <div className="col-span-3 flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5">
           <AssetLogo
             xstock={assetIdentity(meta.assetMint, meta.symbol)}
             size={32}
@@ -631,7 +707,18 @@ function VaultRow({
           note={morphoBest ? morphoBest.vault.name : "No vault"}
         />
 
-        <div className="col-span-2 text-right font-mono text-xs tabular-nums text-white">
+        <VenueCell
+          apy={aaveApy}
+          leads={leader === "aave"}
+          subtitle={
+            aaveBest?.metric?.tvlUsd != null
+              ? `$${formatLargeUsd(aaveBest.metric.tvlUsd)} TVL`
+              : null
+          }
+          note={aaveBest ? aaveBest.vault.name : "No vault"}
+        />
+
+        <div className="text-right font-mono text-xs tabular-nums text-white">
           {totalPositionUi > 0 ? (
             <>
               {totalPositionUi.toFixed(decimalsShown)}
@@ -646,7 +733,7 @@ function VaultRow({
           )}
         </div>
 
-        <div className="col-span-1 flex justify-end">
+        <div className="flex justify-end">
           <ChevronDown
             className={`size-4 transition-transform ${
               canOpen ? "text-white/40 group-hover:text-white/70" : "text-white/20"
@@ -675,10 +762,12 @@ function VaultRow({
             jupiterApy={jupiterApy}
             kaminoApy={kaminoApy}
             morphoApy={morphoVaultApy}
+            aaveApy={aaveVaultApyValue}
             kaminoName={kaminoMeta?.name}
             kaminoUsable={kaminoUsable}
             jupiterUsable={Boolean(vault)}
             morphoUsable={morphoUsable}
+            aaveUsable={aaveUsable}
           />
 
           {venue === "jupiter" && vault && (
@@ -714,6 +803,18 @@ function VaultRow({
               mode={mode}
               solanaUsdcAtomic={solanaUsdcAtomic}
               onSettled={onMorphoSettled}
+            />
+          )}
+          {venue === "aave" && aaveVault && (
+            <AaveVenuePanel
+              vaults={aaveVaults}
+              earn={aave}
+              selected={aaveVault}
+              onSelect={(v) => setPickedAave(v.address)}
+              mode={mode}
+              solanaUsdcAtomic={solanaUsdcAtomic}
+              solanaAddress={walletAddress}
+              onSettled={onAaveSettled}
             />
           )}
         </div>
@@ -841,7 +942,7 @@ function VenueCell({
   note: string | null;
 }) {
   return (
-    <div className="col-span-2 text-right">
+    <div className="text-right">
       <span
         className={`font-mono tabular-nums ${
           apy === null
@@ -873,22 +974,26 @@ function VenueTabs({
   jupiterApy,
   kaminoApy,
   morphoApy,
+  aaveApy,
   kaminoName,
   kaminoUsable,
   jupiterUsable,
   morphoUsable,
+  aaveUsable,
 }: {
   venue: Venue;
   onPick: (v: Venue) => void;
   jupiterApy: number | null;
   kaminoApy: number | null;
   // The selected Morpho vault's rate, not the column's best, so the tab agrees
-  // with the panel it opens.
+  // with the panel it opens. Same for Aave.
   morphoApy: number | null;
+  aaveApy: number | null;
   kaminoName: string | undefined;
   kaminoUsable: boolean;
   jupiterUsable: boolean;
   morphoUsable: boolean;
+  aaveUsable: boolean;
 }) {
   const options: Array<{
     id: Venue;
@@ -914,10 +1019,16 @@ function VenueTabs({
       apy: morphoApy,
       enabled: morphoUsable,
     },
+    {
+      id: "aave",
+      label: "Aave · Ethereum",
+      apy: aaveApy,
+      enabled: aaveUsable,
+    },
   ];
 
   return (
-    <div className="grid grid-cols-3 gap-2">
+    <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
       {options.map((o) => (
         <button
           key={o.id}
