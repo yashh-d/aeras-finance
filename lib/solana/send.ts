@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ComputeBudgetProgram,
   PublicKey,
   SystemProgram,
   TransactionMessage,
@@ -16,11 +17,19 @@ import {
 import { LAMPORTS_PER_SOL, USDC_MINT } from "@/lib/jupiter/constants";
 import { xstockByMint } from "@/lib/jupiter/xstocks";
 import { getConnection } from "@/lib/solana/balances";
+import { resolvePriorityFee } from "@/lib/solana/priority-fee";
+import { checkSolRent } from "@/lib/solana/rent";
 
-// Solana base signature fee + a small priority fee buffer.
+// Solana base signature fee.
 const BASE_FEE_LAMPORTS = 5_000;
 // Rent for a fresh associated token account (constant per Solana rent params).
 const ATA_RENT_LAMPORTS = 2_039_280;
+// Compute unit limits per branch. Solana charges the priority fee on the
+// requested limit, not on units consumed, so these stay close to the real
+// cost: a system transfer runs about 150 units, and an ATA creation plus a
+// Token-2022 transferChecked stays comfortably under 60k.
+const SOL_TRANSFER_CU = 5_000;
+const SPL_TRANSFER_CU = 80_000;
 
 export type SendAsset =
   | { kind: "sol" }
@@ -67,9 +76,36 @@ export async function buildSendTransaction(
 
   const instructions = [];
   let creatingAta = false;
+  let computeUnitLimit: number;
+  let rentLamports = 0;
+
+  // Resolved inside the branch so the SOL path can check rent against the
+  // fee; the price is read once per build.
+  let microLamports: number;
 
   if (input.asset.kind === "sol") {
     const lamports = Math.round(input.uiAmount * LAMPORTS_PER_SOL);
+    computeUnitLimit = SOL_TRANSFER_CU;
+    microLamports = await resolvePriorityFee(conn, {
+      accountKeys: [input.sender, input.recipient],
+      computeUnitLimit,
+    });
+    const feeLamports =
+      BASE_FEE_LAMPORTS + priorityLamports(microLamports, computeUnitLimit);
+
+    // One read for both sides. A missing account reads as null, which is the
+    // "fresh address" case the rent floor exists for.
+    const [senderInfo, recipientInfo] = await conn.getMultipleAccountsInfo([
+      senderPk,
+      recipientPk,
+    ]);
+    checkSolRent({
+      lamports,
+      feeLamports,
+      senderLamports: senderInfo?.lamports ?? 0,
+      recipientLamports: recipientInfo?.lamports ?? 0,
+    });
+
     instructions.push(
       SystemProgram.transfer({
         fromPubkey: senderPk,
@@ -98,9 +134,19 @@ export async function buildSendTransaction(
       programId,
     );
 
-    const destInfo = await conn.getAccountInfo(destAta);
+    computeUnitLimit = SPL_TRANSFER_CU;
+    const [destInfo, priceResolved] = await Promise.all([
+      conn.getAccountInfo(destAta),
+      resolvePriorityFee(conn, {
+        accountKeys: [sourceAta.toBase58(), destAta.toBase58(), input.sender],
+        computeUnitLimit,
+      }),
+    ]);
+    microLamports = priceResolved;
+
     if (!destInfo) {
       creatingAta = true;
+      rentLamports = ATA_RENT_LAMPORTS;
       instructions.push(
         createAssociatedTokenAccountInstruction(
           senderPk,
@@ -129,7 +175,13 @@ export async function buildSendTransaction(
   const message = new TransactionMessage({
     payerKey: senderPk,
     recentBlockhash: blockhash,
-    instructions,
+    instructions: [
+      // A limit alone raises the ceiling; the PRICE is what buys a place in
+      // the leader's queue. Sends used to go out at zero priority.
+      ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnitLimit }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+      ...instructions,
+    ],
   }).compileToV0Message();
 
   const tx = new VersionedTransaction(message);
@@ -139,6 +191,13 @@ export async function buildSendTransaction(
     transaction: serialized,
     creatingAta,
     feeEstimateLamports:
-      BASE_FEE_LAMPORTS + (creatingAta ? ATA_RENT_LAMPORTS : 0),
+      BASE_FEE_LAMPORTS +
+      priorityLamports(microLamports, computeUnitLimit) +
+      rentLamports,
   };
+}
+
+// Priority fee in lamports for a bid of `microLamports` per unit at `limit`.
+function priorityLamports(microLamports: number, limit: number): number {
+  return Math.ceil((microLamports * limit) / 1_000_000);
 }
