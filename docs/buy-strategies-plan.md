@@ -158,28 +158,41 @@ folded into the buy ticket. What exists:
 
 - `lib/strategies/math.ts` and its tests, `lib/strategies/rates.ts` (live
   borrow, earn and supply rates joined per asset), `lib/strategies/execute.ts`
-  (the signed legs: Ultra buy, deposit-and-borrow on either venue, USDC earn
-  deposit on either venue, one-transaction leverage from USDC) and
-  `lib/strategies/run.ts` (the step runner with per-step retry).
+  (the signed legs: Ultra buy and sell, deposit-and-borrow and
+  repay-and-withdraw on either venue, USDC earn deposit and withdraw on either
+  venue, one-transaction leverage open and unwind from USDC) and
+  `lib/strategies/run.ts` (the step runner with per-step retry and resume).
 - `components/strategies/`: the page, and one ticket per strategy.
 - `buildMultiplyTx` takes `equityUsdcAtomic`, so a wallet holding only USDC
   opens a leveraged Jupiter position in one signature. The leverage ticket
   writes the same `loop_positions` record the looping panel does, so the
   position shows there and unwinds from there.
+- Run persistence: `supabase/migrations/0003_strategy_runs.sql`,
+  `lib/strategy-runs.ts`, `app/api/strategies/runs`, and
+  `lib/strategies/runs-client.ts`. A run is saved after every step with the
+  balances it read, so a refresh mid-run comes back as a Resume prompt. A step
+  that was interrupted mid-flight is reconciled against the chain (did the
+  asset arrive, did the venue record debt, did the USDC leave) before anything
+  is re-sent, so a buy is never sent twice.
+- Close paths on every ticket. Earn: withdraw enough USDC from the vault to
+  clear the loan, repay, withdraw the asset. Leverage: the one-transaction
+  unwind. Ladder: the same unwind when every round bought the same Jupiter
+  asset (the positions merged into one), else the rounds taken apart in
+  reverse, each asset sold to repay the loan that bought it.
+- Positions labelling: the health card on the Positions view tags a position
+  with the strategy that opened it.
+- `scripts/jupiter-multiply-usdc-check.mts`: builds and simulates the
+  USDC-equity multiply at 2x and max on all four vaults.
 
-Not built yet, in the order they matter:
+Not done:
 
-- Run persistence. A refresh mid-run loses the step list, not the money.
-  Every leg re-reads the wallet before acting, so the user finishes by hand
-  from Borrow and Earn.
-- Close paths. Earn and ladder positions close from the Borrow and Earn tabs
-  today; there is no one-click reverse.
-- Positions labelling. A ladder's debt reads as a plain borrow on the
-  Positions view. The `strategy` column and `strategy_runs` table below are
-  still to do.
-- Live verification. `scripts/jupiter-multiply-usdc-check.mts` (simulate the
-  USDC-equity multiply at 2x and max, confirm the flashloan fee) has not been
-  written. Nothing here has been run against mainnet yet.
+- Nothing here has been run against mainnet. The script needs a wallet
+  holding USDC and the RPC env var; run it before the first real open.
+- The Jupiter flashloan fee is still unrecorded; the script prints the fee
+  log line if the program emits one.
+- Kamino's obligation reader reports one collateral, so a mixed ladder on
+  Kamino shows only its first asset on the Borrow tab. The unwind does not
+  depend on it: it repays and withdraws by the amounts the run recorded.
 
 ## Slices
 
@@ -191,7 +204,7 @@ live integration, and manual test instructions. One slice per session.
       No execution. Test: every tile's number matches what the Borrow and Earn
       tabs show for the same asset and venue, and the max multiple matches
       `LoopingPanel`'s slider ceiling.
-- [~] **1. Buy + Leverage on Jupiter vaults.** Code in; script and live check outstanding. Add `equityUsdcAtomic` to
+- [x] **1. Buy + Leverage on Jupiter vaults.** Code and script in; live check outstanding. Add `equityUsdcAtomic` to
       `buildMultiplyTx`, the ticket with presets, and a `loop_positions` row with
       `strategy = 'multiply'` and `basisUsd = E` so the existing loop card shows
       P&L and can unwind it. Verify with a new `scripts/jupiter-multiply-usdc-check.mts`
@@ -199,18 +212,18 @@ live integration, and manual test instructions. One slice per session.
       vaults, and reads back that the payback instruction draws the equity from
       the signer's USDC account. Also confirm the flashloan fee, which nothing in
       the repo records; if it is nonzero it belongs in the preview's cost line.
-- [~] **2. Buy + Earn on Jupiter vaults.** Sequential steps in; fusing the last two not done. Three signatures through the machine:
+- [x] **2. Buy + Earn on Jupiter vaults.** Sequential steps and close path in; fusing the last two not done. Three signatures through the machine:
       Ultra buy, operate (deposit and borrow in one `getOperateIx`, as the
       multiply path already does), earn deposit. Then fuse the last two: both are
       our own instructions, so one transaction is likely to fit. Close path is
       earn withdraw, repay, collateral withdraw, chained through the same machine.
-- [~] **3. Buy + Earn on Kamino.** Code in, untested live. Four signatures (KTX builds deposit and borrow
+- [x] **3. Buy + Earn on Kamino.** Code in, untested live. Four signatures (KTX builds deposit and borrow
       separately). Same ticket, same machine, venue resolved by `borrowRouteFor`.
-- [~] **4. The ladder, Jupiter first.** Rounds, picker and aggregate health in; persistence and Positions labelling not. The asset picker between rounds, the
+- [x] **4. The ladder, Jupiter first.** Rounds, picker, aggregate health, persistence and Positions labelling in. The asset picker between rounds, the
       aggregate health block, the floor, and `strategy_runs` persistence with
       chain reconciliation on resume. Positions view learns to say "borrowed to
       buy X". Then Kamino, which also gives Kamino-only assets their leverage.
-- [ ] **5. Close paths and labelling.** A "Close strategy" action that walks the
+- [x] **5. Close paths and labelling.** A "Close strategy" action that walks the
       steps in reverse for Earn and the ladder, and the Positions view showing
       strategy, basis and net rate per position.
 

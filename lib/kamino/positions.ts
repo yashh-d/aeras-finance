@@ -147,6 +147,22 @@ export async function buildKaminoRepayTx(
   );
 }
 
+// Withdraw part of the posted collateral, leaving the rest and any debt in
+// place. For the strategy unwind, which takes back exactly what one round
+// posted. Amount is in the collateral's atomic units.
+export async function buildKaminoPartialWithdrawTx(
+  walletAddress: string,
+  collateral: KaminoCollateralReserve,
+  collateralAtomic: string,
+): Promise<string> {
+  return buildViaKtx(
+    "withdraw",
+    walletAddress,
+    collateral.reserve,
+    atomicToUiString(collateralAtomic, collateral.decimals),
+  );
+}
+
 export async function buildKaminoWithdrawTx(
   walletAddress: string,
   position: KaminoPosition,

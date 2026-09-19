@@ -21,6 +21,13 @@ import {
   maxLeverageForRoute,
 } from "@/lib/strategies/math";
 import { useStrategyRates, type StrategyRates } from "@/lib/strategies/rates";
+import {
+  pickRun,
+  STRATEGY_NAME,
+  useStrategyRuns,
+  type StrategyKind,
+  type StrategyRun,
+} from "@/lib/strategies/runs-client";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 
 import { EarnTicket } from "./EarnTicket";
@@ -28,13 +35,9 @@ import { LadderTicket } from "./LadderTicket";
 import { LeverageTicket } from "./LeverageTicket";
 import { fmtPct, fmtSignedPct } from "./shared";
 
-type Strategy = "earn" | "leverage" | "ladder";
+type Strategy = StrategyKind;
 
-const STRATEGY_LABEL: Record<Strategy, string> = {
-  earn: "Buy + Earn",
-  leverage: "Buy + Leverage",
-  ladder: "Buy + Buy more",
-};
+const STRATEGY_LABEL = STRATEGY_NAME;
 
 const STRATEGY_BLURB: Record<Strategy, string> = {
   earn: "Buy the asset, borrow USDC against it, and put the USDC in a vault. You keep the asset and earn the spread between the vault and the loan.",
@@ -62,6 +65,7 @@ export function StrategiesPanel({
   onRefresh: () => Promise<void> | void;
 }) {
   const rates = useStrategyRates();
+  const store = useStrategyRuns(walletAddress);
   const [openMint, setOpenMint] = useState<string | null>(null);
   const [strategy, setStrategy] = useState<Strategy>("earn");
 
@@ -111,6 +115,7 @@ export function StrategiesPanel({
                 <Row
                   row={row}
                   earnApy={rates.bestEarn?.apy ?? null}
+                  runs={store.runs.filter((r) => r.mint === row.xstock.mint)}
                   expanded={expanded}
                   onToggle={() => setOpenMint(expanded ? null : row.xstock.mint)}
                 />
@@ -149,9 +154,12 @@ export function StrategiesPanel({
                             key={`earn-${row.xstock.mint}`}
                             row={row}
                             earn={rates.bestEarn}
+                            earnOptions={rates.earnOptions}
                             walletAddress={walletAddress}
                             balances={balances}
                             prices={prices}
+                            store={store}
+                            saved={pickRun(store.runs, "earn", row.xstock.mint)}
                             onRefresh={onRefresh}
                           />
                         ) : strategy === "leverage" ? (
@@ -161,6 +169,8 @@ export function StrategiesPanel({
                             walletAddress={walletAddress}
                             balances={balances}
                             prices={prices}
+                            store={store}
+                            saved={pickRun(store.runs, "leverage", row.xstock.mint)}
                             onRefresh={onRefresh}
                           />
                         ) : (
@@ -171,6 +181,8 @@ export function StrategiesPanel({
                             walletAddress={walletAddress}
                             balances={balances}
                             prices={prices}
+                            store={store}
+                            saved={pickRun(store.runs, "ladder", row.xstock.mint)}
                             onRefresh={onRefresh}
                           />
                         )}
@@ -196,14 +208,20 @@ export function StrategiesPanel({
 function Row({
   row,
   earnApy,
+  runs,
   expanded,
   onToggle,
 }: {
   row: StrategyRates;
   earnApy: number | null;
+  // Saved runs on this asset, so the row can say a strategy is open or
+  // waiting to be resumed before the user opens it.
+  runs: StrategyRun[];
   expanded: boolean;
   onToggle: () => void;
 }) {
+  const interrupted = runs.find((r) => r.status === "running");
+  const open = runs.filter((r) => r.status === "done");
   const ratio = defaultBorrowRatio(row.route);
   const net =
     earnApy != null && row.borrowApr != null
@@ -230,7 +248,23 @@ function Row({
           <div className="truncate font-medium tracking-tight text-white">
             {row.xstock.name}
           </div>
-          <div className="mt-0.5 text-[11px] text-white/45">{row.xstock.symbol}</div>
+          <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-white/45">
+            {row.xstock.symbol}
+            {interrupted ? (
+              <span className="rounded bg-aeras-warning/20 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-aeras-warning">
+                Resume {STRATEGY_NAME[interrupted.strategy]}
+              </span>
+            ) : (
+              open.map((r) => (
+                <span
+                  key={r.id}
+                  className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/70"
+                >
+                  {STRATEGY_NAME[r.strategy]} open
+                </span>
+              ))
+            )}
+          </div>
         </div>
       </div>
       <div className={`${COL_VENUE} text-xs text-white/60`}>{row.route.venueLabel}</div>

@@ -21,22 +21,52 @@ import {
 import type { BorrowRoute } from "@/lib/borrow/route";
 import {
   buildOperateTx,
+  fetchLiveVaultStateViaProxy,
+  fetchPositionState,
   findExistingNftId,
+  getMaxSentinels,
   positionNftStorageKey,
   readStoredNftId,
   toAtomicBN,
+  type UserPositionState,
   type XStockBorrowVault,
 } from "@/lib/jupiter/borrow";
 import { USDC_DECIMALS, USDC_MINT } from "@/lib/jupiter/constants";
-import { buildEarnDepositTx, earnAssetByMint } from "@/lib/jupiter/earn";
-import { buildMultiplyTx, type SwapQuote } from "@/lib/jupiter/multiply";
+import {
+  buildEarnDepositTx,
+  buildEarnWithdrawTx,
+  earnAssetByMint,
+  fetchEarnVaultsViaProxy,
+  fetchEarnWalletBalances,
+  positionAssetsAtomic,
+  sharesAtomic,
+} from "@/lib/jupiter/earn";
+import {
+  buildMultiplyTx,
+  buildUnwindTx,
+  type SwapQuote,
+} from "@/lib/jupiter/multiply";
 import {
   executeUltraOrder,
   fetchUltraOrderViaProxy,
 } from "@/lib/jupiter/ultra";
 import type { XStock } from "@/lib/jupiter/xstocks";
 import { buildKaminoBorrowTx, buildKaminoDepositTx } from "@/lib/kamino/borrow";
-import { buildKaminoVaultTx } from "@/lib/kamino/kvaults";
+import {
+  buildKaminoVaultTx,
+  fetchKaminoPositionsViaProxy,
+  fetchKaminoVaultsViaProxy,
+  sharesToTokensAtomic,
+  tokensToSharesAtomic,
+} from "@/lib/kamino/kvaults";
+import {
+  buildKaminoPartialRepayTx,
+  buildKaminoPartialWithdrawTx,
+  buildKaminoRepayTx,
+  buildKaminoWithdrawTx,
+  fetchKaminoPosition,
+  type KaminoPosition,
+} from "@/lib/kamino/positions";
 import type { KaminoCollateralReserve } from "@/lib/kamino/reserves";
 import { awaitTokenBalance } from "@/lib/solana/await-balance";
 import { atomicToUiString, getConnection } from "@/lib/solana/balances";
@@ -401,4 +431,303 @@ export function readableStrategyError(err: unknown): string {
     return "Signature request was declined.";
   }
   return raw;
+}
+
+// ── Sell ─────────────────────────────────────────────────────────────────────
+
+export interface SellResult {
+  signature: string;
+  // USDC the wallet gained, in USDC units.
+  usdcOutUi: number;
+}
+
+// Sell an asset for USDC on Jupiter Ultra and wait until the USDC shows.
+export async function sellForUsdc(args: {
+  walletAddress: string;
+  xstock: XStock;
+  amountAtomic: bigint;
+  signTx: SignTx;
+}): Promise<SellResult> {
+  const { walletAddress, xstock, amountAtomic, signTx } = args;
+  const before = await readAtaBalanceAtomic({
+    mint: USDC_MINT,
+    owner: walletAddress,
+    programId: TOKEN_PROGRAM_ID,
+  });
+  const order = await fetchUltraOrderViaProxy({
+    inputMint: xstock.mint,
+    outputMint: USDC_MINT,
+    amount: amountAtomic.toString(),
+    taker: walletAddress,
+  });
+  if (order.error || order.errorMessage) {
+    throw new Error(order.errorMessage ?? order.error ?? "Quote failed");
+  }
+  if (!order.transaction || !order.requestId) {
+    throw new Error("Quote missing transaction or requestId");
+  }
+  const signed = await signTx(order.transaction);
+  const result = await executeUltraOrder({
+    signedTransaction: signed,
+    requestId: order.requestId,
+  });
+  if (result.status !== "Success" || !result.signature) {
+    throw new Error(result.error ?? "Swap failed");
+  }
+  const minOut =
+    (BigInt(order.outAmount) * BigInt(10_000 - order.slippageBps)) / 10_000n;
+  const target =
+    before + (result.outputAmountResult ? BigInt(result.outputAmountResult) : minOut);
+  const after = BigInt(
+    await awaitTokenBalance({
+      mint: USDC_MINT,
+      owner: walletAddress,
+      atLeastAtomic: target.toString(),
+      programId: TOKEN_PROGRAM_ID,
+    }),
+  );
+  return {
+    signature: result.signature,
+    usdcOutUi: Number(atomicToUiString((after - before).toString(), USDC_DECIMALS)),
+  };
+}
+
+// ── Position reads ───────────────────────────────────────────────────────────
+
+export async function readJupiterPosition(
+  walletAddress: string,
+  vault: XStockBorrowVault,
+): Promise<UserPositionState | null> {
+  const conn = getConnection();
+  const nftId = await resolveJupiterNftId(walletAddress, vault, conn);
+  if (!nftId) return null;
+  return fetchPositionState(vault, nftId, conn);
+}
+
+export async function readKaminoPosition(
+  walletAddress: string,
+): Promise<KaminoPosition | null> {
+  return fetchKaminoPosition(walletAddress);
+}
+
+// ── Earn withdraw ────────────────────────────────────────────────────────────
+
+// USDC held in the earn venue, in USDC units. Zero with no position.
+export async function readEarnPositionUsdc(args: {
+  option: UsdcEarnOption;
+  walletAddress: string;
+}): Promise<number> {
+  const { option, walletAddress } = args;
+  if (option.venue === "jupiter") {
+    const meta = earnAssetByMint(USDC_MINT);
+    if (!meta) return 0;
+    const [balances, vaults] = await Promise.all([
+      fetchEarnWalletBalances(walletAddress, getConnection()),
+      fetchEarnVaultsViaProxy(),
+    ]);
+    const vault = vaults.find((v) => v.assetMint === USDC_MINT);
+    if (!vault) return 0;
+    const shares = sharesAtomic(meta, balances);
+    const atomic = positionAssetsAtomic(shares, vault, meta.decimals);
+    return Number(atomicToUiString(atomic.toString(), USDC_DECIMALS));
+  }
+  if (!option.kaminoVault) return 0;
+  const [positions, vaults] = await Promise.all([
+    fetchKaminoPositionsViaProxy(walletAddress),
+    fetchKaminoVaultsViaProxy(),
+  ]);
+  const pos = positions.get(option.kaminoVault.address);
+  const state = vaults.find((v) => v.address === option.kaminoVault!.address);
+  if (!pos || !state) return 0;
+  const tokens = sharesToTokensAtomic(pos.totalSharesAtomic, state, option.kaminoVault);
+  return Number(atomicToUiString(tokens, USDC_DECIMALS));
+}
+
+// Take USDC back out of the earn venue. Capped at what is there.
+export async function withdrawUsdcFromEarn(args: {
+  option: UsdcEarnOption;
+  walletAddress: string;
+  amountUsdc: number;
+  signTx: SignTx;
+}): Promise<{ signature: string | null; withdrawnUsdc: number }> {
+  const { option, walletAddress, amountUsdc, signTx } = args;
+  const conn = getConnection();
+  const held = await readEarnPositionUsdc({ option, walletAddress });
+  const amount = Math.min(amountUsdc, held);
+  if (amount <= 0) return { signature: null, withdrawnUsdc: 0 };
+  const amountAtomic = toAtomicBN(amount, USDC_DECIMALS);
+
+  if (option.venue === "jupiter") {
+    const meta = earnAssetByMint(USDC_MINT);
+    if (!meta) throw new Error("USDC is not an earn asset");
+    const built = await buildEarnWithdrawTx({
+      meta,
+      amountAtomic,
+      signerAddress: walletAddress,
+      connection: conn,
+    });
+    const signature = await signAndSend(signTx, built.transaction, built);
+    return { signature, withdrawnUsdc: amount };
+  }
+
+  if (!option.kaminoVault) throw new Error("Kamino vault record missing");
+  const vaults = await fetchKaminoVaultsViaProxy();
+  const state = vaults.find((v) => v.address === option.kaminoVault!.address);
+  const shares = tokensToSharesAtomic(amountAtomic.toString(), state, option.kaminoVault);
+  if (shares === "0") throw new Error("Amount rounds to zero shares.");
+  const built = await buildKaminoVaultTx({
+    action: "withdraw",
+    walletAddress,
+    vault: option.kaminoVault,
+    amountAtomic: shares,
+    connection: conn,
+  });
+  const signature = await signAndSend(signTx, built.transaction, built);
+  return { signature, withdrawnUsdc: amount };
+}
+
+// ── Repay and withdraw ───────────────────────────────────────────────────────
+
+export type RepayAmount = { kind: "all" } | { kind: "usdc"; amount: number };
+export type WithdrawAmount = { kind: "all" } | { kind: "atomic"; amount: bigint };
+
+// Interest accrues between the read and the signature. A full repay is padded
+// by this much; both venues cap the overshoot at the real debt.
+const FULL_REPAY_PAD = 1.005;
+
+// Pay down debt and take collateral back at the route's venue. One signature
+// on Jupiter, two on Kamino. Waits for the USDC the repay needs to show in
+// the wallet, because it usually just arrived from a sale or an earn withdraw.
+export async function repayAndWithdraw(args: {
+  route: BorrowRoute;
+  walletAddress: string;
+  repay: RepayAmount;
+  withdraw: WithdrawAmount;
+  signTx: SignTx;
+  onProgress?: (message: string) => void;
+}): Promise<{ signatures: string[] }> {
+  const { route, walletAddress, repay, withdraw, signTx } = args;
+  const conn = getConnection();
+
+  if (route.vault) {
+    const vault = route.vault;
+    const position = await readJupiterPosition(walletAddress, vault);
+    if (!position) throw new Error(`No ${vault.collateralSymbol} position found.`);
+    const debtUi = Number(atomicToUiString(position.debtAtomic.toString(), vault.borrowDecimals));
+    const needUsdc =
+      repay.kind === "all" ? debtUi * FULL_REPAY_PAD : Math.min(repay.amount, debtUi);
+    if (needUsdc > 0) {
+      args.onProgress?.(`Waiting for ${needUsdc.toFixed(2)} USDC in the wallet`);
+      const held = Number(
+        atomicToUiString(
+          await awaitTokenBalance({
+            mint: USDC_MINT,
+            owner: walletAddress,
+            atLeastAtomic: toAtomicBN(needUsdc, USDC_DECIMALS).toString(),
+            programId: TOKEN_PROGRAM_ID,
+            timeoutMs: 30_000,
+          }),
+          USDC_DECIMALS,
+        ),
+      );
+      if (held + 0.000001 < needUsdc) {
+        throw new Error(
+          `Repaying needs ${needUsdc.toFixed(2)} USDC and the wallet holds ${held.toFixed(2)}. Add USDC and retry.`,
+        );
+      }
+    }
+    const { maxRepay, maxWithdraw } = await getMaxSentinels();
+    const debtDelta =
+      repay.kind === "all"
+        ? position.debtAtomic.isZero()
+          ? new BN(0)
+          : maxRepay
+        : toAtomicBN(needUsdc, vault.borrowDecimals).neg();
+    const colDelta =
+      withdraw.kind === "all"
+        ? position.collateralAtomic.isZero()
+          ? new BN(0)
+          : maxWithdraw
+        : BN.min(new BN(withdraw.amount.toString()), position.collateralAtomic).neg();
+    args.onProgress?.(`Repaying and withdrawing ${vault.collateralSymbol}`);
+    const { base64Tx } = await buildOperateTx({
+      vaultId: vault.vaultId,
+      positionId: position.nftId,
+      collateralDeltaAtomic: colDelta,
+      debtDeltaAtomic: debtDelta,
+      signerAddress: walletAddress,
+      connection: conn,
+    });
+    return { signatures: [await signAndSend(signTx, base64Tx)] };
+  }
+
+  if (route.reserve) {
+    const collateral = route.reserve;
+    const position = await readKaminoPosition(walletAddress);
+    if (!position) throw new Error("No Kamino position found.");
+    const signatures: string[] = [];
+    const needUsdc =
+      repay.kind === "all"
+        ? position.debtUsdc * FULL_REPAY_PAD
+        : Math.min(repay.amount, position.debtUsdc);
+    if (needUsdc > 0) {
+      args.onProgress?.(`Waiting for ${needUsdc.toFixed(2)} USDC in the wallet`);
+      await awaitTokenBalance({
+        mint: USDC_MINT,
+        owner: walletAddress,
+        atLeastAtomic: toAtomicBN(needUsdc, USDC_DECIMALS).toString(),
+        programId: TOKEN_PROGRAM_ID,
+        timeoutMs: 30_000,
+      });
+      args.onProgress?.("Repaying USDC on Kamino");
+      const tx =
+        repay.kind === "all"
+          ? await buildKaminoRepayTx(walletAddress, position.debtUsdc)
+          : await buildKaminoPartialRepayTx(walletAddress, needUsdc);
+      signatures.push(await signAndSend(signTx, tx));
+    }
+    args.onProgress?.(`Withdrawing ${collateral.symbol} from Kamino`);
+    const tx =
+      withdraw.kind === "all"
+        ? await buildKaminoWithdrawTx(walletAddress, position)
+        : await buildKaminoPartialWithdrawTx(
+            walletAddress,
+            collateral,
+            withdraw.amount.toString(),
+          );
+    signatures.push(await signAndSend(signTx, tx));
+    return { signatures };
+  }
+
+  throw new Error(`No borrow venue for ${route.collateralSymbol}`);
+}
+
+// ── Unwind leverage ──────────────────────────────────────────────────────────
+
+// Close a leveraged Jupiter position in one transaction: flashloan the
+// collateral, sell enough to cover the debt, repay, withdraw the rest.
+export async function closeLeverage(args: {
+  vault: XStockBorrowVault;
+  walletAddress: string;
+  slippageBps: number;
+  signTx: SignTx;
+}): Promise<{ signature: string }> {
+  const { vault, walletAddress, slippageBps, signTx } = args;
+  const conn = getConnection();
+  const position = await readJupiterPosition(walletAddress, vault);
+  if (!position || (position.collateralAtomic.isZero() && position.debtAtomic.isZero())) {
+    throw new Error(`No open ${vault.collateralSymbol} position to close.`);
+  }
+  const live = await fetchLiveVaultStateViaProxy(vault.vaultId);
+  const { base64Tx } = await buildUnwindTx({
+    vault,
+    positionId: position.nftId,
+    collateralAtomic: position.collateralAtomic,
+    debtAtomic: position.debtAtomic,
+    oraclePriceUsd: live.oraclePriceUsd,
+    signerAddress: walletAddress,
+    connection: conn,
+    slippageBps,
+  });
+  return { signature: await signAndSend(signTx, base64Tx) };
 }
