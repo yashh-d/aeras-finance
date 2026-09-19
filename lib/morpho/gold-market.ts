@@ -25,33 +25,19 @@
 
 // ── chain ──────────────────────────────────────────────────────────────────
 
-// Ethereum mainnet. Already declared in lib/privy/provider.tsx `supportedChains`
-// (as viem's `mainnet`, and the default chain), so the embedded wallet can sign
-// here with no provider change.
-export const ETHEREUM_CHAIN_ID = 1;
+// The chain constants live in lib/ethereum/constants.ts now that a second venue
+// (the Aave vaults in lib/aave) settles on Ethereum. Re-exported here so the
+// gold modules and their check script keep importing them from the registry
+// they have always used. The notes on each, including why the native sentinel
+// is the 0xEeee alias and not the zero address, moved with them.
+import { ETHEREUM_CHAIN_ID } from "@/lib/ethereum/constants";
 
-// Read-only JSON-RPC for market state, position reads and gas pricing.
-// Server-only, so no NEXT_PUBLIC_ prefix. CLAUDE.md says there is no EVM RPC of
-// our own, and that held while Trustware covered every EVM read we needed: its
-// /sdk/rpc/evm surface proxies ERC-20 allowances only. Reading a Morpho Blue
-// market needs a general eth_call, which that proxy does not serve, so this is
-// the second read-only endpoint after MONAD_RPC_URL and follows the same shape:
-// public fallback, paid endpoint droppable via env with no code change.
-export const ETHEREUM_RPC_URL =
-  process.env.ETHEREUM_RPC_URL ?? "https://ethereum-rpc.publicnode.com";
-
-export const ETHEREUM_EXPLORER_TX_BASE = "https://etherscan.io/tx/";
-
-// Trustware's sentinel for native ETH as a route destination.
-//
-// **This is the 0xEeee... alias, not the zero address**, which is the reverse
-// of Monad. MONAD_NATIVE_TOKEN is the zero address and the alias also quotes
-// there; on Ethereum the zero address returns a 502 from the route solver and
-// only the alias quotes. Measured 2026-08-26: 20 USDC from Solana delivered
-// 0.007778 ETH via the alias, and the identical request with the zero address
-// failed twice. Do not "tidy" these two constants into one.
-export const ETHEREUM_NATIVE_TOKEN =
-  "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+export {
+  ETHEREUM_CHAIN_ID,
+  ETHEREUM_EXPLORER_TX_BASE,
+  ETHEREUM_NATIVE_TOKEN,
+  ETHEREUM_RPC_URL,
+} from "@/lib/ethereum/constants";
 
 // ── tokens ─────────────────────────────────────────────────────────────────
 

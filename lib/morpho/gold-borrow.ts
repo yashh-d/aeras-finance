@@ -29,16 +29,17 @@
 //      not start with; lib/morpho/gold-fund.ts buys it as part of funding.
 
 import type { EIP1193Provider } from "@privy-io/react-auth";
+import { encodeFunctionData } from "viem";
+
 import {
-  decodeFunctionResult,
-  encodeFunctionData,
-  erc20Abi,
-  type Hex,
-} from "viem";
+  approveIfShort as approveForSpender,
+  connectEthereum,
+  sendTx,
+  waitForReceipt,
+} from "@/lib/ethereum/tx";
 
 import { MORPHO_BLUE_ABI } from "./gold-abi";
 import {
-  ETHEREUM_CHAIN_ID,
   MORPHO_BLUE,
   marketParamsTuple,
   type MorphoBlueMarket,
@@ -79,122 +80,12 @@ type Report = (p: GoldTxProgress) => void;
 const REPAY_APPROVAL_HEADROOM_BPS = 10n;
 
 // ── low-level ──────────────────────────────────────────────────────────────
-
-async function ethCall(
-  provider: EIP1193Provider,
-  to: string,
-  data: Hex,
-): Promise<Hex> {
-  return (await provider.request({
-    method: "eth_call",
-    params: [{ to, data }, "latest"],
-  })) as Hex;
-}
-
-async function sendTx(
-  provider: EIP1193Provider,
-  from: string,
-  to: string,
-  data: Hex,
-): Promise<string> {
-  return (await provider.request({
-    method: "eth_sendTransaction",
-    params: [{ from, to, data }],
-  })) as string;
-}
-
-// Point the embedded wallet at Ethereum and hand back a provider actually bound
-// to it.
 //
-// The switch happens on the WALLET, never via wallet_switchEthereumChain on a
-// provider: a provider is bound to the chain active when it was requested, and
-// the Privy signing confirmation follows the wallet's active chain. That split
-// once presented a Monad approval as an Ethereum transaction. Privy also
-// propagates the switch through React state, so a provider requested
-// immediately after switchChain resolves can still be on the old chain; the
-// poll below absorbs that, and the chain id read-back is the hard gate.
-// Nothing is signed until a fresh provider reports Ethereum.
-async function connectEthereum(signer: EvmSigner): Promise<EIP1193Provider> {
-  try {
-    await signer.switchChain(ETHEREUM_CHAIN_ID);
-  } catch {
-    throw new Error(
-      "Could not switch your wallet to Ethereum. Nothing was signed and no funds moved.",
-    );
-  }
-  const deadline = Date.now() + 5_000;
-  for (;;) {
-    const provider = await signer.getProvider();
-    const current = (await provider.request({ method: "eth_chainId" })) as string;
-    if (BigInt(current) === BigInt(ETHEREUM_CHAIN_ID)) return provider;
-    if (Date.now() >= deadline) {
-      throw new Error(
-        "The wallet did not switch to Ethereum. Nothing was signed and no funds moved.",
-      );
-    }
-    try {
-      await provider.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: `0x${ETHEREUM_CHAIN_ID.toString(16)}` }],
-      });
-    } catch {
-      // The wallet-level switch may still land on its own; keep polling.
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-}
+// The chain switch, receipt wait and USDT-aware approval used to be defined
+// here. They moved to lib/ethereum/tx.ts when the Aave venue needed the same
+// helpers; this wrapper keeps Morpho Blue as the spender and the gold progress
+// shape.
 
-async function waitForReceipt(provider: EIP1193Provider, hash: string) {
-  // Ethereum blocks are 12 seconds and a low-priority transaction can sit for a
-  // while, so this window is wider than Monad's.
-  const deadline = Date.now() + 10 * 60_000;
-  while (Date.now() < deadline) {
-    const receipt = (await provider.request({
-      method: "eth_getTransactionReceipt",
-      params: [hash],
-    })) as { status?: string } | null;
-    if (receipt) {
-      if (receipt.status && BigInt(receipt.status) === 0n) {
-        throw new Error("The transaction failed on Ethereum.");
-      }
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 4_000));
-  }
-  throw new Error(
-    "The transaction did not confirm on Ethereum in time. It may still land; check your wallet before retrying.",
-  );
-}
-
-async function readAllowance(
-  provider: EIP1193Provider,
-  token: string,
-  owner: string,
-  spender: string,
-): Promise<bigint> {
-  const hex = await ethCall(
-    provider,
-    token,
-    encodeFunctionData({
-      abi: erc20Abi,
-      functionName: "allowance",
-      args: [owner as `0x${string}`, spender as `0x${string}`],
-    }),
-  );
-  return decodeFunctionResult({
-    abi: erc20Abi,
-    functionName: "allowance",
-    data: hex,
-  });
-}
-
-// Grant `amount` of `token` to Morpho Blue, dealing with USDT's approve rule.
-//
-// The rule: USDT reverts on any approve that changes a non-zero allowance to a
-// different non-zero value. So a standing allowance that is too small must be
-// zeroed before it can be raised. Compliant tokens are unaffected by the extra
-// step beyond one wasted transaction, and only ever pay it when their allowance
-// is genuinely short, so the branch is not worth splitting by token.
 async function approveIfShort(args: {
   provider: EIP1193Provider;
   token: string;
@@ -203,40 +94,16 @@ async function approveIfShort(args: {
   amount: bigint;
   report: Report;
 }): Promise<void> {
-  const { provider, token, owner, amount, report } = args;
-  const current = await readAllowance(provider, token, owner, MORPHO_BLUE);
-  if (current >= amount) return;
-
-  if (current > 0n) {
-    report({
-      stage: "approving",
-      message: `Resetting the ${args.symbol} approval.`,
-    });
-    const zeroHash = await sendTx(
-      provider,
-      owner,
-      token,
-      encodeFunctionData({
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [MORPHO_BLUE as `0x${string}`, 0n],
-      }),
-    );
-    await waitForReceipt(provider, zeroHash);
-  }
-
-  report({ stage: "approving", message: `Approving ${args.symbol} for Morpho.` });
-  const hash = await sendTx(
-    provider,
-    owner,
-    token,
-    encodeFunctionData({
-      abi: erc20Abi,
-      functionName: "approve",
-      args: [MORPHO_BLUE as `0x${string}`, amount],
-    }),
-  );
-  await waitForReceipt(provider, hash);
+  await approveForSpender({
+    provider: args.provider,
+    token: args.token,
+    symbol: args.symbol,
+    owner: args.owner,
+    spender: MORPHO_BLUE,
+    spenderLabel: "Morpho",
+    amount: args.amount,
+    report: (message) => args.report({ stage: "approving", message }),
+  });
 }
 
 // ── supply collateral ──────────────────────────────────────────────────────

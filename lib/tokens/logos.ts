@@ -66,6 +66,8 @@ export const VENUE_LOGOS: Readonly<Record<string, string>> = {
   jupiter: "/logos/jupiter.svg",
   kamino: "/logos/kamino.svg",
   morpho: "/logos/morpho.png",
+  // Aave's ghost mark, for the Ethereum vaults in lib/aave.
+  aave: "/logos/aave.png",
   // Chain marks, shown beside the section for each EVM venue: Monad for the
   // Morpho earn vaults, Ethereum for the Morpho gold borrow market.
   monad: "/logos/monad.png",
