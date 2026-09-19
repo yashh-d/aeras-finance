@@ -41,6 +41,10 @@ export type CandleSource = "trades" | "mark";
 
 export const CANDLE_SOURCES: readonly CandleSource[] = ["trades", "mark"];
 
+export function isCandleResolution(value: string | null): value is CandleResolution {
+  return value != null && value in RESOLUTION_MS;
+}
+
 export function isCandleSource(value: string | null): value is CandleSource {
   return value != null && (CANDLE_SOURCES as readonly string[]).includes(value);
 }

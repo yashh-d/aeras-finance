@@ -1,31 +1,25 @@
 "use client";
 
-// Lighter's own candles, drawn with TradingView's charting.
+// Lighter's own candles on TradingView's Charting Library.
 //
-// Lighter's screen charts its order book on TradingView's technology, and a
-// perp is opened, marked and liquidated against that book, so the perps tab
-// draws the same thing: the market's own bars, not the underlying on some
-// other exchange. The bars come from lib/lighter/candles.ts through the same
-// hook the hedge tab uses; the rendering is the shared CandleChartCanvas
-// rather than the hand-rolled recharts candlestick in components/LighterChart.tsx,
-// which stays on the hedge tab where the plot is a glance beside a form.
+// The pairing Lighter's screen runs: TradingView's chart, Lighter's data. The
+// datafeed (lib/lighter/tv-datafeed.ts) serves history from Lighter's candle
+// endpoints and polls the live bar. Two series behind a toggle: trades, what
+// printed on the book with volume, and mark, the price a position is valued
+// and liquidated at. A trader sizing against a liquidation level wants the
+// second.
 //
-// Two series, one toggle. Trades (/candles) is what printed on the book, with
-// volume. Mark (/markPriceCandles) is the price a position is valued and
-// liquidated at, sampled rather than traded, so it has no volume and never
-// gaps. A trader sizing against a liquidation level wants the second, and
-// the catalog's live mark is folded into its last bar between polls; it is
-// not folded into a trades bar, where it would draw a print that never
-// happened.
-//
-// The range buttons are Lighter's own range table, so each range fetches the
-// finest resolution that fits under the endpoint's cap.
+// While the Charting Library files are absent (docs/tradingview.md) the same
+// bars are drawn on TradingView's open-source renderer through the shared
+// VenueChartFrame, under a notice, so the tab charts the venue either way.
 
 import { useMemo, useState } from "react";
 
+import { TradingViewChart } from "@/components/TradingViewChart";
 import { VenueChartFrame, type ChartRange } from "@/components/VenueChartFrame";
 import { lighterChartBars } from "@/lib/lighter/bars";
 import { seriesChangePercent, type CandleSource } from "@/lib/lighter/candles";
+import { createLighterDatafeed, lighterTvSymbol } from "@/lib/lighter/tv-datafeed";
 import { useCandles } from "@/lib/lighter/use-candles";
 
 const SOURCES: readonly { id: CandleSource; label: string }[] = [
@@ -41,13 +35,91 @@ export function LighterTradingViewChart({
 }: {
   marketId: number | null;
   symbol: string;
-  // The catalog's live mark. Shown in the header while the first candle
-  // response is in flight, and ticked into the last bar of the mark series.
+  // The catalog's live mark, for the fallback header and its mark series.
   markPrice?: number;
   priceDecimals: number;
 }) {
-  const [range, setRange] = useState<ChartRange>("1D");
   const [source, setSource] = useState<CandleSource>("trades");
+
+  const datafeed = useMemo(
+    () => (marketId == null ? null : createLighterDatafeed({ marketId, symbol, priceDecimals })),
+    [marketId, symbol, priceDecimals],
+  );
+
+  if (marketId == null || !datafeed) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-xl border border-white/[0.07] bg-[#111415] text-xs text-white/35">
+        No Lighter market for this holding
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full flex-col gap-2">
+      <div className="flex shrink-0 justify-end">
+        <SourceToggle source={source} onChange={setSource} />
+      </div>
+      <div className="min-h-0 flex-1">
+        <TradingViewChart
+          datafeed={datafeed}
+          symbol={lighterTvSymbol(symbol, source)}
+          footer={`Lighter ${source === "mark" ? "mark price" : "trades"}`}
+          fallback={
+            <LightweightFallback
+              marketId={marketId}
+              symbol={symbol}
+              markPrice={markPrice}
+              priceDecimals={priceDecimals}
+              source={source}
+            />
+          }
+        />
+      </div>
+    </div>
+  );
+}
+
+function SourceToggle({
+  source,
+  onChange,
+}: {
+  source: CandleSource;
+  onChange: (source: CandleSource) => void;
+}) {
+  return (
+    <div className="flex gap-0.5 rounded-lg border border-white/[0.07] p-0.5">
+      {SOURCES.map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          onClick={() => onChange(s.id)}
+          className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
+            s.id === source ? "bg-white/10 text-white" : "text-white/40 hover:text-white/70"
+          }`}
+        >
+          {s.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// The same series on TradingView's open-source Lightweight Charts, for a
+// checkout without the Charting Library files.
+function LightweightFallback({
+  marketId,
+  symbol,
+  markPrice,
+  priceDecimals,
+  source,
+}: {
+  marketId: number;
+  symbol: string;
+  markPrice?: number;
+  priceDecimals: number;
+  source: CandleSource;
+}) {
+  const [range, setRange] = useState<ChartRange>("1D");
   const { series, loading, error } = useCandles(marketId, range, source);
 
   const candles = useMemo(() => series?.candles ?? [], [series]);
@@ -57,13 +129,11 @@ export function LighterTradingViewChart({
   const last = source === "mark" ? (markPrice ?? lastClose) : (lastClose ?? markPrice ?? null);
 
   const empty =
-    marketId == null
-      ? "No Lighter market for this holding"
-      : error && candles.length === 0
-        ? "Price history unavailable"
-        : loading || candles.length === 0
-          ? "Loading price history"
-          : null;
+    error && candles.length === 0
+      ? "Price history unavailable"
+      : loading || candles.length === 0
+        ? "Loading price history"
+        : null;
 
   return (
     <VenueChartFrame
@@ -83,24 +153,6 @@ export function LighterTradingViewChart({
           : "Lighter perp"
       }
       sourceHref="https://lighter.xyz/blog/tradingview"
-      controls={
-        <div className="flex gap-0.5 rounded-lg border border-white/[0.07] p-0.5">
-          {SOURCES.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => setSource(s.id)}
-              className={`rounded-md px-2 py-0.5 text-[11px] font-medium transition-colors ${
-                s.id === source
-                  ? "bg-white/10 text-white"
-                  : "text-white/40 hover:text-white/70"
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      }
     />
   );
 }

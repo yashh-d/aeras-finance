@@ -45,6 +45,10 @@ export async function GET(request: Request) {
   const market = params.get("market");
   const resolution = params.get("resolution") ?? "15";
   const countbackParam = Number(params.get("countback") ?? "120");
+  // An explicit window, which the TradingView datafeed sends. Without one,
+  // the window is the bar count back from now.
+  const fromParam = Number(params.get("from"));
+  const toParam = Number(params.get("to"));
 
   if (!market) {
     return NextResponse.json({ error: "market is required" }, { status: 400 });
@@ -74,9 +78,14 @@ export async function GET(request: Request) {
       );
     }
 
-    const to = Math.floor(Date.now() / 1000);
+    const explicit =
+      Number.isFinite(fromParam) && Number.isFinite(toParam) && fromParam >= 0 && toParam > fromParam;
+    const to = explicit ? Math.floor(toParam) : Math.floor(Date.now() / 1000);
+    const from = explicit
+      ? Math.floor(fromParam)
+      : to - countback * RESOLUTION_SECONDS[resolution];
     const history = await ondoHistory(`${resolved.displayName}.P`, resolution, {
-      from: to - countback * RESOLUTION_SECONDS[resolution],
+      from,
       to,
       countback,
     });

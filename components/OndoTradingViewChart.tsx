@@ -1,27 +1,61 @@
 "use client";
 
-// Ondo's own candles, drawn with TradingView's charting.
+// Ondo's own data on TradingView's Charting Library.
 //
-// Two Ondo feeds behind one chart. History comes from GET /v1/perps/history
-// through app/api/ondo/history (the integration guide's step 6), polled every
-// thirty seconds so a new bar opens on time. The live bar between polls is
-// the mark price over Ondo's WebSocket (step 7), folded into the last candle
-// as it ticks. The socket is optional in effect: if it cannot connect, the
-// chart is the history alone and thirty seconds behind, which is what it was.
+// Ondo's history endpoint is shaped for exactly this chart ("TradingView UDF
+// format, as required by the TradingView charting library"), and the
+// datafeed (lib/ondo/tv-datafeed.ts) passes a window through
+// /api/ondo/history and folds the mark price WebSocket into the live bar.
 //
-// The market's catalog price is the header's fallback until either feed has
-// spoken, so the price is never blank on a market that has one.
+// While the Charting Library files are absent (docs/tradingview.md) the same
+// bars are drawn on TradingView's open-source renderer through the shared
+// VenueChartFrame, under a notice, so the tab charts the venue either way.
 
 import { useMemo, useState } from "react";
 
+import { TradingViewChart } from "@/components/TradingViewChart";
 import { VenueChartFrame, type ChartRange } from "@/components/VenueChartFrame";
 import { ondoChartBars } from "@/lib/ondo/bars";
+import { createOndoDatafeed } from "@/lib/ondo/tv-datafeed";
 import type { OndoMarket } from "@/lib/ondo/types";
 import { ondoResolutionLabel, useOndoCandles } from "@/lib/ondo/use-ondo-candles";
 import { useOndoMarkPriceStream } from "@/lib/ondo/use-mark-price-stream";
 import { marketTicker } from "@/lib/tokens/market-logos";
 
 export function OndoTradingViewChart({ market }: { market: OndoMarket }) {
+  const ticker = marketTicker(market.market);
+  const decimals = priceDecimals(market);
+
+  const datafeed = useMemo(
+    () =>
+      createOndoDatafeed({
+        market: market.market,
+        ticker,
+        longName: market.longName,
+        priceDecimals: decimals,
+      }),
+    [market.market, ticker, market.longName, decimals],
+  );
+
+  return (
+    <TradingViewChart
+      datafeed={datafeed}
+      symbol={ticker}
+      footer="Ondo perp"
+      fallback={<LightweightFallback market={market} ticker={ticker} priceDecimals={decimals} />}
+    />
+  );
+}
+
+function LightweightFallback({
+  market,
+  ticker,
+  priceDecimals,
+}: {
+  market: OndoMarket;
+  ticker: string;
+  priceDecimals: number;
+}) {
   const [range, setRange] = useState<ChartRange>("1D");
   const { candles, loading, error } = useOndoCandles(market.market, range);
   const mark = useOndoMarkPriceStream(market.market);
@@ -35,7 +69,7 @@ export function OndoTradingViewChart({ market }: { market: OndoMarket }) {
     return first > 0 ? ((last - first) / first) * 100 : null;
   }, [candles, mark]);
 
-  const last = mark ?? candles[candles.length - 1]?.close ?? Number(market.price) ?? null;
+  const last = mark ?? candles[candles.length - 1]?.close ?? Number(market.price);
 
   const empty =
     error && candles.length === 0
@@ -48,10 +82,10 @@ export function OndoTradingViewChart({ market }: { market: OndoMarket }) {
 
   return (
     <VenueChartFrame
-      symbol={marketTicker(market.market)}
+      symbol={ticker}
       last={Number.isFinite(last) ? last : null}
       changePercent={change}
-      priceDecimals={priceDecimals(market)}
+      priceDecimals={priceDecimals}
       range={range}
       onRange={setRange}
       bars={bars}

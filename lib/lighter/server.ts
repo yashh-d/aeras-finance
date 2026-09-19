@@ -13,6 +13,7 @@ import {
   parseMarketPriceCharts,
   parseMarkPriceCandles,
   type CandleRange,
+  type CandleResolution,
   type CandleSource,
   type LighterCandle,
 } from "./candles";
@@ -380,24 +381,47 @@ export async function lighterCandles(
   source: CandleSource = "trades",
 ): Promise<{ candles: LighterCandle[]; resolution: string }> {
   const window = candleWindow(range, nowMs);
+  const candles = await lighterCandlesWindow(
+    marketId,
+    window.resolution,
+    window.startMs,
+    window.endMs,
+    window.bars,
+    source,
+  );
+  return { candles, resolution: window.resolution };
+}
+
+// An explicit window at an explicit resolution, which is what a TradingView
+// datafeed asks for as the user scrolls back. Timestamps in milliseconds.
+// The server returns at most LIGHTER_MAX_CANDLES, the most recent in the
+// window, so a caller wanting more history asks again with an earlier end.
+export async function lighterCandlesWindow(
+  marketId: number,
+  resolution: CandleResolution,
+  startMs: number,
+  endMs: number,
+  countBack: number,
+  source: CandleSource = "trades",
+): Promise<LighterCandle[]> {
   const params = new URLSearchParams({
     market_id: String(marketId),
-    resolution: window.resolution,
-    start_timestamp: String(window.startMs),
-    end_timestamp: String(window.endMs),
+    resolution,
+    start_timestamp: String(Math.max(0, Math.floor(startMs))),
+    end_timestamp: String(Math.floor(endMs)),
     // Ignored by the server, which caps at LIGHTER_MAX_CANDLES regardless. Sent
     // anyway because it is a required parameter: omitting it is a 20001.
-    count_back: String(window.bars),
+    count_back: String(Math.max(1, Math.floor(countBack))),
   });
 
   if (source === "mark") {
     const body = await lighterGet<unknown>(`/markPriceCandles?${params}`);
-    return { candles: parseMarkPriceCandles(body), resolution: window.resolution };
+    return parseMarkPriceCandles(body);
   }
 
   params.set("set_timestamp_to_end", "true");
   const body = await lighterGet<unknown>(`/candles?${params}`);
-  return { candles: parseCandles(body), resolution: window.resolution };
+  return parseCandles(body);
 }
 
 // The last 24 hourly mark prices for every perp, one call. `market_ids` is
