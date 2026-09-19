@@ -210,8 +210,10 @@ These exist in the repo and are past the "do not build" line. They are listed he
   positions. **Both charts are the venue's own data on TradingView's
   Charting Library** as of 2026-09-19, the pairing both venues run on their
   own screens. `components/TradingViewChart.tsx` hosts the licensed Advanced
-  Charts widget from `public/charting_library/` (obtained from TradingView,
-  not npm: `docs/tradingview.md`), and each venue hands it a datafeed over
+  Charts widget from `public/charting_library/`, or from the origin named by
+  `NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH` in the library's cross-origin mode
+  (obtained from TradingView, not npm: `docs/tradingview.md`), and each venue
+  hands it a datafeed over
   its own endpoints. Lighter (`lib/lighter/tv-datafeed.ts`) serves an
   explicit window from `/api/lighter/history` over `/candles` (trades, with
   volume) or `/markPriceCandles` (the mark a position is valued and

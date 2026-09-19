@@ -7,6 +7,27 @@ by TradingView and is not on npm, so a checkout does not carry it and the
 chart falls back to TradingView's open-source Lightweight Charts, under a
 notice, until it is installed.
 
+## Where the library comes from
+
+The library is TradingView's, licensed per product. Lighter and Ondo each hold
+a licence for their own apps; those licences cover their apps, not ours, and
+the files they serve sit on their origins under their CORS policy. TradingView's
+licence is free and is a form, not a purchase: apply once, get the private
+repository, copy the files. Until then, or instead, the library can be loaded
+from any origin that hosts it and allows ours, which is the library's own
+documented cross-origin mode and is what the environment variable below is for.
+
+## Loading from another origin
+
+Set `NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH` to the absolute URL of the folder
+that holds `charting_library.standalone.js`, with a trailing slash, for
+example `https://static.example.com/charting_library/`. The loader uses it as
+the script's `src` and the widget's `library_path`, which the library's
+cross-origin guide requires to be the same folder. The host must answer with
+`Access-Control-Allow-Origin` for our origin, or the browser blocks the
+library's internal resources and the panel shows the fallback notice. Unset,
+the app loads from `/charting_library/` on its own origin.
+
 ## Installing the library
 
 1. Apply for access at https://www.tradingview.com/advanced-charts/. The

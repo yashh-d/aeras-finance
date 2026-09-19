@@ -70,7 +70,19 @@ export const TV_RESOLUTION_STRINGS: ResolutionString[] = (
   Object.keys(TV_RESOLUTION_MS) as TvResolution[]
 ).map(asResolution);
 
-export const CHARTING_LIBRARY_PATH = "/charting_library/";
+// Where the library's static files are. Same-origin by default, at
+// public/charting_library/. NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH points it at
+// another origin instead, per the library's cross-origin hosting guide: an
+// absolute http(s) URL of the folder holding charting_library.standalone.js,
+// with a trailing slash, on a server that allows this origin with CORS. The
+// same value is both the script's src and the widget's library_path, which
+// the guide requires to agree.
+export const CHARTING_LIBRARY_PATH: string = (() => {
+  const raw = process.env.NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH?.trim();
+  if (!raw) return "/charting_library/";
+  if (!/^https?:\/\//.test(raw)) return "/charting_library/";
+  return raw.endsWith("/") ? raw : `${raw}/`;
+})();
 
 // A price scale from a tick size or a decimal count. The library wants an
 // integer power of ten: 100 for cents, 100000 for a five-place token.
@@ -82,7 +94,9 @@ let loading: Promise<void> | null = null;
 
 // Loads the standalone bundle once. It resolves when window.TradingView is
 // live and rejects when the files are not there, which is the state a fresh
-// checkout is in until the library has been copied in.
+// checkout is in until the library has been copied in or pointed at. The
+// script tag is what the library's guide prescribes for a remote origin, so
+// the same loader serves both cases.
 export function loadChartingLibrary(): Promise<void> {
   if (typeof window === "undefined") return Promise.reject(new Error("no window"));
   if (window.TradingView?.widget) return Promise.resolve();
@@ -101,7 +115,13 @@ export function loadChartingLibrary(): Promise<void> {
       if (window.TradingView?.widget) resolve();
       else fail("charting_library.standalone.js loaded but exposed no widget");
     };
-    script.onerror = () => fail(`charting_library.standalone.js not found under ${CHARTING_LIBRARY_PATH}`);
+    script.onerror = () =>
+      fail(
+        `charting_library.standalone.js not found under ${CHARTING_LIBRARY_PATH}` +
+          (CHARTING_LIBRARY_PATH.startsWith("http")
+            ? " (a remote host must also allow this origin with CORS)"
+            : ""),
+      );
     document.head.appendChild(script);
   });
   return loading;

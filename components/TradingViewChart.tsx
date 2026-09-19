@@ -126,7 +126,8 @@ export function TradingViewChart({
         <div className="shrink-0 rounded-lg border border-[#c47b00]/40 bg-[#c47b00]/10 px-3 py-2 text-[11px] text-[#e0a53d]">
           TradingView Charting Library not found under {CHARTING_LIBRARY_PATH}. The chart below
           is the venue&apos;s data on TradingView&apos;s open-source renderer until the library is
-          installed. See docs/tradingview.md.
+          installed there or NEXT_PUBLIC_TRADINGVIEW_LIBRARY_PATH points at a host that serves
+          it. See docs/tradingview.md.
         </div>
         <div className="min-h-0 flex-1">{fallback}</div>
       </div>
