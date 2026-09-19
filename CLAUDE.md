@@ -72,6 +72,7 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      address book and withdrawals
     /prices/native   Native asset prices
     /spend           Rain card issuance and purchase history
+    /strategies/runs Strategies-page run bookkeeping, per user
     /trustware       Route, quote, balances, allowance, receipt, status proxies
     /waitlist        Public signup
 /components          UI components
@@ -91,6 +92,8 @@ Use a paid RPC (Helius or Triton) via env var `NEXT_PUBLIC_SOLANA_RPC_URL`. Do n
                      gold borrow (gold-*.ts): the XAUt/USDT Blue market, its
                      position math, Trustware funding and the write path
   /privy             Privy config, auth, Solana and EVM wallet hooks
+  /strategies        The Strategies page's math, live rate join, signed legs,
+                     step runner and run store. See docs/buy-strategies-plan.md
   /solana            Connection, balances, holdings, sending, activity, plus
                      the shared broadcast path: priority-fee.ts (compute unit
                      pricing) and send-confirm.ts (sendAndConfirm)
@@ -287,6 +290,15 @@ These exist in the repo and are past the "do not build" line. They are listed he
   as of 2026-08-28. See Chain Assumptions: it is a source of funds with a return
   leg, not a venue, and it is listed only because the return leg works.
 - Waitlist signup, Privy-backed user sync, admin approval, and referral codes.
+- A Strategies page (`components/strategies/`, `lib/strategies/`), as of
+  2026-09-19: Buy + Earn, Buy + Leverage and Buy + Buy more on every asset
+  with a borrow market, each run as signed steps with per-step retry, saved
+  after every step so a refresh resumes, and each with its close path. Read
+  `docs/buy-strategies-plan.md` before touching it. Two things to know: a
+  resume reconciles an interrupted step against the chain before re-sending
+  it, because a buy that re-ran would buy twice; and the ladder's unwind
+  repays and withdraws by the amounts the run recorded, not by what the
+  venue reports, because Kamino's obligation reader shows one collateral.
 
 ## Out of Scope
 

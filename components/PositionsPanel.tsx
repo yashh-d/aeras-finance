@@ -12,6 +12,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { GLASS_SURFACE, INSET_PANEL } from "@/lib/ui/surface";
 import {
+  STRATEGY_NAME,
+  useStrategyRuns,
+} from "@/lib/strategies/runs-client";
+import {
   Area,
   AreaChart,
   Cell,
@@ -59,6 +63,21 @@ export function PositionsPanel({ walletAddress, balances, prices }: Props) {
     [balances, prices],
   );
   const positions = useBorrowPositions(walletAddress);
+  // Which Strategies-page run opened a position, by collateral mint, so a
+  // ladder's debt reads as "borrowed to buy more" rather than a plain borrow.
+  const runs = useStrategyRuns(walletAddress);
+  const strategyByMint = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const r of runs.runs) {
+      if (r.status !== "done") continue;
+      if (r.data.kind === "ladder") {
+        for (const round of r.data.rounds) out.set(round.mint, STRATEGY_NAME.ladder);
+      } else {
+        out.set(r.mint, STRATEGY_NAME[r.strategy]);
+      }
+    }
+    return out;
+  }, [runs.runs]);
   const debtUsd = positions.reduce((sum, p) => sum + p.debtUsd, 0);
   const collateralUsd = positions.reduce((sum, p) => sum + p.collateralUsd, 0);
   const netWorthUsd = totalUsd != null ? totalUsd + collateralUsd - debtUsd : null;
@@ -83,7 +102,7 @@ export function PositionsPanel({ walletAddress, balances, prices }: Props) {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-2">
-          <HealthCard positions={positions} />
+          <HealthCard positions={positions} strategyByMint={strategyByMint} />
         </Card>
         <Card className="lg:col-span-3">
           <HoldingsTable
@@ -718,7 +737,13 @@ function useBorrowPositions(walletAddress: string): AggregatePosition[] {
   return positions;
 }
 
-function HealthCard({ positions }: { positions: AggregatePosition[] }) {
+function HealthCard({
+  positions,
+  strategyByMint,
+}: {
+  positions: AggregatePosition[];
+  strategyByMint: Map<string, string>;
+}) {
   // Portfolio-wide health: weighted by collateral USD across all open positions.
   const totalCollateral = positions.reduce((s, p) => s + p.collateralUsd, 0);
   const totalDebt = positions.reduce((s, p) => s + p.debtUsd, 0);
@@ -832,7 +857,11 @@ function HealthCard({ positions }: { positions: AggregatePosition[] }) {
 
           <ul className="space-y-1.5 pt-1">
             {positions.map((p) => (
-              <PositionHealthRow key={p.vault.vaultId} pos={p} />
+              <PositionHealthRow
+                key={p.vault.vaultId}
+                pos={p}
+                strategy={strategyByMint.get(p.vault.collateralMint) ?? null}
+              />
             ))}
           </ul>
         </>
@@ -852,7 +881,14 @@ function MiniStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PositionHealthRow({ pos }: { pos: AggregatePosition }) {
+function PositionHealthRow({
+  pos,
+  strategy,
+}: {
+  pos: AggregatePosition;
+  // Name of the Strategies-page strategy that opened this, if one did.
+  strategy: string | null;
+}) {
   const safe = pos.healthFactor >= 1.5;
   const caution = pos.healthFactor >= 1.1 && pos.healthFactor < 1.5;
   const color = safe ? "#119b62" : caution ? "#e8a13a" : "#d93232";
@@ -861,8 +897,13 @@ function PositionHealthRow({ pos }: { pos: AggregatePosition }) {
     <li className="flex items-center justify-between gap-3 text-xs">
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between">
-          <span className="font-medium text-white">
+          <span className="flex items-center gap-1.5 font-medium text-white">
             {pos.vault.collateralSymbol} → {pos.vault.borrowSymbol}
+            {strategy && (
+              <span className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+                {strategy}
+              </span>
+            )}
           </span>
           <span className="font-mono tabular-nums" style={{ color }}>
             {Number.isFinite(pos.healthFactor)
