@@ -15,6 +15,7 @@ import {
   fetchSparklinesViaProxy,
   type CandleRange,
   type CandleSeries,
+  type CandleSource,
   type SparklineMap,
 } from "./candles";
 
@@ -33,8 +34,9 @@ export interface UseCandles {
 export function useCandles(
   marketId: number | null,
   range: CandleRange,
+  source: CandleSource = "trades",
 ): UseCandles {
-  const key = marketId == null ? "" : `${marketId}:${range}`;
+  const key = marketId == null ? "" : `${marketId}:${range}:${source}`;
   // Stamped with the key it was fetched for, so a result that arrives after the
   // user has already switched market or range is ignored during render rather
   // than cleared by an effect. That keeps every setState inside an async
@@ -50,7 +52,7 @@ export function useCandles(
     if (marketId == null) return;
     let cancelled = false;
 
-    fetchCandlesViaProxy(marketId, range)
+    fetchCandlesViaProxy(marketId, range, source)
       .then((next) => {
         if (cancelled) return;
         seriesCache.set(key, next);
@@ -73,7 +75,7 @@ export function useCandles(
     return () => {
       cancelled = true;
     };
-  }, [marketId, range, key, tick]);
+  }, [marketId, range, source, key, tick]);
 
   useEffect(() => {
     const id = setInterval(() => setTick((n) => n + 1), POLL_MS);

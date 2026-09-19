@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import {
   isCandleRange,
+  isCandleSource,
   parseMarketId,
   type CandleSeries,
   type LighterCandle,
@@ -32,6 +33,9 @@ export async function GET(request: Request) {
   const market = parseMarketId(searchParams.get("market"));
   const range = searchParams.get("range");
   const symbol = searchParams.get("symbol") ?? "";
+  // Trades by default, which is what the hedge tab has always drawn; the
+  // perps chart asks for the mark price explicitly.
+  const source = searchParams.get("source") ?? "trades";
 
   if (market == null) {
     return NextResponse.json(
@@ -46,19 +50,32 @@ export async function GET(request: Request) {
     );
   }
 
-  const key = `${market}:${range}`;
+  if (!isCandleSource(source)) {
+    return NextResponse.json(
+      { error: "source must be trades or mark" },
+      { status: 400 },
+    );
+  }
+
+  const key = `${market}:${range}:${source}`;
   const hit = cache.get(key);
   if (hit && hit.expiresAt > Date.now()) {
     return NextResponse.json(hit.series);
   }
 
   try {
-    const { candles, resolution } = await lighterCandles(market, range);
+    const { candles, resolution } = await lighterCandles(
+      market,
+      range,
+      Date.now(),
+      source,
+    );
     const series: CandleSeries = {
       marketId: market,
       symbol,
       range,
       resolution: resolution as CandleSeries["resolution"],
+      source,
       candles: candles as LighterCandle[],
     };
     cache.set(key, { series, expiresAt: Date.now() + CACHE_MS });

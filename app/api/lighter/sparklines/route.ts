@@ -1,34 +1,31 @@
 import { NextResponse } from "next/server";
 
-import {
-  downsampleCloses,
-  parseMarketId,
-  type SparklineMap,
-} from "@/lib/lighter/candles";
-import { lighterCandles } from "@/lib/lighter/server";
+import { parseMarketId, type SparklineMap } from "@/lib/lighter/candles";
+import { lighterMarketPriceCharts } from "@/lib/lighter/server";
 
 export const dynamic = "force-dynamic";
 
-// One day of closes per market, for the sparkline on each hedge row.
+// One day of hourly mark prices per market, for the sparkline on each hedge
+// row.
 //
-// Batched because Lighter's candle endpoint is per market and the hedge tab
-// wants a line for every ticker held. One request per row from the browser would
-// be a dozen round trips and would spend the 60 weighted requests a minute that
-// Lighter allows our IP within seconds of two users loading the tab. Here it is
-// one client request, a bounded fan-out, and a shared cache.
+// One upstream call for the whole catalog. GET /marketPriceCharts returns the
+// last 24 hourly mark prices for every market at once, which is exactly the
+// line a row draws, so this route no longer fans out to /candles per market.
+// That fan-out spent the 60 weighted requests a minute Lighter allows our IP
+// within seconds of two users loading the tab; now the tab costs one request
+// a minute however many rows it has, and the response is cached whole.
 //
-// A market that fails is omitted from the map rather than failing the batch. A
-// missing sparkline costs a row its line; a failed batch costs every row.
+// A market the upstream omits is omitted from the map rather than failing the
+// batch. A missing sparkline costs a row its line; a failed batch costs every
+// row.
 
 const CACHE_MS = 60_000;
 
-// Enough markets for every Aeras xStock route with room to spare, and low enough
-// that a crafted request cannot turn one call into an unbounded fan-out.
-const MAX_MARKETS = 16;
+// Bounds the request, not the upstream: the whole catalog is fetched either
+// way. Kept so a crafted request cannot ask for thousands of ids.
+const MAX_MARKETS = 64;
 
-const POINTS = 40;
-
-const cache = new Map<number, { closes: number[]; expiresAt: number }>();
+let cached: { charts: Record<number, number[]>; expiresAt: number } | null = null;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -53,32 +50,21 @@ export async function GET(request: Request) {
     );
   }
 
-  const now = Date.now();
-  const result: SparklineMap = {};
-  const stale: number[] = [];
-
-  for (const id of marketIds) {
-    const hit = cache.get(id);
-    if (hit && hit.expiresAt > now) {
-      result[id] = hit.closes;
-    } else {
-      stale.push(id);
+  let charts = cached && cached.expiresAt > Date.now() ? cached.charts : null;
+  if (!charts) {
+    try {
+      charts = await lighterMarketPriceCharts();
+      cached = { charts, expiresAt: Date.now() + CACHE_MS };
+    } catch {
+      // Serve stale rather than nothing; an empty map if there is no stale.
+      charts = cached?.charts ?? {};
     }
   }
 
-  const fetched = await Promise.allSettled(
-    stale.map(async (id) => {
-      const { candles } = await lighterCandles(id, "1D");
-      return { id, closes: downsampleCloses(candles, POINTS) };
-    }),
-  );
-
-  for (const outcome of fetched) {
-    if (outcome.status !== "fulfilled") continue;
-    const { id, closes } = outcome.value;
-    cache.set(id, { closes, expiresAt: Date.now() + CACHE_MS });
-    result[id] = closes;
+  const result: SparklineMap = {};
+  for (const id of marketIds) {
+    const prices = charts[id];
+    if (prices) result[id] = prices;
   }
-
   return NextResponse.json(result);
 }

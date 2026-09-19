@@ -10,7 +10,10 @@ import {
 import {
   candleWindow,
   parseCandles,
+  parseMarketPriceCharts,
+  parseMarkPriceCandles,
   type CandleRange,
+  type CandleSource,
   type LighterCandle,
 } from "./candles";
 import type {
@@ -365,10 +368,16 @@ export async function lighterIntentAddress(
 // not routed, and CloudFront answers an unrouted path with an empty 403, which
 // reads exactly like Lighter's geo-block. If this ever starts returning 403,
 // check the path before concluding the region is blocked.
+//
+// Two endpoints with one parameter set: `/candles` for trades and
+// `/markPriceCandles` for the mark price. Both take market_id, resolution,
+// start_timestamp, end_timestamp and count_back; only `/candles` takes
+// set_timestamp_to_end, and only it carries volume.
 export async function lighterCandles(
   marketId: number,
   range: CandleRange,
   nowMs: number = Date.now(),
+  source: CandleSource = "trades",
 ): Promise<{ candles: LighterCandle[]; resolution: string }> {
   const window = candleWindow(range, nowMs);
   const params = new URLSearchParams({
@@ -379,9 +388,23 @@ export async function lighterCandles(
     // Ignored by the server, which caps at LIGHTER_MAX_CANDLES regardless. Sent
     // anyway because it is a required parameter: omitting it is a 20001.
     count_back: String(window.bars),
-    set_timestamp_to_end: "true",
   });
 
+  if (source === "mark") {
+    const body = await lighterGet<unknown>(`/markPriceCandles?${params}`);
+    return { candles: parseMarkPriceCandles(body), resolution: window.resolution };
+  }
+
+  params.set("set_timestamp_to_end", "true");
   const body = await lighterGet<unknown>(`/candles?${params}`);
   return { candles: parseCandles(body), resolution: window.resolution };
+}
+
+// The last 24 hourly mark prices for every perp, one call. `market_ids` is
+// optional upstream and is deliberately not sent: the whole catalog is one
+// small response, and sending none sidesteps the question of how the server
+// wants an array encoded. Callers filter to the ids they hold.
+export async function lighterMarketPriceCharts(): Promise<Record<number, number[]>> {
+  const body = await lighterGet<unknown>("/marketPriceCharts");
+  return parseMarketPriceCharts(body);
 }

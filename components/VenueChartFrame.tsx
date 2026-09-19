@@ -24,6 +24,7 @@ export function VenueChartFrame({
   empty,
   source,
   sourceHref,
+  controls,
 }: {
   symbol: string;
   last: number | null;
@@ -39,6 +40,9 @@ export function VenueChartFrame({
   // Footer text on the left ("288 bars · 5m") and the source link on the right.
   source: string;
   sourceHref: string;
+  // A venue's own controls, rendered beside the range buttons. Lighter puts
+  // its trades/mark toggle here; Ondo has nothing to put.
+  controls?: React.ReactNode;
 }) {
   const positive = changePercent == null ? null : changePercent >= 0;
 
@@ -61,8 +65,10 @@ export function VenueChartFrame({
             </span>
           )}
         </div>
-        <div className="flex gap-0.5 rounded-lg border border-white/[0.07] p-0.5">
-          {CHART_RANGES.map((r) => (
+        <div className="flex items-center gap-2">
+          {controls}
+          <div className="flex gap-0.5 rounded-lg border border-white/[0.07] p-0.5">
+            {CHART_RANGES.map((r) => (
             <button
               key={r}
               type="button"
@@ -76,6 +82,7 @@ export function VenueChartFrame({
               {r}
             </button>
           ))}
+          </div>
         </div>
       </div>
 

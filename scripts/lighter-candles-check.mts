@@ -14,7 +14,6 @@ import {
 import {
   CANDLE_RANGES,
   candleWindow,
-  downsampleCloses,
   isCandleRange,
   parseCandles,
   parseMarketId,
@@ -23,7 +22,11 @@ import {
   type LighterCandle,
 } from "../lib/lighter/candles";
 import { buildCatalog, findMarket } from "../lib/lighter/markets";
-import { lighterCandles, lighterOrderBookDetails } from "../lib/lighter/server";
+import {
+  lighterCandles,
+  lighterMarketPriceCharts,
+  lighterOrderBookDetails,
+} from "../lib/lighter/server";
 
 let failures = 0;
 
@@ -103,7 +106,7 @@ if (!spy) {
   // Every resolution the range table can emit must actually be accepted. A
   // rejection here is a 20001 body on an HTTP 200, so it is invisible without
   // reading the code.
-  for (const resolution of ["1m", "5m", "1h", "4h", "1d"]) {
+  for (const resolution of ["1m", "5m", "1h", "4h", "12h", "1d"]) {
     const body = await rawCandles(spy.marketId, resolution);
     check(`resolution ${resolution} is accepted`, body.code === 200);
   }
@@ -244,24 +247,46 @@ if (!spy) {
     `${week.length} hourly bars over ${spanHours.toFixed(0)}h`,
   );
 
-  // ── Sparkline thinning ───────────────────────────────────────────────────
+  // ── Mark price candles ───────────────────────────────────────────────────
 
-  section("Sparkline thinning");
+  section("Mark price candles");
 
-  const thinned = downsampleCloses(day, 40);
-  check("thinning respects the point budget", thinned.length <= 40, `${thinned.length}`);
-  check("thinning keeps the first close", thinned[0] === day[0].c);
+  const { candles: mark } = await lighterCandles(spy.marketId, "1D", NOW, "mark");
+  check("the mark series returns bars", mark.length > 0, `${mark.length}`);
   check(
-    "thinning keeps the last close",
-    thinned[thinned.length - 1] === day[day.length - 1].c,
+    "mark bars carry no volume",
+    mark.every((c) => c.v === 0 && c.quoteVolume === 0),
   );
   check(
-    "every thinned point is a real close, never an average",
-    thinned.every((value) => day.some((c) => c.c === value)),
+    "mark bars are priced, so the series never gaps",
+    mark.every((c) => c.c > 0 && c.h >= c.l),
   );
   check(
-    "a series shorter than the budget is passed through whole",
-    downsampleCloses(day.slice(0, 5), 40).length === Math.min(5, day.length),
+    "the mark series ends near the catalog mark",
+    mark.length > 0 &&
+      Math.abs(mark[mark.length - 1].c - Number(spy.markPrice)) / Number(spy.markPrice) < 0.02,
+    `${mark[mark.length - 1]?.c} vs ${spy.markPrice}`,
+  );
+  check(
+    "the mark series covers the same window as trades",
+    Math.abs(mark.length - day.length) <= 2,
+    `${mark.length} mark vs ${day.length} trade bars`,
+  );
+
+  // ── Hourly mark prices for every market ──────────────────────────────────
+
+  section("Market price charts");
+
+  const charts = await lighterMarketPriceCharts();
+  const ids = Object.keys(charts).map(Number);
+  check("one call covers the catalog", ids.length > 50, `${ids.length} markets`);
+  check("SPY is among them", charts[spy.marketId] !== undefined);
+  const spyLine = charts[spy.marketId] ?? [];
+  check("a line is a day of hourly points", spyLine.length >= 20 && spyLine.length <= 25, `${spyLine.length}`);
+  check(
+    "the line ends near the catalog mark",
+    spyLine.length > 0 &&
+      Math.abs(spyLine[spyLine.length - 1] - Number(spy.markPrice)) / Number(spy.markPrice) < 0.02,
   );
 }
 

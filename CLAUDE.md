@@ -210,8 +210,12 @@ These exist in the repo and are past the "do not build" line. They are listed he
   canvas (`components/CandleChartCanvas.tsx`, chrome in
   `components/VenueChartFrame.tsx`, bar shape in `lib/charts/bars.ts`); each
   venue owns its feed. Lighter (`components/LighterTradingViewChart.tsx`) is
-  the same candle hook the hedge tab uses, with the catalog mark folded into
-  the live bar. Ondo (`components/OndoTradingViewChart.tsx`) is the
+  the same candle hook the hedge tab uses, with a trades/mark toggle: `/candles`
+  is what printed, with volume, and `/markPriceCandles` is what a position is
+  valued and liquidated at, with the catalog mark ticked into its live bar. The
+  spec says zero values are omitted from a candle, so an untraded bar has no
+  `v` on the wire and `parseCandles` reads it as zero. Row sparklines are one
+  `/marketPriceCharts` call for the whole catalog, not a fan-out. Ondo (`components/OndoTradingViewChart.tsx`) is the
   integration guide's two optional steps: history from `/api/ondo/history` by
   range (`lib/ondo/use-ondo-candles.ts`), and the mark price over Ondo's
   WebSocket (`lib/ondo/use-mark-price-stream.ts`, frames and a tolerant reader

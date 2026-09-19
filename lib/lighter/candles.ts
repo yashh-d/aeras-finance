@@ -19,9 +19,31 @@
 // window under the cap. Getting this wrong does not error, it just quietly
 // truncates the left edge of the chart.
 
-// Resolutions the endpoint accepts. Probed live: 2h, 1w and 1M are rejected
-// with code 20001, as are TradingView-style aliases like "60" and "D".
-export type CandleResolution = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "1d";
+// Resolutions the endpoint accepts, per its spec enum. Probed live: 2h, 1w
+// and 1M are rejected with code 20001, as are TradingView-style aliases like
+// "60" and "D".
+export type CandleResolution =
+  | "1m"
+  | "5m"
+  | "15m"
+  | "30m"
+  | "1h"
+  | "4h"
+  | "12h"
+  | "1d";
+
+// Which of Lighter's two candle endpoints a series comes from. `/candles` is
+// trades: what printed on the book, with volume. `/markPriceCandles` is the
+// mark price: what a position is valued and liquidated at, sampled rather
+// than traded, so it has a sample count and no volume. Lighter's own chart
+// offers both, and a trader watching a liquidation level wants the second.
+export type CandleSource = "trades" | "mark";
+
+export const CANDLE_SOURCES: readonly CandleSource[] = ["trades", "mark"];
+
+export function isCandleSource(value: string | null): value is CandleSource {
+  return value != null && (CANDLE_SOURCES as readonly string[]).includes(value);
+}
 
 export type CandleRange = "1H" | "1D" | "1W" | "1M" | "3M";
 
@@ -59,6 +81,7 @@ const RESOLUTION_MS: Record<CandleResolution, number> = {
   "30m": 30 * MINUTE_MS,
   "1h": HOUR_MS,
   "4h": 4 * HOUR_MS,
+  "12h": 12 * HOUR_MS,
   "1d": DAY_MS,
 };
 
@@ -118,38 +141,102 @@ export interface LighterCandle {
   traded: boolean;
 }
 
+// The spec says "zero values are omitted from the response", so every
+// numeric field is optional on the wire and an untraded bar arrives with no
+// `v` at all. Reading it as undefined would hand the chart a bar with no
+// volume value, which Lightweight Charts rejects; it is a zero.
 interface RawCandle {
   t: number;
-  o: number;
-  h: number;
-  l: number;
-  c: number;
-  v: number;
-  V: number;
+  o?: number;
+  h?: number;
+  l?: number;
+  c?: number;
+  v?: number;
+  V?: number;
 }
 
-interface RawCandlesResponse {
+interface RawMarkPriceCandle {
+  t: number;
+  o?: number;
+  h?: number;
+  l?: number;
+  c?: number;
+  // sample_count
+  sc?: number;
+}
+
+interface RawCandlesResponse<C> {
   code: number;
   message?: string;
   r?: string;
-  c?: RawCandle[];
+  c?: C[];
 }
 
-export function parseCandles(body: unknown): LighterCandle[] {
-  const res = body as RawCandlesResponse;
+function unwrap<C>(body: unknown, what: string): C[] {
+  const res = body as RawCandlesResponse<C>;
   if (res?.code !== 200) {
-    throw new Error(res?.message?.trim() || `Lighter candles code ${res?.code}`);
+    throw new Error(res?.message?.trim() || `Lighter ${what} code ${res?.code}`);
   }
-  return (res.c ?? []).map((raw) => ({
+  return res.c ?? [];
+}
+
+const zero = (value: number | undefined): number => value ?? 0;
+
+export function parseCandles(body: unknown): LighterCandle[] {
+  return unwrap<RawCandle>(body, "candles").map((raw) => {
+    const v = zero(raw.v);
+    return {
+      t: raw.t,
+      o: zero(raw.o),
+      h: zero(raw.h),
+      l: zero(raw.l),
+      c: zero(raw.c),
+      v,
+      quoteVolume: zero(raw.V),
+      traded: v > 0,
+    };
+  });
+}
+
+// Mark price candles in the same shape, so everything downstream of the
+// fetch is shared. There is no volume to carry; `traded` records whether the
+// bar had any samples, which is the nearest thing to "this bar is real".
+export function parseMarkPriceCandles(body: unknown): LighterCandle[] {
+  return unwrap<RawMarkPriceCandle>(body, "markPriceCandles").map((raw) => ({
     t: raw.t,
-    o: raw.o,
-    h: raw.h,
-    l: raw.l,
-    c: raw.c,
-    v: raw.v,
-    quoteVolume: raw.V,
-    traded: raw.v > 0,
+    o: zero(raw.o),
+    h: zero(raw.h),
+    l: zero(raw.l),
+    c: zero(raw.c),
+    v: 0,
+    quoteVolume: 0,
+    traded: zero(raw.sc) > 0,
   }));
+}
+
+// GET /marketPriceCharts: the last 24 hourly mark prices for every perp in
+// one call, as strings. Exactly what a row sparkline needs, and one request
+// for the whole catalog where /candles is one per market.
+interface RawMarketPriceCharts {
+  code: number;
+  message?: string;
+  resolution?: string;
+  price_charts?: { market_id: number; prices?: string[] }[];
+}
+
+export function parseMarketPriceCharts(body: unknown): Record<number, number[]> {
+  const res = body as RawMarketPriceCharts;
+  if (res?.code !== 200) {
+    throw new Error(res?.message?.trim() || `Lighter marketPriceCharts code ${res?.code}`);
+  }
+  const out: Record<number, number[]> = {};
+  for (const chart of res.price_charts ?? []) {
+    const prices = (chart.prices ?? [])
+      .map(Number)
+      .filter((p) => Number.isFinite(p) && p > 0);
+    if (prices.length > 0) out[chart.market_id] = prices;
+  }
+  return out;
 }
 
 export interface CandleSeries {
@@ -157,6 +244,7 @@ export interface CandleSeries {
   symbol: string;
   range: CandleRange;
   resolution: CandleResolution;
+  source: CandleSource;
   candles: LighterCandle[];
 }
 
@@ -171,32 +259,13 @@ export function seriesChangePercent(candles: LighterCandle[]): number | null {
   return ((last - first) / first) * 100;
 }
 
-// Closes thinned to at most `points` values, keeping the first and last.
-//
-// A row sparkline is a few pixels tall, so sending a full 288-bar day for every
-// held ticker would be most of a megabyte of JSON to draw detail no one can see.
-// Sampling at a stride rather than averaging keeps the real closes, so the line
-// never shows a price that did not trade.
-export function downsampleCloses(
-  candles: LighterCandle[],
-  points: number,
-): number[] {
-  if (candles.length <= points) return candles.map((candle) => candle.c);
-
-  const stride = (candles.length - 1) / (points - 1);
-  const out: number[] = [];
-  for (let i = 0; i < points; i += 1) {
-    out.push(candles[Math.round(i * stride)].c);
-  }
-  return out;
-}
-
 export async function fetchCandlesViaProxy(
   marketId: number,
   range: CandleRange,
+  source: CandleSource = "trades",
 ): Promise<CandleSeries> {
   const response = await fetch(
-    `/api/lighter/candles?market=${marketId}&range=${range}`,
+    `/api/lighter/candles?market=${marketId}&range=${range}&source=${source}`,
     { cache: "no-store" },
   );
   const body = await response.json();
@@ -206,7 +275,8 @@ export async function fetchCandlesViaProxy(
   return body as CandleSeries;
 }
 
-// Closes only, one short series per market, for the row sparklines.
+// Hourly mark prices over the last day, one short series per market, for the
+// row sparklines.
 export type SparklineMap = Record<string, number[]>;
 
 export async function fetchSparklinesViaProxy(
