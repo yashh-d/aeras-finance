@@ -40,7 +40,7 @@ type Strategy = StrategyKind;
 const STRATEGY_LABEL = STRATEGY_NAME;
 
 const STRATEGY_BLURB: Record<Strategy, string> = {
-  earn: "Buy the asset, borrow USDC against it, and put the USDC in a vault. You keep the asset and earn the spread between the vault and the loan.",
+  earn: "Buy the asset, borrow USDC against it on Jupiter Lend, and put the USDC in the Hyperithm USDC Apex vault on Monad. You keep the asset and earn the spread between the vault and the loan.",
   leverage:
     "Buy a multiple of what you pay. One transaction on Jupiter Lend: a flashloan buys the whole position, the vault lends the difference.",
   ladder:
@@ -80,12 +80,13 @@ export function StrategiesPanel({
         </h2>
         <p className="text-sm text-white/45">
           Every asset here can be borrowed against. Pick one, then pick what
-          the loan does.
-          {rates.bestEarn && (
+          the loan does. Every step signs automatically: one click runs the
+          whole strategy.
+          {rates.defaultEarn && (
             <>
               {" "}
-              Borrowed USDC earns {fmtPct(rates.bestEarn.apy)} in{" "}
-              {rates.bestEarn.label} right now.
+              Borrowed USDC earns {fmtPct(rates.defaultEarn.apy)} in{" "}
+              {rates.defaultEarn.label} right now.
             </>
           )}
         </p>
@@ -114,7 +115,7 @@ export function StrategiesPanel({
               <div key={row.xstock.mint}>
                 <Row
                   row={row}
-                  earnApy={rates.bestEarn?.apy ?? null}
+                  earnApy={rates.defaultEarn?.apy ?? null}
                   runs={store.runs.filter((r) => r.mint === row.xstock.mint)}
                   expanded={expanded}
                   onToggle={() => setOpenMint(expanded ? null : row.xstock.mint)}
@@ -153,7 +154,7 @@ export function StrategiesPanel({
                           <EarnTicket
                             key={`earn-${row.xstock.mint}`}
                             row={row}
-                            earn={rates.bestEarn}
+                            earn={rates.defaultEarn}
                             earnOptions={rates.earnOptions}
                             walletAddress={walletAddress}
                             balances={balances}

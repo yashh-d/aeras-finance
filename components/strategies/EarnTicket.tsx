@@ -1,9 +1,14 @@
 "use client";
 
-// Buy + Earn. Buy the asset, post it, borrow USDC at the chosen ratio, put
-// the USDC in the best USDC vault. Three signatures on Jupiter, four on
-// Kamino, run as steps so a failure mid-way leaves the user looking at what
-// landed rather than at a spinner that stopped.
+// Buy + Earn, in one click. Buy the asset, post it, borrow USDC at the chosen
+// ratio, put the USDC to work. The base case sends it to the Hyperithm USDC
+// Apex vault on Monad through the same Trustware funding the Earn tab uses
+// (Solana USDC to Monad USDC, a MON gas top-up if the wallet has none, then
+// the ERC-4626 deposit). Jupiter Lend Earn and Kamino's USDC vault are the
+// alternatives that stay on Solana. Every signature is silent
+// (showWalletUIs is off in lib/privy/provider.tsx), so the one press runs the
+// whole chain; the steps are shown as they land so a failure mid-way leaves
+// the user looking at what happened rather than at a spinner that stopped.
 //
 // The run is saved after every step. A saved run that is still going comes
 // back as a resume prompt; a finished one comes back with its close path:
@@ -28,6 +33,7 @@ import {
   tokenProgramFor,
   withdrawUsdcFromEarn,
   type BuyResult,
+  type MonadSigners,
 } from "@/lib/strategies/execute";
 import { defaultBorrowRatio, earnNetApy } from "@/lib/strategies/math";
 import type { StrategyRates, UsdcEarnOption } from "@/lib/strategies/rates";
@@ -38,7 +44,8 @@ import {
   type StrategyRun,
   type StrategyRunsStore,
 } from "@/lib/strategies/runs-client";
-import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
+import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { useSendSolanaTxBase64, useSignSolanaTxBase64 } from "@/lib/privy/sign";
 
 import {
   floorCents,
@@ -64,7 +71,7 @@ const CLOSE_REPAY_PAD = 1.01;
 
 export function EarnTicket({
   row,
-  earn,
+  earn: defaultEarn,
   earnOptions,
   walletAddress,
   balances,
@@ -74,9 +81,10 @@ export function EarnTicket({
   onRefresh,
 }: {
   row: StrategyRates;
+  // The base case: the Hyperithm vault on Monad when its rate is known.
   earn: UsdcEarnOption | null;
-  // Every earn venue, so a saved run can name the one it used even if it is
-  // no longer the best.
+  // Every earn venue, for the picker and so a saved run can name the one it
+  // used even if it is no longer the default.
   earnOptions: UsdcEarnOption[];
   walletAddress: string;
   balances: AccountBalances | null;
@@ -87,10 +95,26 @@ export function EarnTicket({
   onRefresh: () => Promise<void> | void;
 }) {
   const signTx = useSignSolanaTxBase64();
+  const solanaSignAndSend = useSendSolanaTxBase64();
+  const evm = useEmbeddedEvmWallet();
   const run = useStrategyRun();
   const savedData = saved?.data.kind === "earn" ? saved.data : null;
   const [amountInput, setAmountInput] = useState("");
   const [ratio, setRatio] = useState(() => defaultBorrowRatio(row.route));
+  // Where the borrowed USDC goes. Starts on the base case and follows it
+  // until the user picks another venue.
+  const [venue, setVenue] = useState<UsdcEarnOption["venue"] | null>(null);
+  const earn =
+    (venue ? earnOptions.find((o) => o.venue === venue) : null) ?? defaultEarn;
+  // The Monad legs need the embedded EVM wallet. Undefined until Privy has
+  // provisioned it, which the ticket waits for before it will start.
+  const monad: MonadSigners | undefined =
+    evm.address
+      ? {
+          evm: { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider },
+          solanaSignAndSend,
+        }
+      : undefined;
   // Which run the step list belongs to, and its data as it accumulates.
   const runId = useRef<string | null>(null);
   const data = useRef<EarnRunData | null>(null);
@@ -150,6 +174,7 @@ export function EarnTicket({
       earnOptions.find((o) => o.venue === d.earnVenue) ?? earn,
     [earnOptions, earn],
   );
+  const needsMonad = (o: UsdcEarnOption | null) => o?.venue === "morpho";
 
   // The three opening steps, from data that may be fresh or restored.
   function openSteps(d: EarnRunData, option: UsdcEarnOption): StepDef[] {
@@ -239,16 +264,22 @@ export function EarnTicket({
       },
       {
         id: "earn",
-        label: `Deposit the borrowed USDC into ${option.label}`,
-        run: async () => {
+        label:
+          option.venue === "morpho"
+            ? `Move the borrowed USDC to Monad and deposit it into ${option.morphoVault?.name ?? option.label}`
+            : `Deposit the borrowed USDC into ${option.label}`,
+        run: async (report) => {
           if (!d.borrowedUsd || d.borrowedUsd <= 0) throw new Error("Nothing was borrowed.");
           const r = await depositUsdcToEarn({
             option,
             walletAddress,
             amountUsdc: d.borrowedUsd,
             signTx,
+            monad,
+            onProgress: report,
           });
-          return { signatures: [r.signature] };
+          // A Monad deposit ends in an EVM hash, which Solscan cannot show.
+          return { signatures: option.venue === "morpho" ? [] : [r.signature] };
         },
         // Landed if the borrowed USDC is no longer sitting in the wallet.
         reconcile: async () => {
@@ -283,6 +314,7 @@ export function EarnTicket({
     borrowUsd >= MIN_BORROW_USD &&
     !liquidityShort &&
     earn != null &&
+    (!needsMonad(earn) || monad != null) &&
     price != null &&
     !run.running &&
     run.steps.length === 0 &&
@@ -328,18 +360,24 @@ export function EarnTicket({
     const steps: StepDef[] = [
       {
         id: "earn-withdraw",
-        label: `Withdraw the USDC from ${option.label}`,
-        run: async () => {
+        label:
+          option.venue === "morpho"
+            ? `Withdraw the USDC from ${option.morphoVault?.name ?? option.label} and bring it back to Solana`
+            : `Withdraw the USDC from ${option.label}`,
+        run: async (report) => {
           const held = balances?.usdc ?? 0;
           // Whatever the wallet does not already cover, up to the whole
           // position: a debt that has grown past the deposit takes the
-          // yield too.
-          const need = Math.max(0, borrowed * CLOSE_REPAY_PAD - held);
+          // yield too. The Monad leg home costs about 0.3%, so it asks for
+          // a little more than the loan.
+          const need = Math.max(0, borrowed * CLOSE_REPAY_PAD * (option.venue === "morpho" ? 1.01 : 1) - held);
           const r = await withdrawUsdcFromEarn({
             option,
             walletAddress,
             amountUsdc: Math.max(need, 0.01),
             signTx,
+            monad,
+            onProgress: report,
           });
           return { signatures: r.signature ? [r.signature] : [] };
         },
@@ -475,6 +513,34 @@ export function EarnTicket({
         disabled={run.running}
       />
 
+      {earnOptions.length > 1 && (
+        <div>
+          <div className="mb-2 text-xs text-white/50">Borrowed USDC earns in</div>
+          <div className="flex flex-wrap gap-2">
+            {earnOptions.map((o) => (
+              <button
+                key={o.venue}
+                type="button"
+                disabled={run.running}
+                onClick={() => setVenue(o.venue)}
+                className={`rounded-lg border px-3 py-1.5 text-left text-xs transition-colors ${
+                  earn?.venue === o.venue
+                    ? "border-white/20 bg-white/10 text-white"
+                    : "border-white/10 text-white/60 hover:text-white"
+                }`}
+              >
+                <span className="font-medium">{o.label}</span>
+                <span className="ml-2 font-mono tabular-nums">{fmtPct(o.apy)}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {needsMonad(earn) && !monad && (
+        <Note>Waiting for the embedded Ethereum wallet to provision.</Note>
+      )}
+
       {spread != null && spread <= 0 && (
         <Note tone="warn">
           Borrowing costs more than the vault pays right now:{" "}
@@ -513,7 +579,15 @@ export function EarnTicket({
           label="Liquidation if the price drops"
           value={drop != null ? `−${(drop * 100).toFixed(0)}%` : "—"}
         />
-        <PreviewRow label="Signatures" value={route.venue === "jupiter" ? "3" : "4"} muted />
+        <PreviewRow
+          label="Steps"
+          value={
+            needsMonad(earn)
+              ? `buy, borrow, fund Monad, deposit. All signed automatically`
+              : `buy, borrow, deposit. All signed automatically`
+          }
+          muted
+        />
       </PreviewBlock>
 
       {liquidityShort && (
@@ -527,8 +601,8 @@ export function EarnTicket({
 
       {run.finished ? (
         <Note>
-          Done. The position is on the Borrow tab and the USDC on the Earn tab.
-          Come back here to close it.
+          Done. The loan is on the Borrow tab and the USDC is earning in{" "}
+          {earn?.label ?? "the vault"}. Come back here to close it.
         </Note>
       ) : (
         <button type="button" onClick={handleStart} disabled={!canStart} className={PRIMARY_BUTTON}>
@@ -542,7 +616,7 @@ export function EarnTicket({
                   ? amountUsd < MIN_BUY_USD
                     ? `Minimum ${fmtUsd(MIN_BUY_USD)}`
                     : "Not enough USDC"
-                  : `Buy and earn ${net != null ? fmtSignedPct(net) : ""}`}
+                  : `Buy + Earn ${net != null ? fmtSignedPct(net) : ""}`}
         </button>
       )}
     </div>

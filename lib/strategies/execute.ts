@@ -68,6 +68,13 @@ import {
   type KaminoPosition,
 } from "@/lib/kamino/positions";
 import type { KaminoCollateralReserve } from "@/lib/kamino/reserves";
+import { fetchMorphoPositions } from "@/lib/morpho/client";
+import {
+  withdrawFromMorphoVault,
+  type EvmSigner,
+  type MorphoTxProgress,
+} from "@/lib/morpho/deposit";
+import { depositUsdcWithFunding, sendMonadUsdcToSolana } from "@/lib/morpho/fund";
 import { awaitTokenBalance } from "@/lib/solana/await-balance";
 import { atomicToUiString, getConnection } from "@/lib/solana/balances";
 import {
@@ -313,6 +320,18 @@ async function kaminoDepositAndBorrow(args: {
 
 // ── Earn ─────────────────────────────────────────────────────────────────────
 
+// What a Morpho-on-Monad leg needs beyond the Solana signer: the embedded EVM
+// wallet for the approve and deposit, and a Solana sign-and-send for the
+// Trustware funding legs. Both come from hooks, so the ticket passes them in.
+export interface MonadSigners {
+  evm: EvmSigner;
+  solanaSignAndSend: (base64Tx: string) => Promise<string>;
+}
+
+function toMorphoReport(onProgress?: (message: string) => void) {
+  return (p: MorphoTxProgress) => onProgress?.(p.message);
+}
+
 // Put USDC into the chosen earn venue. Waits for the USDC to show in the
 // wallet first, because it usually just arrived from a borrow.
 export async function depositUsdcToEarn(args: {
@@ -320,11 +339,14 @@ export async function depositUsdcToEarn(args: {
   walletAddress: string;
   amountUsdc: number;
   signTx: SignTx;
+  monad?: MonadSigners;
+  onProgress?: (message: string) => void;
 }): Promise<{ signature: string }> {
   const { option, walletAddress, amountUsdc, signTx } = args;
   const conn = getConnection();
   const amountAtomic = toAtomicBN(amountUsdc, USDC_DECIMALS);
 
+  args.onProgress?.("Waiting for the USDC to land in the wallet");
   const held = BigInt(
     await awaitTokenBalance({
       mint: USDC_MINT,
@@ -339,6 +361,33 @@ export async function depositUsdcToEarn(args: {
   const deposit = BN.min(amountAtomic, new BN(held.toString()));
   if (deposit.lten(0)) {
     throw new Error("No USDC in the wallet to deposit.");
+  }
+
+  if (option.venue === "morpho") {
+    if (!option.morphoVault) throw new Error("Morpho vault record missing");
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    // Solana USDC funds the deposit: Trustware moves it to Monad, tops up MON
+    // gas if the wallet has none, then the vault deposit runs. The funding
+    // takes fees off the delivered side, so the deposit is sized under the
+    // amount so the plan can pay for itself out of the same USDC.
+    const balances = await fetchMorphoPositions(args.monad.evm.address).catch(() => null);
+    const monadUsdc = balances?.usdcBalanceAtomic ?? "0";
+    const mon = balances?.monBalanceAtomic ?? "0";
+    const feeHeadroomBps = 400n;
+    const target =
+      (BigInt(deposit.toString()) * (10_000n - feeHeadroomBps)) / 10_000n +
+      BigInt(monadUsdc);
+    const { txHash } = await depositUsdcWithFunding({
+      vault: option.morphoVault,
+      amountAtomic: target,
+      monadUsdcAtomic: monadUsdc,
+      solanaUsdcAtomic: held.toString(),
+      monBalanceAtomic: mon,
+      signer: args.monad.evm,
+      solana: { address: walletAddress, signAndSendBase64: args.monad.solanaSignAndSend },
+      onProgress: toMorphoReport(args.onProgress),
+    });
+    return { signature: txHash };
   }
 
   if (option.venue === "jupiter") {
@@ -516,8 +565,15 @@ export async function readKaminoPosition(
 export async function readEarnPositionUsdc(args: {
   option: UsdcEarnOption;
   walletAddress: string;
+  evmAddress?: string;
 }): Promise<number> {
   const { option, walletAddress } = args;
+  if (option.venue === "morpho") {
+    if (!option.morphoVault || !args.evmAddress) return 0;
+    const r = await fetchMorphoPositions(args.evmAddress);
+    const pos = r.positions.get(option.morphoVault.address.toLowerCase());
+    return pos ? Number(atomicToUiString(pos.assetsAtomic, USDC_DECIMALS)) : 0;
+  }
   if (option.venue === "jupiter") {
     const meta = earnAssetByMint(USDC_MINT);
     if (!meta) return 0;
@@ -549,13 +605,52 @@ export async function withdrawUsdcFromEarn(args: {
   walletAddress: string;
   amountUsdc: number;
   signTx: SignTx;
+  monad?: MonadSigners;
+  onProgress?: (message: string) => void;
 }): Promise<{ signature: string | null; withdrawnUsdc: number }> {
   const { option, walletAddress, amountUsdc, signTx } = args;
   const conn = getConnection();
-  const held = await readEarnPositionUsdc({ option, walletAddress });
+  const held = await readEarnPositionUsdc({
+    option,
+    walletAddress,
+    evmAddress: args.monad?.evm.address,
+  });
   const amount = Math.min(amountUsdc, held);
   if (amount <= 0) return { signature: null, withdrawnUsdc: 0 };
   const amountAtomic = toAtomicBN(amount, USDC_DECIMALS);
+
+  if (option.venue === "morpho") {
+    if (!option.morphoVault) throw new Error("Morpho vault record missing");
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    const report = toMorphoReport(args.onProgress);
+    // Take everything when the ask covers the position, so no dust is left.
+    const redeemAll = amount >= held - 0.01;
+    await withdrawFromMorphoVault({
+      vault: option.morphoVault,
+      amountAtomic: BigInt(amountAtomic.toString()),
+      redeemAll,
+      signer: args.monad.evm,
+      onProgress: report,
+    });
+    // Then the leg home, so the repay can spend it on Solana.
+    const balances = await fetchMorphoPositions(args.monad.evm.address);
+    const onMonad = BigInt(balances.usdcBalanceAtomic);
+    const send = onMonad < BigInt(amountAtomic.toString()) ? onMonad : BigInt(amountAtomic.toString());
+    const { deliveredAtomic } = await sendMonadUsdcToSolana({
+      amountAtomic: send,
+      monadUsdcAtomic: balances.usdcBalanceAtomic,
+      monBalanceAtomic: balances.monBalanceAtomic,
+      evm: args.monad.evm,
+      solanaAddress: walletAddress,
+      onProgress: report,
+    });
+    return {
+      signature: null,
+      withdrawnUsdc: deliveredAtomic
+        ? Number(atomicToUiString(deliveredAtomic, USDC_DECIMALS))
+        : amount,
+    };
+  }
 
   if (option.venue === "jupiter") {
     const meta = earnAssetByMint(USDC_MINT);

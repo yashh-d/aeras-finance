@@ -39,10 +39,13 @@ delta and greys out with the two numbers side by side when the spread is at or
 below zero. It never hides the strategy, and it never shows a rate without the
 two components that made it.
 
-Morpho-on-Monad is excluded as an earn venue here. It often pays more, but it
-would add a Trustware hop and an EVM signature to a strategy that otherwise
-settles entirely on Solana, and a loop that spans two chains cannot be closed in
-one place. Revisit only if the spread on Solana venues stays negative for weeks.
+The base case for the borrowed USDC is the Hyperithm USDC Apex vault, Morpho
+on Monad, funded through the same Trustware path the Earn tab uses (Solana
+USDC to Monad USDC, a MON gas top-up when the wallet has none, then the
+ERC-4626 deposit). Jupiter Lend Earn and Kamino's USDC vault are offered as
+the alternatives that stay on Solana. Closing a Monad position withdraws from
+the vault and brings the USDC home through the return leg before repaying.
+Every signature is silent, so the one press runs the whole chain.
 
 ### 2. Buy + Leverage
 
@@ -229,9 +232,8 @@ live integration, and manual test instructions. One slice per session.
 
 ## Decisions taken in this plan
 
-- Earn venue for the borrowed USDC is chosen by best live rate between Jupiter
-  Lend Earn and Kamino's USDC kvault, and the tile names which one. Morpho is
-  out (cross-chain).
+- Earn venue for the borrowed USDC defaults to the Hyperithm vault on Monad,
+  with Jupiter Lend Earn and Kamino's USDC kvault as alternatives.
 - Default borrow ratio for Earn and the ladder is half the collateral factor,
   which puts health near 2.3 on a 75% LT market. The slider goes up to
   `safeMaxBorrowRatio`, the 90%-of-CF ceiling the borrow forms already use.

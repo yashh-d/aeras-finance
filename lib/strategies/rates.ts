@@ -7,9 +7,11 @@
 //
 // Borrow rates and liquidity come from useBorrowMarketStats, the same hook the
 // Borrow tab reads, so the two tabs cannot disagree. Earn rates come from the
-// same two proxies the Earn tab reads. Morpho is left out on purpose: it is
-// the one EVM venue, and a strategy that settles on Solana should not need a
-// Trustware hop to close.
+// same proxies the Earn tab reads.
+//
+// The base case for the borrowed USDC is the Hyperithm USDC Apex vault, Morpho
+// on Monad, funded through the same Trustware path the Earn tab uses. Jupiter
+// Lend Earn and Kamino's USDC vault stay as alternatives that settle on Solana.
 
 import { useEffect, useMemo, useState } from "react";
 
@@ -29,8 +31,10 @@ import {
   kaminoVaultByAsset,
   type KaminoVaultMeta,
 } from "@/lib/kamino/kvaults";
+import { fetchMorphoMetrics } from "@/lib/morpho/client";
+import { MONAD_USDC_VAULTS, type MorphoVault } from "@/lib/morpho/vaults";
 
-export type EarnVenue = "jupiter" | "kamino";
+export type EarnVenue = "morpho" | "jupiter" | "kamino";
 
 export interface UsdcEarnOption {
   venue: EarnVenue;
@@ -39,7 +43,14 @@ export interface UsdcEarnOption {
   apy: number;
   // Set for Kamino, where the deposit needs the vault record.
   kaminoVault?: KaminoVaultMeta;
+  // Set for Morpho on Monad.
+  morphoVault?: MorphoVault;
 }
+
+// The base-case vault. Curated by Hyperithm; the largest of the Monad USDC
+// vaults in lib/morpho/vaults.ts.
+export const BASE_CASE_VAULT: MorphoVault =
+  MONAD_USDC_VAULTS.find((v) => v.curator === "Hyperithm") ?? MONAD_USDC_VAULTS[0];
 
 export interface StrategyRates {
   xstock: XStock;
@@ -55,9 +66,10 @@ export interface StrategyRates {
 export interface StrategyRatesState {
   // Every asset with a borrow market, in catalog order.
   rows: StrategyRates[];
-  // Best USDC earn venue on Solana right now, or null while loading.
-  bestEarn: UsdcEarnOption | null;
-  // Both options, so the ticket can say what it did not pick.
+  // Where borrowed USDC goes by default: the Hyperithm vault on Monad when its
+  // rate is known, else the best of the Solana venues. Null while loading.
+  defaultEarn: UsdcEarnOption | null;
+  // Every venue, so the ticket can offer the others.
   earnOptions: UsdcEarnOption[];
   loading: boolean;
 }
@@ -83,6 +95,20 @@ export function useStrategyRates(): StrategyRatesState {
       // Each source fails soft on its own. A venue that is down drops out of
       // the comparison rather than blanking the page.
       await Promise.all([
+        (async () => {
+          try {
+            const metrics = await fetchMorphoMetrics();
+            const m = metrics.get(BASE_CASE_VAULT.address.toLowerCase());
+            if (m?.netApy != null) {
+              options.push({
+                venue: "morpho",
+                label: `${BASE_CASE_VAULT.name} on Monad`,
+                apy: m.netApy,
+                morphoVault: BASE_CASE_VAULT,
+              });
+            }
+          } catch {}
+        })(),
         (async () => {
           try {
             const vaults = await fetchEarnVaultsViaProxy();
@@ -154,14 +180,17 @@ export function useStrategyRates(): StrategyRatesState {
     return out;
   }, [stats, supplyApyByReserve]);
 
-  const bestEarn = useMemo(() => {
+  const defaultEarn = useMemo(() => {
     if (earnOptions.length === 0) return null;
-    return earnOptions.reduce((best, o) => (o.apy > best.apy ? o : best));
+    return (
+      earnOptions.find((o) => o.venue === "morpho") ??
+      earnOptions.reduce((best, o) => (o.apy > best.apy ? o : best))
+    );
   }, [earnOptions]);
 
   return {
     rows,
-    bestEarn,
+    defaultEarn,
     earnOptions,
     loading: loading || statsLoading,
   };
