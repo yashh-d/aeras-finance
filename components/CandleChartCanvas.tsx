@@ -2,12 +2,10 @@
 
 // The TradingView chart both perps venues draw into.
 //
-// Lightweight Charts is the library TradingView publishes under Apache 2.0,
-// not the licensed Advanced Charts that Lighter's own site embeds. It draws
-// candles, volume, a crosshair and the scales, and it has no indicator or
-// drawing toolbar; adding those means a TradingView library licence and a
-// datafeed adapter over the same candle endpoints. The attribution logo the
-// library draws by default is left on, which is what its licence asks.
+// Lightweight Charts is the charting library TradingView publishes under
+// Apache 2.0. It draws candles, volume, a crosshair and the scales, and the
+// attribution logo it draws by default is left on, which is what its licence
+// asks.
 //
 // This holds the chart and nothing else: no fetch, no header, no range
 // control. Each venue owns its feed (Lighter and Ondo serve different
