@@ -22,6 +22,7 @@ import {
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { AccountBalances } from "@/lib/solana/balances";
 import { buildSendTransaction } from "@/lib/solana/send";
+import { describeSendError } from "@/lib/solana/send-errors";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 
 interface Props {
@@ -152,10 +153,7 @@ function WithdrawCard({
       setStatus({ kind: "done", signature: sigB58 });
       await onRefresh();
     } catch (err) {
-      setStatus({
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setStatus({ kind: "error", message: describeSendError(err) });
     }
   }
 

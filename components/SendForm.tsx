@@ -18,6 +18,7 @@ import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { XSTOCKS } from "@/lib/jupiter/xstocks";
 import type { AccountBalances } from "@/lib/solana/balances";
 import { buildSendTransaction, type SendAsset } from "@/lib/solana/send";
+import { describeSendError } from "@/lib/solana/send-errors";
 import { INSET_PANEL } from "@/lib/ui/surface";
 
 type AssetOption = {
@@ -112,10 +113,7 @@ export function SendForm({
       setStatus({ kind: "done", signature: sigB58 });
       onSent();
     } catch (err) {
-      setStatus({
-        kind: "error",
-        message: err instanceof Error ? err.message : String(err),
-      });
+      setStatus({ kind: "error", message: describeSendError(err) });
     }
   }
 
