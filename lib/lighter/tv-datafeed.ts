@@ -15,8 +15,11 @@
 // component switches between the two.
 
 import {
-  TV_RESOLUTIONS,
+  isTvResolution,
+  TV_RESOLUTION_MS,
+  TV_RESOLUTION_STRINGS,
   tvPriceScale,
+  type ResolutionString,
   type TvBar,
   type TvDatafeed,
   type TvResolution,
@@ -93,7 +96,7 @@ export function createLighterDatafeed({
     onReady(callback) {
       // The library requires this to be answered asynchronously.
       setTimeout(() => callback({
-        supported_resolutions: TV_RESOLUTIONS,
+        supported_resolutions: TV_RESOLUTION_STRINGS,
         supports_marks: false,
         supports_timescale_marks: false,
         supports_time: true,
@@ -125,7 +128,7 @@ export function createLighterDatafeed({
         has_intraday: true,
         has_daily: true,
         has_weekly_and_monthly: false,
-        supported_resolutions: TV_RESOLUTIONS,
+        supported_resolutions: TV_RESOLUTION_STRINGS,
         intraday_multipliers: ["1", "5", "15", "30", "60", "240", "720"],
         volume_precision: 4,
         data_status: "streaming",
@@ -134,30 +137,41 @@ export function createLighterDatafeed({
       setTimeout(() => onResolve(info), 0);
     },
 
-    getBars(symbolInfo, resolution, period, onResult, onError) {
+    getBars(symbolInfo, resolutionString, period, onResult, onError) {
+      const resolution = parseResolution(resolutionString);
+      if (!resolution) {
+        onError(`unsupported resolution ${resolutionString}`);
+        return;
+      }
       const { source } = splitSymbol(symbolInfo.name);
-      fetchWindow(marketId, resolution, source, period.from, period.to, period.countBack)
+      // The library asks for [from, to) and countBack bars, and its docs say
+      // to return bars before `from` when the range holds fewer than
+      // countBack rather than make it ask again. Lighter serves the newest
+      // bars within the window, capped at 500, so the window is widened to
+      // cover countBack bars and everything before `to` is returned.
+      const barSec = TV_RESOLUTION_MS[resolution] / 1000;
+      const from = Math.max(0, Math.min(period.from, period.to - period.countBack * barSec));
+      fetchWindow(marketId, resolution, source, from, period.to, period.countBack)
         .then((candles) => {
-          const fromMs = period.from * 1000;
           const toMs = period.to * 1000;
-          // The library wants bars inside [from, to) only; a bar outside the
-          // window, which the server's cap can produce, is rejected loudly.
-          const bars = candles
-            .filter((c) => c.t >= fromMs && c.t < toMs)
-            .map((c) => toBar(c, source));
+          const bars = candles.filter((c) => c.t < toMs).map((c) => toBar(c, source));
+          // noData means nothing older exists at all, which is what an empty
+          // answer to a window this wide means for a 24/7 market.
           onResult(bars, { noData: bars.length === 0 });
         })
         .catch((err) => onError(err instanceof Error ? err.message : String(err)));
     },
 
-    subscribeBars(symbolInfo, resolution, onTick, guid) {
+    subscribeBars(symbolInfo, resolutionString, onTick, guid) {
+      const resolution = parseResolution(resolutionString);
+      if (!resolution) return;
       const { source } = splitSymbol(symbolInfo.name);
       let lastTime = 0;
       const poll = () => {
         const nowSec = Math.floor(Date.now() / 1000);
         // Three bars back, so a bar that closed between polls is refreshed
         // with its final values before the new one is drawn.
-        const span = 3 * (msOf(resolution) / 1000);
+        const span = 3 * (TV_RESOLUTION_MS[resolution] / 1000);
         fetchWindow(marketId, resolution, source, nowSec - span, nowSec + 1, 3)
           .then((candles) => {
             for (const c of candles) {
@@ -183,15 +197,7 @@ export function createLighterDatafeed({
   };
 }
 
-function msOf(resolution: TvResolution): number {
-  return {
-    "1": 60_000,
-    "5": 300_000,
-    "15": 900_000,
-    "30": 1_800_000,
-    "60": 3_600_000,
-    "240": 14_400_000,
-    "720": 43_200_000,
-    "1D": 86_400_000,
-  }[resolution];
+function parseResolution(value: ResolutionString): TvResolution | null {
+  const raw = String(value);
+  return isTvResolution(raw) ? raw : null;
 }

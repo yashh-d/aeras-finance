@@ -11,8 +11,12 @@
 // bar the library is on, and a tick past that bar's end opens the next one.
 
 import {
+  asResolution,
+  isTvResolution,
+  TV_RESOLUTION_MS,
   tvBarStart,
   tvPriceScale,
+  type ResolutionString,
   type TvBar,
   type TvDatafeed,
   type TvResolution,
@@ -25,6 +29,12 @@ import type { OndoCandle } from "./types";
 // What app/api/ondo/history admits. Ondo's UDF strings match the library's
 // for these; 720 is not among them.
 const RESOLUTIONS: TvResolution[] = ["1", "5", "15", "30", "60", "240", "1D"];
+const RESOLUTION_STRINGS = RESOLUTIONS.map(asResolution);
+
+function parseResolution(value: ResolutionString): TvResolution | null {
+  const raw = String(value);
+  return isTvResolution(raw) && RESOLUTIONS.includes(raw) ? raw : null;
+}
 
 async function fetchWindow(
   market: string,
@@ -67,7 +77,7 @@ export function createOndoDatafeed({
   return {
     onReady(callback) {
       setTimeout(() => callback({
-        supported_resolutions: RESOLUTIONS,
+        supported_resolutions: RESOLUTION_STRINGS,
         supports_marks: false,
         supports_timescale_marks: false,
         supports_time: true,
@@ -98,7 +108,7 @@ export function createOndoDatafeed({
         has_intraday: true,
         has_daily: true,
         has_weekly_and_monthly: false,
-        supported_resolutions: RESOLUTIONS,
+        supported_resolutions: RESOLUTION_STRINGS,
         intraday_multipliers: ["1", "5", "15", "30", "60", "240"],
         volume_precision: 2,
         data_status: "streaming",
@@ -107,18 +117,30 @@ export function createOndoDatafeed({
       setTimeout(() => onResolve(info), 0);
     },
 
-    getBars(_symbolInfo, resolution, period, onResult, onError) {
-      fetchWindow(market, resolution, period.from, period.to, period.countBack)
+    getBars(_symbolInfo, resolutionString, period, onResult, onError) {
+      const resolution = parseResolution(resolutionString);
+      if (!resolution) {
+        onError(`unsupported resolution ${resolutionString}`);
+        return;
+      }
+      // The library's docs: when [from, to) holds fewer than countBack bars,
+      // return earlier bars to make up the count rather than make it ask
+      // again. The window is widened to cover countBack bars and everything
+      // before `to` is returned.
+      const barSec = TV_RESOLUTION_MS[resolution] / 1000;
+      const from = Math.max(0, Math.min(period.from, period.to - period.countBack * barSec));
+      fetchWindow(market, resolution, from, period.to, period.countBack)
         .then((candles) => {
-          const fromMs = period.from * 1000;
           const toMs = period.to * 1000;
-          const bars = candles.filter((c) => c.time >= fromMs && c.time < toMs).map(toBar);
+          const bars = candles.filter((c) => c.time < toMs).map(toBar);
           onResult(bars, { noData: bars.length === 0 });
         })
         .catch((err) => onError(err instanceof Error ? err.message : String(err)));
     },
 
-    subscribeBars(_symbolInfo, resolution, onTick, guid) {
+    subscribeBars(_symbolInfo, resolutionString, onTick, guid) {
+      const resolution = parseResolution(resolutionString);
+      if (!resolution) return;
       let live: TvBar | null = null;
       const unsubscribe = subscribeMarkPrice(market, (price) => {
         const start = tvBarStart(Date.now(), resolution);

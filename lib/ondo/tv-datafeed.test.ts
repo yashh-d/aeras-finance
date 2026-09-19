@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { TvBar, TvSymbolInfo } from "@/lib/charts/tradingview";
+import { asResolution, type TvBar, type TvSymbolInfo } from "@/lib/charts/tradingview";
 
 vi.mock("./mark-socket", () => {
   const listeners = new Set<(p: number) => void>();
@@ -38,9 +38,10 @@ function resolve(name: string): Promise<TvSymbolInfo> {
 
 describe("ondo datafeed", () => {
   it("passes the window through to the history route", async () => {
-    const fetch = vi.fn(async () => ({
+    const fetch = vi.fn(async (input: string) => ({
       ok: true,
       status: 200,
+      url: input,
       json: async () => ({
         candles: [{ time: 1_500_000, open: 1, high: 2, low: 1, close: 2, volume: 9 }],
       }),
@@ -48,11 +49,19 @@ describe("ondo datafeed", () => {
     vi.stubGlobal("fetch", fetch);
     const info = await resolve("SPY");
     const bars = await new Promise<TvBar[]>((res, rej) =>
-      feed.getBars(info, "60", { from: 1_000, to: 2_000, countBack: 1, firstDataRequest: true }, res, rej),
+      feed.getBars(
+        info,
+        asResolution("60"),
+        { from: 1_000, to: 2_000, countBack: 1, firstDataRequest: true },
+        res,
+        rej,
+      ),
     );
     const url = String(fetch.mock.calls[0][0]);
     expect(url).toContain("market=SPY-USD.P");
-    expect(url).toContain("from=1000");
+    // One hourly bar back from `to` is earlier than the requested `from`,
+    // and below zero, which the route refuses, so it is clamped.
+    expect(url).toContain("from=0&");
     expect(url).toContain("to=2000");
     expect(bars[0]).toMatchObject({ time: 1_500_000, close: 2, volume: 9 });
   });
@@ -63,7 +72,7 @@ describe("ondo datafeed", () => {
     vi.useFakeTimers();
     vi.setSystemTime(Date.UTC(2026, 8, 19, 13, 47));
     const ticks: TvBar[] = [];
-    feed.subscribeBars(info, "15", (bar) => ticks.push(bar), "g1", () => {});
+    feed.subscribeBars(info, asResolution("15"), (bar) => ticks.push(bar), "g1", () => {});
     expect(count()).toBe(1);
 
     emit(100);

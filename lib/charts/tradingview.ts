@@ -4,12 +4,15 @@
 // Ondo's history endpoint is shaped for ("TradingView UDF format, as required
 // by the TradingView charting library"). It is licensed, not on npm: TradingView
 // grants access to a private repository and the files are copied into
-// public/charting_library/ (docs/tradingview.md). The library has no type
-// package we can install alongside it, so the parts of its API the datafeeds
-// and the widget host touch are declared here, narrowed to what is used.
-//
-// Field names follow the library's own, including its snake_case, because
-// these objects are handed to the library verbatim.
+// public/charting_library/ (docs/tradingview.md). Its TypeScript definitions
+// ship with it rather than on npm; they are vendored under ./vendor (version
+// 32.2.0) and re-exported here under short names, so the datafeeds and the
+// widget host are typed against the real API rather than a hand-written one.
+
+import type {
+  ChartingLibraryWidgetConstructor,
+  ResolutionString,
+} from "./vendor/charting_library";
 
 export type TvResolution = "1" | "5" | "15" | "30" | "60" | "240" | "720" | "1D";
 
@@ -36,123 +39,38 @@ export function tvBarStart(nowMs: number, resolution: TvResolution): number {
   return Math.floor(nowMs / ms) * ms;
 }
 
-// A bar as the library consumes it: `time` is unix milliseconds.
-export interface TvBar {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume?: number;
-}
-
-export interface TvDatafeedConfiguration {
-  supported_resolutions: TvResolution[];
-  supports_marks?: boolean;
-  supports_timescale_marks?: boolean;
-  supports_time?: boolean;
-  exchanges?: { value: string; name: string; desc: string }[];
-  symbols_types?: { name: string; value: string }[];
-}
-
-export interface TvSymbolInfo {
-  name: string;
-  ticker: string;
-  description: string;
-  type: string;
-  session: string;
-  timezone: string;
-  exchange: string;
-  listed_exchange: string;
-  format: "price" | "volume";
-  pricescale: number;
-  minmov: number;
-  has_intraday: boolean;
-  has_daily: boolean;
-  has_weekly_and_monthly: boolean;
-  supported_resolutions: TvResolution[];
-  intraday_multipliers?: string[];
-  volume_precision: number;
-  data_status: "streaming" | "endofday" | "delayed_streaming";
-  visible_plots_set?: "ohlcv" | "ohlc" | "c";
-}
-
-export interface TvPeriodParams {
-  // Unix seconds.
-  from: number;
-  to: number;
-  countBack: number;
-  firstDataRequest: boolean;
-}
-
-export interface TvHistoryMetadata {
-  noData?: boolean;
-  nextTime?: number;
-}
-
-export interface TvDatafeed {
-  onReady(callback: (configuration: TvDatafeedConfiguration) => void): void;
-  searchSymbols(
-    userInput: string,
-    exchange: string,
-    symbolType: string,
-    onResult: (items: unknown[]) => void,
-  ): void;
-  resolveSymbol(
-    symbolName: string,
-    onResolve: (symbolInfo: TvSymbolInfo) => void,
-    onError: (reason: string) => void,
-  ): void;
-  getBars(
-    symbolInfo: TvSymbolInfo,
-    resolution: TvResolution,
-    periodParams: TvPeriodParams,
-    onResult: (bars: TvBar[], meta: TvHistoryMetadata) => void,
-    onError: (reason: string) => void,
-  ): void;
-  subscribeBars(
-    symbolInfo: TvSymbolInfo,
-    resolution: TvResolution,
-    onTick: (bar: TvBar) => void,
-    listenerGuid: string,
-    onResetCacheNeeded: () => void,
-  ): void;
-  unsubscribeBars(listenerGuid: string): void;
-}
-
-export interface TvWidgetOptions {
-  container: HTMLElement;
-  library_path: string;
-  datafeed: TvDatafeed;
-  symbol: string;
-  interval: TvResolution;
-  locale: string;
-  theme: "dark" | "light";
-  autosize: boolean;
-  timezone: string;
-  disabled_features: string[];
-  enabled_features: string[];
-  overrides: Record<string, string | number | boolean>;
-  loading_screen: { backgroundColor: string; foregroundColor: string };
-  custom_css_url?: string;
-}
-
-export interface TvWidget {
-  onChartReady(callback: () => void): void;
-  setSymbol(symbol: string, interval: TvResolution, callback: () => void): void;
-  remove(): void;
-}
+// The library's own definitions, version 32.2.0, vendored under ./vendor from
+// the files TradingView ships with the library. Nothing here is hand-written.
+export type {
+  Bar as TvBar,
+  ChartingLibraryWidgetOptions as TvWidgetOptions,
+  DatafeedConfiguration as TvDatafeedConfiguration,
+  HistoryMetadata as TvHistoryMetadata,
+  IBasicDataFeed as TvDatafeed,
+  IChartingLibraryWidget as TvWidget,
+  LibrarySymbolInfo as TvSymbolInfo,
+  PeriodParams as TvPeriodParams,
+  ResolutionString,
+} from "./vendor/charting_library";
 
 declare global {
   interface Window {
-    TradingView?: { widget: new (options: TvWidgetOptions) => TvWidget };
+    // What charting_library.standalone.js installs.
+    TradingView?: { widget: ChartingLibraryWidgetConstructor };
   }
 }
 
-export const CHARTING_LIBRARY_PATH = "/charting_library/";
+// The library types a resolution as a nominal string. These are the ones
+// both datafeeds serve, stamped once here so nothing else needs the cast.
+export function asResolution(resolution: TvResolution): ResolutionString {
+  return resolution as unknown as ResolutionString;
+}
 
-// The library's own supported set, in the order its interval picker lists.
-export const TV_RESOLUTIONS: TvResolution[] = ["1", "5", "15", "30", "60", "240", "720", "1D"];
+export const TV_RESOLUTION_STRINGS: ResolutionString[] = (
+  Object.keys(TV_RESOLUTION_MS) as TvResolution[]
+).map(asResolution);
+
+export const CHARTING_LIBRARY_PATH = "/charting_library/";
 
 // A price scale from a tick size or a decimal count. The library wants an
 // integer power of ten: 100 for cents, 100000 for a five-place token.

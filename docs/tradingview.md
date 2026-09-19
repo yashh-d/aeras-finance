@@ -24,10 +24,13 @@ notice, until it is installed.
    repository, so a gitignored copy would never reach production.
 
 `lib/charts/tradingview.ts` loads `charting_library.standalone.js` from
-`/charting_library/` and declares the parts of the widget and datafeed API the
-app touches. Upgrade the library by replacing the folder; check the
-[breaking changes](https://www.tradingview.com/charting-library-docs/latest/releases/)
-against those declarations.
+`/charting_library/`. The library's own TypeScript definitions
+(`charting_library.d.ts` and `datafeed-api.d.ts`, version 32.2.0) are vendored
+verbatim under `lib/charts/vendor/` and are what the datafeeds and the widget
+host are typed against. Upgrade the library by replacing the folder and the
+two definition files together, and read the
+[release notes](https://www.tradingview.com/charting-library-docs/latest/releases/)
+for anything the typecheck does not catch.
 
 ## The datafeeds
 

@@ -7,6 +7,8 @@ const eslintConfig = defineConfig([
   ...nextTs,
   // Override default ignores of eslint-config-next.
   globalIgnores([
+    // TradingView's own type definitions, vendored verbatim.
+    "lib/charts/vendor/**",
     // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",

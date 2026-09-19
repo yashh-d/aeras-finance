@@ -22,6 +22,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import {
+  asResolution,
   CHARTING_LIBRARY_PATH,
   loadChartingLibrary,
   type TvDatafeed,
@@ -77,7 +78,7 @@ export function TradingViewChart({
       library_path: CHARTING_LIBRARY_PATH,
       datafeed,
       symbol,
-      interval,
+      interval: asResolution(interval),
       locale: "en",
       theme: "dark",
       autosize: true,

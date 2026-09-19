@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { TvBar, TvSymbolInfo } from "@/lib/charts/tradingview";
+import { asResolution, type TvBar, type TvSymbolInfo } from "@/lib/charts/tradingview";
 
 import { createLighterDatafeed, lighterTvSymbol } from "./tv-datafeed";
 
@@ -39,7 +39,7 @@ describe("lighter datafeed", () => {
     await expect(resolve("TSLA")).rejects.toMatch(/unknown symbol/);
   });
 
-  it("asks the history route in Lighter's resolution and keeps bars inside the window", async () => {
+  it("widens the window to countBack bars and returns everything before `to`", async () => {
     const fetch = mockFetch([
       { t: 900_000, o: 1, h: 1, l: 1, c: 1, v: 1 },
       { t: 1_000_000, o: 1, h: 2, l: 1, c: 2, v: 3 },
@@ -47,19 +47,53 @@ describe("lighter datafeed", () => {
     ]);
     const info = await resolve("SPY");
     const bars = await new Promise<TvBar[]>((res, rej) =>
-      feed.getBars(info, "15", { from: 1_000, to: 2_000, countBack: 2, firstDataRequest: true }, res, rej),
+      feed.getBars(
+        info,
+        asResolution("15"),
+        { from: 1_000, to: 2_000, countBack: 300, firstDataRequest: true },
+        res,
+        rej,
+      ),
     );
-    expect(String(fetch.mock.calls[0][0])).toContain("resolution=15m");
-    expect(String(fetch.mock.calls[0][0])).toContain("source=trades");
-    expect(bars).toEqual([{ time: 1_000_000, open: 1, high: 2, low: 1, close: 2, volume: 3 }]);
+    const url = String(fetch.mock.calls[0][0]);
+    expect(url).toContain("resolution=15m");
+    expect(url).toContain("source=trades");
+    // 300 fifteen-minute bars before `to` is well before the requested `from`
+    // and below zero, which the route refuses, so it is clamped.
+    expect(url).toContain("from=0&");
+    // A bar before `from` is kept (the library asked for countBack bars); a
+    // bar at `to` is not.
+    expect(bars.map((b) => b.time)).toEqual([900_000, 1_000_000]);
+    expect(bars[1]).toEqual({ time: 1_000_000, open: 1, high: 2, low: 1, close: 2, volume: 3 });
   });
 
   it("drops volume from the mark series", async () => {
     mockFetch([{ t: 1_000_000, o: 1, h: 2, l: 1, c: 2, v: 0 }]);
     const info = await resolve("SPY:MARK");
     const bars = await new Promise<TvBar[]>((res, rej) =>
-      feed.getBars(info, "5", { from: 1_000, to: 2_000, countBack: 1, firstDataRequest: true }, res, rej),
+      feed.getBars(
+        info,
+        asResolution("5"),
+        { from: 1_000, to: 2_000, countBack: 1, firstDataRequest: true },
+        res,
+        rej,
+      ),
     );
     expect(bars[0]).not.toHaveProperty("volume");
+  });
+
+  it("refuses a resolution it does not serve", async () => {
+    const info = await resolve("SPY");
+    await expect(
+      new Promise<TvBar[]>((res, rej) =>
+        feed.getBars(
+          info,
+          "W" as unknown as ReturnType<typeof asResolution>,
+          { from: 0, to: 1, countBack: 1, firstDataRequest: true },
+          res,
+          rej,
+        ),
+      ),
+    ).rejects.toMatch(/unsupported resolution/);
   });
 });
