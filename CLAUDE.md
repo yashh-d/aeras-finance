@@ -204,7 +204,17 @@ These exist in the repo and are past the "do not build" line. They are listed he
   the second (`lib/ondo/use-perps.ts`): builder commission and the tokenized
   stock accepted as margin, at the cost of a SIWE sign-in and an Ethereum leg.
   Each is a market picker, price chart, dollar-sized long/short ticket and open
-  positions. The Ondo body shares its order route with the hedge path so the
+  positions. **The chart on both venues is TradingView** as of 2026-09-19
+  (`components/TradingViewChart.tsx`, the free advanced-chart embed loaded from
+  TradingView's own host). It draws the underlying, not the perp: each market's
+  base ticker resolves to a TradingView symbol in
+  `lib/tokens/tradingview-symbol.ts`, where listed names carry their exchange,
+  metals point at spot, indices at the cash index, and anything unlisted is
+  taken to be crypto and pointed at Binance's USDT perpetual. Names with no
+  public underlying (SpaceX, CXMT) resolve to null and the panel says so.
+  The venues' own candles are still served and still drawn on the hedge tab
+  (`components/LighterChart.tsx`); they are just not the perps tab's chart
+  any more. The Ondo body shares its order route with the hedge path so the
   builder code cannot be dropped from one and kept on the other; the Lighter
   body shares `computeOrderSize` in `lib/lighter/sizing.ts` with `placeHedge`,
   so both enforce the exchange's two minimums and its per-order quote cap in one

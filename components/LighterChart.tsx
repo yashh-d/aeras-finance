@@ -59,8 +59,8 @@ export function LighterChart({
   markPrice?: number;
   marker?: LighterChartMarker;
   // Take the height of whatever contains this rather than the fixed 224px the
-  // hedge tab wants. The perps terminal sizes its own chart column, so the plot
-  // has to stretch into it; the hedge tab passes nothing and is unchanged.
+  // hedge tab wants. The perps tab used this to stretch into its chart column
+  // before it moved to TradingView; the hedge tab passes nothing.
   fill?: boolean;
 }) {
   const [range, setRange] = useState<CandleRange>("1D");

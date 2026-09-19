@@ -33,14 +33,7 @@
 // LTV, which is a separate mechanism from liquidation and does not close
 // positions.
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  Area,
-  AreaChart,
-  ResponsiveContainer,
-  Tooltip,
-  YAxis,
-} from "recharts";
+import { useState } from "react";
 
 import { LighterPerpsSection } from "@/components/LighterPerpsSection";
 import {
@@ -53,24 +46,25 @@ import {
   type TicketRow,
   type TicketSide,
 } from "@/components/PerpsTicket";
+import { TradingViewChart } from "@/components/TradingViewChart";
 import { marketTicker } from "@/lib/tokens/market-logos";
+import {
+  hintFromOndoTags,
+  tradingViewSymbol,
+} from "@/lib/tokens/tradingview-symbol";
 import { OndoMarginCard } from "@/components/OndoMarginCard";
 import { OndoUnwindCard } from "@/components/OndoUnwindCard";
 import { OndoWithdrawCard } from "@/components/OndoWithdrawCard";
 import { useLighterPerps } from "@/lib/lighter/use-lighter-perps";
 import { isOndoUnavailable, signInToOndo } from "@/lib/ondo/auth";
-import {
-  fetchOndoCandles,
-  placeOndoTrade,
-  setOndoLeverage,
-} from "@/lib/ondo/client";
+import { placeOndoTrade, setOndoLeverage } from "@/lib/ondo/client";
 import { useOndoMargin } from "@/lib/ondo/use-ondo-margin";
 import { useOndoWithdraw } from "@/lib/ondo/use-ondo-withdraw";
 import { useOndoUnwind } from "@/lib/ondo/use-ondo-unwind";
 import { useEmbeddedSolanaWallet } from "@/lib/privy/solana";
 import { usePerps } from "@/lib/ondo/use-perps";
 import { MarketHeader } from "@/components/MarketHeader";
-import type { OndoCandle, OndoMarket, OndoPosition } from "@/lib/ondo/types";
+import type { OndoMarket, OndoPosition } from "@/lib/ondo/types";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import type { AccountBalances } from "@/lib/solana/balances";
@@ -82,9 +76,6 @@ import { GLASS_SURFACE, INSET_PANEL } from "@/lib/ui/surface";
 // broke the ambient blue that reads through every other surface in the app.
 const PANEL = INSET_PANEL;
 const LABEL = TERMINAL_LABEL;
-
-const UP = "#119b62";
-const DOWN = "#d93232";
 
 // Preset sizes rather than only a free-text field. A perps ticket is used
 // repeatedly and typing the same figure each time is friction, but the field
@@ -434,7 +425,16 @@ export function PerpsPanel({
           notices={notices}
           chart={
             market ? (
-              <MarketChart key={market.market} market={market} />
+              // TradingView, the same chart the Lighter column draws. Ondo
+              // serves candles at one resolution, which was the reason the
+              // old area line had no range control; TradingView has all of
+              // them. The category tag decides how an unlisted name resolves.
+              <TradingViewChart
+                symbol={tradingViewSymbol(
+                  marketTicker(market.market),
+                  hintFromOndoTags(market.tags),
+                )}
+              />
             ) : (
               <div
                 className={`${PANEL} flex h-full items-center justify-center text-sm text-white/35`}
@@ -526,139 +526,6 @@ function TopBar({
         >
           {refreshing ? "Refreshing" : "Refresh"}
         </button>
-      </div>
-    </div>
-  );
-}
-
-// Price history for the selected market.
-//
-// An area line rather than the candlesticks the Lighter column draws. That
-// surface charts a venue that serves its own candles at five resolutions; Ondo
-// serves one, so there is no range control to offer and the shape is what there
-// is to read. Adding ranges here means sending a resolution string Ondo has not
-// been checked against, and a rejected resolution renders as an empty chart
-// rather than an error.
-//
-// The market's own numbers used to sit in a footer here and are now in the
-// header rail above, where both venues state theirs.
-//
-// Rendered with `key={market.market}`, so switching markets remounts this with
-// empty state instead of clearing the previous market's candles by hand. That
-// keeps a stale series from being shown under a new market's name without a
-// synchronous setState in the effect below.
-function MarketChart({ market }: { market: OndoMarket }) {
-  const [candles, setCandles] = useState<OndoCandle[]>([]);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    fetchOndoCandles(market.market, "15", 120)
-      .then((data) => {
-        if (!cancelled) setCandles(data);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [market.market]);
-
-  const change = useMemo(() => {
-    if (candles.length < 2) return 0;
-    const first = candles[0].close;
-    const last = candles[candles.length - 1].close;
-    return first > 0 ? (last - first) / first : 0;
-  }, [candles]);
-
-  const positive = change >= 0;
-
-  return (
-    <div className="flex h-full flex-col rounded-xl border border-white/[0.07] bg-[#111415]">
-      <div className="flex shrink-0 flex-wrap items-baseline justify-between gap-3 px-4 pt-3.5">
-        <div className="flex items-baseline gap-3">
-          <span className="text-sm font-medium text-white/90">
-            {marketTicker(market.market)}
-          </span>
-          <span className="font-mono text-xl font-light tabular-nums text-white">
-            {usd(Number(market.price))}
-          </span>
-          {candles.length >= 2 && (
-            <span
-              className={`font-mono text-xs tabular-nums ${
-                positive ? "text-aeras-positive" : "text-aeras-negative"
-              }`}
-            >
-              {positive ? "+" : ""}
-              {(change * 100).toFixed(2)}%
-            </span>
-          )}
-        </div>
-        <span className="text-[11px] text-white/35">{market.longName}</span>
-      </div>
-
-      <div className="min-h-0 flex-1 px-2 pb-2 pt-3">
-        {failed ? (
-          <div className="flex h-full items-center justify-center text-xs text-white/35">
-            Price history is unavailable for this market.
-          </div>
-        ) : candles.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-xs text-white/35">
-            Loading price history.
-          </div>
-        ) : (
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={candles} margin={{ top: 4, right: 0, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="ondoFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop
-                    offset="0%"
-                    stopColor={positive ? UP : DOWN}
-                    stopOpacity={0.25}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor={positive ? UP : DOWN}
-                    stopOpacity={0}
-                  />
-                </linearGradient>
-              </defs>
-              {/* Domain fitted to the data rather than anchored at zero: these
-                  are equity prices, and a zero baseline flattens a day's move
-                  into a straight line. */}
-              <YAxis domain={["dataMin", "dataMax"]} hide />
-              <Tooltip
-                contentStyle={{
-                  background: "#111415",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                  borderRadius: 8,
-                  fontSize: 11,
-                }}
-                labelFormatter={(_, payload) => {
-                  const point = payload?.[0]?.payload as OndoCandle | undefined;
-                  return point ? new Date(point.time).toLocaleString() : "";
-                }}
-                formatter={(value) => [usd(Number(value)), "Close"] as [string, string]}
-              />
-              <Area
-                type="monotone"
-                dataKey="close"
-                stroke={positive ? UP : DOWN}
-                strokeWidth={1.5}
-                fill="url(#ondoFill)"
-                isAnimationActive={false}
-              />
-            </AreaChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-
-      <div className="flex shrink-0 items-center justify-between border-t border-white/[0.05] px-4 py-1.5 text-[10px] uppercase tracking-[0.12em] text-white/30">
-        <span>{candles.length} bars · 15m</span>
-        <span>Ondo perp</span>
       </div>
     </div>
   );
