@@ -12,6 +12,8 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
       "NEXT_PUBLIC_PRIVY_APP_ID is not set. Add it to .env.local.",
     );
   }
+  // Set by next.config.ts from lib/solana/rpc-url.ts, so a Helius credential
+  // in the environment wins over the .env.local value of this name.
   const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
   if (!rpcUrl) {
     throw new Error(
