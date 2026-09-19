@@ -40,6 +40,7 @@
 import { useMemo, useState } from "react";
 
 import { LighterMarginCard } from "@/components/LighterMarginCard";
+import { LighterTradingViewChart } from "@/components/LighterTradingViewChart";
 import { LighterMarketSelector } from "@/components/LighterMarketSelector";
 import { LighterWithdrawCard } from "@/components/LighterWithdrawCard";
 import {
@@ -54,9 +55,7 @@ import {
   type TicketRow,
   type TicketSide,
 } from "@/components/PerpsTicket";
-import { TradingViewChart } from "@/components/TradingViewChart";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
-import { tradingViewSymbol } from "@/lib/tokens/tradingview-symbol";
 import {
   isFeeFree,
   liquidationDistance,
@@ -372,12 +371,15 @@ export function LighterPerpsSection({
       notices={notices}
       chart={
         market ? (
-          // TradingView rather than LighterChart. Lighter's own candles stay
-          // on the hedge tab, where the plot is a glance beside a form; here
-          // the chart is the thing being sat on, and it is the underlying
-          // that is drawn. Lighter has no market tags, so the resolver's own
-          // table decides what is listed and everything else is crypto.
-          <TradingViewChart symbol={tradingViewSymbol(market.symbol)} />
+          // Lighter's own candles on TradingView's charting, the same pairing
+          // Lighter's site runs. The venue's bars are what a position here is
+          // marked against, so the chart is the venue, not the underlying.
+          <LighterTradingViewChart
+            marketId={market.marketId}
+            symbol={market.symbol}
+            markPrice={Number(market.markPrice)}
+            priceDecimals={market.priceDecimals}
+          />
         ) : (
           <div
             className={`${PANEL} flex h-full items-center justify-center text-sm text-white/35`}

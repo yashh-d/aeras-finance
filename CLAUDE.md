@@ -204,16 +204,27 @@ These exist in the repo and are past the "do not build" line. They are listed he
   the second (`lib/ondo/use-perps.ts`): builder commission and the tokenized
   stock accepted as margin, at the cost of a SIWE sign-in and an Ethereum leg.
   Each is a market picker, price chart, dollar-sized long/short ticket and open
-  positions. **The chart on both venues is TradingView** as of 2026-09-19
-  (`components/TradingViewChart.tsx`, the free advanced-chart embed loaded from
-  TradingView's own host). It draws the underlying, not the perp: each market's
-  base ticker resolves to a TradingView symbol in
-  `lib/tokens/tradingview-symbol.ts`, where listed names carry their exchange,
-  metals point at spot, indices at the cash index, and anything unlisted is
-  taken to be crypto and pointed at Binance's USDT perpetual. Names with no
-  public underlying (SpaceX, CXMT) resolve to null and the panel says so.
-  The venues' own candles are still served and still drawn on the hedge tab
-  (`components/LighterChart.tsx`); they are just not the perps tab's chart
+  positions. **Both charts are the venue's own data on TradingView's
+  charting** as of 2026-09-19, the pairing Lighter's own site runs. The
+  rendering is TradingView's open-source Lightweight Charts behind one shared
+  canvas (`components/CandleChartCanvas.tsx`, chrome in
+  `components/VenueChartFrame.tsx`, bar shape in `lib/charts/bars.ts`); each
+  venue owns its feed. Lighter (`components/LighterTradingViewChart.tsx`) is
+  the same candle hook the hedge tab uses, with the catalog mark folded into
+  the live bar. Ondo (`components/OndoTradingViewChart.tsx`) is the
+  integration guide's two optional steps: history from `/api/ondo/history` by
+  range (`lib/ondo/use-ondo-candles.ts`), and the mark price over Ondo's
+  WebSocket (`lib/ondo/use-mark-price-stream.ts`, frames and a tolerant reader
+  in `lib/ondo/mark-stream.ts`) ticking the last bar between polls. The socket
+  is an improvement, never a dependency: it connects from the browser, so
+  Ondo's CORS allowlist applies to it, and if it cannot connect the chart is
+  the thirty-second poll alone. The reader was written from the guide's
+  description, not a captured frame; pin the shape once one is captured.
+  Lightweight Charts has no indicator or drawing toolbar; that is the licensed
+  Advanced Charts library plus a datafeed adapter, not something to add
+  without the licence. The hedge tab still draws the recharts candlestick
+  (`components/LighterChart.tsx`) and no candle plumbing changed; the
+  recharts plot is just not the perps tab's chart
   any more. The Ondo body shares its order route with the hedge path so the
   builder code cannot be dropped from one and kept on the other; the Lighter
   body shares `computeOrderSize` in `lib/lighter/sizing.ts` with `placeHedge`,

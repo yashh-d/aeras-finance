@@ -46,12 +46,8 @@ import {
   type TicketRow,
   type TicketSide,
 } from "@/components/PerpsTicket";
-import { TradingViewChart } from "@/components/TradingViewChart";
+import { OndoTradingViewChart } from "@/components/OndoTradingViewChart";
 import { marketTicker } from "@/lib/tokens/market-logos";
-import {
-  hintFromOndoTags,
-  tradingViewSymbol,
-} from "@/lib/tokens/tradingview-symbol";
 import { OndoMarginCard } from "@/components/OndoMarginCard";
 import { OndoUnwindCard } from "@/components/OndoUnwindCard";
 import { OndoWithdrawCard } from "@/components/OndoWithdrawCard";
@@ -425,16 +421,11 @@ export function PerpsPanel({
           notices={notices}
           chart={
             market ? (
-              // TradingView, the same chart the Lighter column draws. Ondo
-              // serves candles at one resolution, which was the reason the
-              // old area line had no range control; TradingView has all of
-              // them. The category tag decides how an unlisted name resolves.
-              <TradingViewChart
-                symbol={tradingViewSymbol(
-                  marketTicker(market.market),
-                  hintFromOndoTags(market.tags),
-                )}
-              />
+              // Ondo's own candles and mark price on TradingView's charting,
+              // the same canvas the Lighter column draws into. Keyed on the
+              // market so a switch starts the feeds fresh rather than showing
+              // the previous market's bars under the new name.
+              <OndoTradingViewChart key={market.market} market={market} />
             ) : (
               <div
                 className={`${PANEL} flex h-full items-center justify-center text-sm text-white/35`}

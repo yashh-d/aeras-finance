@@ -712,9 +712,9 @@ hedge ends. A common component would have to suppress all of that to fit both.
 
 Two things the Ondo section shows that the Lighter one has no concept of: what each holding would
 credit as margin if posted, and the **auto-exchange trigger price**, which for a self-collateralized
-hedge fires before liquidation and is the number that ends it. Neither is a chart: Ondo's candles are
-on a different endpoint with a different symbol format and are not wired up, so the Ondo venue has no
-chart or sparklines.
+hedge fires before liquidation and is the number that ends it. Neither is a chart: the hedge tab's
+Ondo section draws none and has no sparklines. Ondo's candles are wired up for the perps tab only
+(`lib/ondo/use-ondo-candles.ts`, drawn by `components/OndoTradingViewChart.tsx`).
 
 Verified by `scripts/ondo-hedge-check.mts` (catalog, sizing, risk, sandbox divergence),
 `scripts/ondo-execution-check.mts` (builder code, SIWE, authenticated reads, order payload) and
@@ -722,7 +722,7 @@ Verified by `scripts/ondo-hedge-check.mts` (catalog, sizing, risk, sandbox diver
 against Ondo's live config, and a priced funding route for every asset). All three run against live
 production and none needs a dev server.
 
-Not built: charts on the Ondo venue, position-level stop orders, funding from an EVM source rather
+Not built: position-level stop orders, funding from an EVM source rather
 than Solana, and unwinding a hedge back into Solana xStocks. Funding execution is written but gated
 off until a live deposit confirms crediting. **The Ondo section has never been rendered in a
 browser**; the arithmetic behind it is asserted by the check scripts, the layout is not.
@@ -952,11 +952,12 @@ top-up against a live `eth_gasPrice`, not a constant.
   carries a GLD entry. Same for CRCLx.
 - USDC margin deposits on Arbitrum.
 - Unwinding a hedge back into Solana xStocks.
-- WebSocket price streaming. Poll `mark_prices` first, add the socket when the UI needs tick-level
-  updates. The shape, for when it is picked up: connect to `ONDO_WS_URL`, send
-  `{ op: 'subscribe', channel: 'markPricesPerps', markets: [...] }`, and ping every second. That
-  ping interval is aggressive enough that it belongs in a hook with a real teardown, not in a
-  component effect.
+- WebSocket price streaming beyond the perps chart. `lib/ondo/use-mark-price-stream.ts` subscribes
+  `markPricesPerps` for the selected market and pings every second, in a hook with a real teardown,
+  and feeds only the chart's live bar. The frame reader in `lib/ondo/mark-stream.ts` was written
+  from the integration guide's description and not from a captured frame, so it walks the message
+  for the market rather than asserting one layout; capture a frame and pin the shape. The socket
+  connects from the browser, so the CORS allowlist above applies to it.
 - API-key auth. SIWE covers user actions.
 
 ## References
