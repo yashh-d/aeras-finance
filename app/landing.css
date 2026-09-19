@@ -269,6 +269,7 @@
 .aeras-landing h1 em {
   font-style: normal;
   color: var(--blue);
+  white-space: nowrap;
 }
 .aeras-landing .hero-sub {
   font-size: clamp(16px, 2vw, 20px);
