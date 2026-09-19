@@ -222,8 +222,16 @@ export interface BuildMultiplyArgs {
   positionId: number;
   // Collateral already in the wallet that seeds the loop, in collateral atomic.
   initialCollateralAtomic: BN;
-  // USDC to flashloan and borrow, in USDC atomic.
+  // USDC to borrow, in USDC atomic. Also the flashloan size unless equity
+  // arrives as USDC below, in which case the flashloan covers both.
   borrowUsdcAtomic: BN;
+  // Equity contributed as USDC rather than as the asset, in USDC atomic. The
+  // flashloan is sized to borrow + equity, all of it is swapped into the asset
+  // and deposited, and the payback is funded by the borrow plus this USDC from
+  // the signer's own account. Lets a wallet holding only USDC open a leveraged
+  // position in one signature. Optional so the looping panel, which seeds the
+  // loop with the asset it already holds, is unchanged.
+  equityUsdcAtomic?: BN;
   signerAddress: string;
   connection: Connection;
   slippageBps: number;
@@ -241,6 +249,7 @@ export async function buildMultiplyTx({
   positionId,
   initialCollateralAtomic,
   borrowUsdcAtomic,
+  equityUsdcAtomic,
   signerAddress,
   connection,
   slippageBps,
@@ -255,11 +264,15 @@ export async function buildMultiplyTx({
   const signer = new PublicKey(signerAddress);
   const usdc = new PublicKey(vault.borrowMint);
 
+  // Everything that gets swapped into the asset. The flashloan fronts it all;
+  // the vault borrow repays its share and the signer's USDC repays the rest.
+  const swapUsdcAtomic = borrowUsdcAtomic.add(equityUsdcAtomic ?? new BN(0));
+
   const flashParams = {
     connection,
     signer,
     asset: usdc,
-    amount: borrowUsdcAtomic,
+    amount: swapUsdcAtomic,
   };
   // Fetched once, outside the fitting loop below: both depend only on the
   // borrow amount, which a re-quote does not change.
@@ -278,7 +291,7 @@ export async function buildMultiplyTx({
     const quote = await fetchSwapQuoteViaProxy({
       inputMint: vault.borrowMint,
       outputMint: vault.collateralMint,
-      amountAtomic: borrowUsdcAtomic.toString(),
+      amountAtomic: swapUsdcAtomic.toString(),
       slippageBps,
       maxAccounts: budget,
     });

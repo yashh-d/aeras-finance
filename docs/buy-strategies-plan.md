@@ -3,7 +3,7 @@
 Three one-click strategies attached to every collateralisable asset on the Home
 asset detail and the Markets row expansion. Each starts from USDC in the wallet,
 buys the asset, and then does something with it as collateral. This file is the
-plan; nothing in it is built yet. Slices are ordered by how much of each already
+plan and its status. Slices are ordered by how much of each already
 exists in the repo, not by product priority.
 
 ## What the three strategies are
@@ -150,17 +150,48 @@ table holding the machine state for sequential strategies with a row per step
 (step name, signature, status). As with `loop_positions`, none of it sizes a
 transaction. That property is load-bearing and stays.
 
+## Status (2026-09-19)
+
+Built as its own page first, a "Strategies" section in the sidebar of
+`app/app/page.tsx`, so the three flows can be tried end to end before they are
+folded into the buy ticket. What exists:
+
+- `lib/strategies/math.ts` and its tests, `lib/strategies/rates.ts` (live
+  borrow, earn and supply rates joined per asset), `lib/strategies/execute.ts`
+  (the signed legs: Ultra buy, deposit-and-borrow on either venue, USDC earn
+  deposit on either venue, one-transaction leverage from USDC) and
+  `lib/strategies/run.ts` (the step runner with per-step retry).
+- `components/strategies/`: the page, and one ticket per strategy.
+- `buildMultiplyTx` takes `equityUsdcAtomic`, so a wallet holding only USDC
+  opens a leveraged Jupiter position in one signature. The leverage ticket
+  writes the same `loop_positions` record the looping panel does, so the
+  position shows there and unwinds from there.
+
+Not built yet, in the order they matter:
+
+- Run persistence. A refresh mid-run loses the step list, not the money.
+  Every leg re-reads the wallet before acting, so the user finishes by hand
+  from Borrow and Earn.
+- Close paths. Earn and ladder positions close from the Borrow and Earn tabs
+  today; there is no one-click reverse.
+- Positions labelling. A ladder's debt reads as a plain borrow on the
+  Positions view. The `strategy` column and `strategy_runs` table below are
+  still to do.
+- Live verification. `scripts/jupiter-multiply-usdc-check.mts` (simulate the
+  USDC-equity multiply at 2x and max, confirm the flashloan fee) has not been
+  written. Nothing here has been run against mainnet yet.
+
 ## Slices
 
 Each slice ends with `npx tsc --noEmit`, a `scripts/` check where it touches a
 live integration, and manual test instructions. One slice per session.
 
-- [ ] **0. Rates, math, and the strip with numbers only.** `lib/strategies/rates.ts`
+- [x] **0. Rates, math, and the strip with numbers only.** Done as a page, not a strip. `lib/strategies/rates.ts`
       and `math.ts`, the three tiles under `AssetTradePanel`, the Markets column.
       No execution. Test: every tile's number matches what the Borrow and Earn
       tabs show for the same asset and venue, and the max multiple matches
       `LoopingPanel`'s slider ceiling.
-- [ ] **1. Buy + Leverage on Jupiter vaults.** Add `equityUsdcAtomic` to
+- [~] **1. Buy + Leverage on Jupiter vaults.** Code in; script and live check outstanding. Add `equityUsdcAtomic` to
       `buildMultiplyTx`, the ticket with presets, and a `loop_positions` row with
       `strategy = 'multiply'` and `basisUsd = E` so the existing loop card shows
       P&L and can unwind it. Verify with a new `scripts/jupiter-multiply-usdc-check.mts`
@@ -168,14 +199,14 @@ live integration, and manual test instructions. One slice per session.
       vaults, and reads back that the payback instruction draws the equity from
       the signer's USDC account. Also confirm the flashloan fee, which nothing in
       the repo records; if it is nonzero it belongs in the preview's cost line.
-- [ ] **2. Buy + Earn on Jupiter vaults.** Three signatures through the machine:
+- [~] **2. Buy + Earn on Jupiter vaults.** Sequential steps in; fusing the last two not done. Three signatures through the machine:
       Ultra buy, operate (deposit and borrow in one `getOperateIx`, as the
       multiply path already does), earn deposit. Then fuse the last two: both are
       our own instructions, so one transaction is likely to fit. Close path is
       earn withdraw, repay, collateral withdraw, chained through the same machine.
-- [ ] **3. Buy + Earn on Kamino.** Four signatures (KTX builds deposit and borrow
+- [~] **3. Buy + Earn on Kamino.** Code in, untested live. Four signatures (KTX builds deposit and borrow
       separately). Same ticket, same machine, venue resolved by `borrowRouteFor`.
-- [ ] **4. The ladder, Jupiter first.** The asset picker between rounds, the
+- [~] **4. The ladder, Jupiter first.** Rounds, picker and aggregate health in; persistence and Positions labelling not. The asset picker between rounds, the
       aggregate health block, the floor, and `strategy_runs` persistence with
       chain reconciliation on resume. Positions view learns to say "borrowed to
       buy X". Then Kamino, which also gives Kamino-only assets their leverage.

@@ -13,6 +13,7 @@ import { EarnPanel } from "@/components/EarnPanel";
 import { HedgePanel } from "@/components/HedgePanel";
 import { PerpsPanel } from "@/components/PerpsPanel";
 import { PositionsPanel } from "@/components/PositionsPanel";
+import { StrategiesPanel } from "@/components/strategies/StrategiesPanel";
 import { PriceChart } from "@/components/PriceChart";
 import { WalletPanel } from "@/components/WalletPanel";
 import { WaitlistPending, type UserView } from "@/components/WaitlistPending";
@@ -408,6 +409,11 @@ function SignedIn({
             onClick={() => setActiveSection("earn")}
           />
           <SidebarNavItem
+            label="Strategies"
+            active={activeSection === "strategies"}
+            onClick={() => setActiveSection("strategies")}
+          />
+          <SidebarNavItem
             label="Hedge"
             active={activeSection === "hedge"}
             onClick={() => setActiveSection("hedge")}
@@ -503,6 +509,19 @@ function SignedIn({
           ) : activeSection === "withdraw" ? (
             walletAddress ? (
               <WithdrawPanel
+                walletAddress={walletAddress}
+                balances={balances}
+                prices={prices}
+                onRefresh={settleAll}
+              />
+            ) : (
+              <p className="text-sm text-white/50">
+                Waiting for embedded Solana wallet to provision...
+              </p>
+            )
+          ) : activeSection === "strategies" ? (
+            walletAddress ? (
+              <StrategiesPanel
                 walletAddress={walletAddress}
                 balances={balances}
                 prices={prices}
@@ -1235,6 +1254,7 @@ type Section =
   | "markets"
   | "earn"
   | "borrow"
+  | "strategies"
   | "hedge"
   | "perps"
   | "withdraw"
