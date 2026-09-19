@@ -299,24 +299,17 @@ async function main() {
   // The trap: the hyphenated symbol every other endpoint takes returns s:"ok"
   // with empty arrays here, so a chart built from it renders blank and reads as
   // an illiquid market rather than as a bad request.
-  const correct = await ondoHistory(
-    `${resolved.market.displayName}.P`,
-    "15",
-    Math.floor(Date.now() / 1000),
-    5,
-  );
+  const to = Math.floor(Date.now() / 1000);
+  // Five 15-minute bars, as the spec's from/to window.
+  const window = { from: to - 5 * 15 * 60, to, countback: 5 };
+  const correct = await ondoHistory(`${resolved.market.displayName}.P`, "15", window);
   check(
     "displayName + \".P\" returns candles",
     correct.s === "ok" && (correct.t?.length ?? 0) > 0,
     `${correct.t?.length ?? 0} bars for ${resolved.market.displayName}.P`,
   );
 
-  const wrong = await ondoHistory(
-    resolved.market.market,
-    "15",
-    Math.floor(Date.now() / 1000),
-    5,
-  );
+  const wrong = await ondoHistory(resolved.market.market, "15", window);
   check(
     "the order symbol returns an empty series, not an error",
     wrong.s === "ok" && (wrong.t?.length ?? 0) === 0,

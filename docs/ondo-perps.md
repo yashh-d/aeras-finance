@@ -543,7 +543,7 @@ entries. This is per-builder, not per-user, so it does not replace SIWE for user
 | Position-level stop | `GET`/`POST`/`DELETE /v1/perps/stop_order` |
 | Leverage | `GET`/`POST /v1/perps/leverage` |
 | Funding rates | `GET /v1/perps/funding_rates`, `/funding_rate_history`, `/funding_fees` |
-| Chart history | `GET /v1/perps/history?symbol=&resolution=&to=&countback=` (no auth) |
+| Chart history | `GET /v1/perps/history?symbol=&resolution=&from=&to=` (no auth; UDF parallel arrays). `GET /v1/perps/candles` is the same data as objects with full field names, not wired |
 
 ### Chart history takes a different symbol format, and fails silently
 
@@ -565,7 +565,13 @@ markets, zero mismatches. Read it from `GET /v1/markets`.
 
 Note also that this endpoint does not use the `{ success, result }` envelope. It returns a
 TradingView-style UDF payload with `s`, `t`, `o`, `h`, `l`, `c`, `v` at the top level, so the shared
-`parseResponse` unwrapper does not apply to it.
+`parseResponse` unwrapper does not apply to it. `s` is `ok` or `no_data`.
+
+The spec's parameters are `symbol`, `resolution`, `from` and `to`, all required, in unix seconds.
+The 2026-08-17 probe above sent `to` and `countback` without `from` and was answered, but the spec
+does not list `countback`, so `lib/ondo/server.ts` sends the window and keeps `countback` beside it,
+which is what TradingView's own UDF datafeed does. `app/api/ondo/history` turns a bar count into the
+window at the resolution's bar length.
 
 ### Deposit addresses
 

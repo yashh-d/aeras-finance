@@ -275,7 +275,15 @@ export function ondoSetLeverage(
 
 // Chart history. Unauthenticated, and the one endpoint that does not use the
 // response envelope: it answers a TradingView-style UDF payload with `s`, `t`,
-// `o`, `h`, `l`, `c`, `v` at the top level.
+// `o`, `h`, `l`, `c`, `v` at the top level, and `s` is "ok" or "no_data".
+//
+// The spec (GET /v1/perps/history in rest-spec.json) takes `symbol`,
+// `resolution`, `from` and `to`, all required, in unix seconds. `countback`
+// is not in the spec; it is sent as well because TradingView's own UDF
+// datafeed sends it beside the window and the endpoint answered it on
+// 2026-08-17, and an extra parameter costs nothing where a missing `from`
+// is a 400. The same data as an array of objects with full field names is
+// GET /v1/perps/candles, which is not wired.
 //
 // **The symbol format differs from every other endpoint.** Orders take
 // `XAU-USD.P`; this takes `XAUUSD.P`, unhyphenated. The hyphenated form does
@@ -286,14 +294,14 @@ export function ondoSetLeverage(
 export async function ondoHistory(
   symbol: string,
   resolution: string,
-  to: number,
-  countback: number,
+  window: { from: number; to: number; countback: number },
 ): Promise<OndoHistory> {
   const query = new URLSearchParams({
     symbol,
     resolution,
-    to: String(to),
-    countback: String(countback),
+    from: String(window.from),
+    to: String(window.to),
+    countback: String(window.countback),
   });
 
   const response = await fetch(`${ONDO_API_BASE_URL}/v1/perps/history?${query}`, {

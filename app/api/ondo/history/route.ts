@@ -21,9 +21,20 @@ export const dynamic = "force-dynamic";
 // plus ".P", checked against all 40 markets with zero mismatches, so it is read
 // from the catalog rather than derived by stripping hyphens.
 //
-// Unauthenticated upstream, and it does not use the response envelope.
+// Unauthenticated upstream, and it does not use the response envelope. The
+// spec takes a `from`/`to` window in seconds, so the caller's bar count is
+// turned into one here at the resolution's bar length.
 
-const RESOLUTIONS = new Set(["1", "5", "15", "30", "60", "240", "1D"]);
+const RESOLUTION_SECONDS: Record<string, number> = {
+  "1": 60,
+  "5": 5 * 60,
+  "15": 15 * 60,
+  "30": 30 * 60,
+  "60": 60 * 60,
+  "240": 4 * 60 * 60,
+  "1D": 24 * 60 * 60,
+};
+const RESOLUTIONS = new Set(Object.keys(RESOLUTION_SECONDS));
 
 // Ondo caps what it will return, and the cap is not documented. 500 is well
 // inside anything observed and is more bars than the chart draws.
@@ -63,16 +74,20 @@ export async function GET(request: Request) {
       );
     }
 
-    const history = await ondoHistory(
-      `${resolved.displayName}.P`,
-      resolution,
-      Math.floor(Date.now() / 1000),
+    const to = Math.floor(Date.now() / 1000);
+    const history = await ondoHistory(`${resolved.displayName}.P`, resolution, {
+      from: to - countback * RESOLUTION_SECONDS[resolution],
+      to,
       countback,
-    );
+    });
 
+    if (history.s === "error") {
+      throw new Error(history.errmsg?.trim() || "Ondo history returned an error");
+    }
     if (history.s !== "ok" || !history.t?.length) {
-      // An empty payload is a real answer for a market that has not traded in
-      // the window, so it is served as an empty series rather than an error.
+      // "no_data", or "ok" with empty arrays, is a real answer for a market
+      // that has not traded in the window, so it is served as an empty
+      // series rather than an error.
       return NextResponse.json({ market: resolved.market, candles: [] });
     }
 
