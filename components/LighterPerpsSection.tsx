@@ -40,7 +40,7 @@
 import { useMemo, useState } from "react";
 
 import { LighterMarginCard } from "@/components/LighterMarginCard";
-import { LighterTradingViewChart } from "@/components/LighterTradingViewChart";
+import { LighterPerpsChart } from "@/components/LighterPerpsChart";
 import { LighterMarketSelector } from "@/components/LighterMarketSelector";
 import { LighterWithdrawCard } from "@/components/LighterWithdrawCard";
 import {
@@ -371,10 +371,9 @@ export function LighterPerpsSection({
       notices={notices}
       chart={
         market ? (
-          // Lighter's own candles on TradingView's charting, the same pairing
-          // Lighter's site runs. The venue's bars are what a position here is
-          // marked against, so the chart is the venue, not the underlying.
-          <LighterTradingViewChart
+          // Lighter's own candles. The venue's bars are what a position here
+          // is marked against, so the chart is the venue, not the underlying.
+          <LighterPerpsChart
             marketId={market.marketId}
             symbol={market.symbol}
             markPrice={Number(market.markPrice)}

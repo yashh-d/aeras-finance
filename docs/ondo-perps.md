@@ -720,7 +720,7 @@ Two things the Ondo section shows that the Lighter one has no concept of: what e
 credit as margin if posted, and the **auto-exchange trigger price**, which for a self-collateralized
 hedge fires before liquidation and is the number that ends it. Neither is a chart: the hedge tab's
 Ondo section draws none and has no sparklines. Ondo's candles are wired up for the perps tab only
-(`lib/ondo/use-ondo-candles.ts`, drawn by `components/OndoTradingViewChart.tsx`).
+(`lib/ondo/use-ondo-candles.ts`, drawn by `components/OndoPerpsChart.tsx`).
 
 Verified by `scripts/ondo-hedge-check.mts` (catalog, sizing, risk, sandbox divergence),
 `scripts/ondo-execution-check.mts` (builder code, SIWE, authenticated reads, order payload) and

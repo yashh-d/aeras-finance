@@ -46,7 +46,7 @@ import {
   type TicketRow,
   type TicketSide,
 } from "@/components/PerpsTicket";
-import { OndoTradingViewChart } from "@/components/OndoTradingViewChart";
+import { OndoPerpsChart } from "@/components/OndoPerpsChart";
 import { marketTicker } from "@/lib/tokens/market-logos";
 import { OndoMarginCard } from "@/components/OndoMarginCard";
 import { OndoUnwindCard } from "@/components/OndoUnwindCard";
@@ -421,11 +421,11 @@ export function PerpsPanel({
           notices={notices}
           chart={
             market ? (
-              // Ondo's own candles and mark price on TradingView's charting,
-              // the same canvas the Lighter column draws into. Keyed on the
-              // market so a switch starts the feeds fresh rather than showing
-              // the previous market's bars under the new name.
-              <OndoTradingViewChart key={market.market} market={market} />
+              // Ondo's own candles and mark price, on the same canvas the
+              // Lighter column draws into. Keyed on the market so a switch
+              // starts the feeds fresh rather than showing the previous
+              // market's bars under the new name.
+              <OndoPerpsChart key={market.market} market={market} />
             ) : (
               <div
                 className={`${PANEL} flex h-full items-center justify-center text-sm text-white/35`}
