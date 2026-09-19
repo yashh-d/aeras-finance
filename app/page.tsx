@@ -394,8 +394,11 @@ function Hero({
       <div className="hero-grid" />
       <div className="wrap hero-in">
         <h1 ref={h1Ref} className="reveal d1">
-          Hold the assets you love. <em>Earn yield.</em> Borrow cash against
-          them.
+          <span className="hero-line">Hold the assets you love.</span>{" "}
+          <span className="hero-line">
+            <em>Earn yield.</em> Borrow cash
+          </span>{" "}
+          <span className="hero-line">against them.</span>
         </h1>
         <p ref={subRef} className="hero-sub reveal d2">
           Aeras turns the world&apos;s most popular stocks, treasuries and

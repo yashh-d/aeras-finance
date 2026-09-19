@@ -266,10 +266,26 @@
   max-width: 13ch;
   margin: 0 auto 24px;
 }
+@media (min-width: 721px) {
+  .aeras-landing h1 {
+    max-width: none;
+  }
+}
 .aeras-landing h1 em {
   font-style: normal;
   color: var(--blue);
   white-space: nowrap;
+}
+/* One sentence per line on desktop. Left to the browser, the 13ch cap
+   split "Earn yield." across two lines. Below 720px the spans go back
+   inline and the cap wraps them. */
+.aeras-landing h1 .hero-line {
+  display: block;
+}
+@media (max-width: 720px) {
+  .aeras-landing h1 .hero-line {
+    display: inline;
+  }
 }
 .aeras-landing .hero-sub {
   font-size: clamp(16px, 2vw, 20px);
