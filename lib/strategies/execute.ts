@@ -686,7 +686,7 @@ export async function withdrawUsdcFromEarn(args: {
       await redeemInstant({
         sharesAtomic: want,
         minMonAtomic: withTolerance(net, INSTANT_EXIT_TOLERANCE_BPS),
-        walletMonAtomic: pos.walletMonAtomic,
+        walletMonAtomic: BigInt(pos.walletMonAtomic),
         signer: evm,
         onProgress: report,
       });
