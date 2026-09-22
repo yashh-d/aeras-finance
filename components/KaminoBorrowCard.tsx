@@ -1,9 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
+
+import { usePrivy } from "@privy-io/react-auth";
+import { PublicKey } from "@solana/web3.js";
+import {
+  TOKEN_2022_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
+} from "@solana/spl-token";
 
 import { PriceChart } from "@/components/PriceChart";
-import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
+import { SOLSCAN_TX_BASE, SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { xstockByMint } from "@/lib/jupiter/xstocks";
 import {
@@ -33,6 +47,20 @@ import {
   getConnection,
 } from "@/lib/solana/balances";
 import { sendAndConfirm } from "@/lib/solana/send-confirm";
+import { floorToDisplay } from "@/lib/trustware/selection";
+import { FirstPositionSheet } from "@/components/FirstPositionSheet";
+import {
+  pendingRecordFor,
+  recordPositionSetup,
+  type PendingSetupRecord,
+} from "@/lib/position-setup-client";
+import { estimateKaminoSetupCost } from "@/lib/kamino/first-position";
+import {
+  describeInsufficientLamports,
+  isBlocked,
+  needsSetup,
+  type SetupCost,
+} from "@/lib/borrow/setup-cost";
 
 // USDC is the only borrow asset in this market for v1.
 const BORROW_SYMBOL = "USDC";
@@ -40,6 +68,9 @@ const BORROW_SYMBOL = "USDC";
 interface Props {
   collateral: KaminoCollateralReserve;
   walletAddress: string;
+  // Solana USDC, used to buy the SOL a first position needs. See
+  // components/FirstPositionSheet.tsx.
+  walletUsdc: number;
   collateralBalance: number;
   // Exact base-unit balance as a decimal string. Used to defeat float rounding
   // when depositing the full wallet balance.
@@ -56,6 +87,10 @@ interface Props {
   // Ask the parent to re-read the obligation after an open/close so the card
   // stays visible once collateral has moved out of the wallet.
   onPositionChange: () => void;
+  // Drop the two typed fields and leave the slider as the control, posting
+  // everything the wallet holds. The Terminal's ticket uses this; the Borrow
+  // tab keeps the fields.
+  sliderOnly?: boolean;
 }
 
 // Submitting carries a human-readable step because opening or closing a Kamino
@@ -70,6 +105,7 @@ type FormState =
 export function KaminoBorrowCard({
   collateral,
   walletAddress,
+  walletUsdc,
   collateralBalance,
   collateralBalanceAtomic,
   prices,
@@ -77,6 +113,7 @@ export function KaminoBorrowCard({
   initialPosition,
   onRefresh,
   onPositionChange,
+  sliderOnly = false,
 }: Props) {
   const signTxBase64 = useSignSolanaTxBase64();
 
@@ -95,6 +132,56 @@ export function KaminoBorrowCard({
   const [mode, setMode] = useState<BorrowMode>("borrow");
   // Header cell the borrow form portals its submit into. See BorrowMarketDetail.
   const [borrowSlot, setBorrowSlot] = useState<HTMLDivElement | null>(null);
+
+  // A first Kamino position allocates accounts the user has to pay rent for,
+  // and until this existed a wallet that could not cover it got a raw
+  // simulation error. Holds the priced shortfall and the submit it interrupted,
+  // so the borrow resumes with the same amounts once the SOL is there.
+  const [setupGate, setSetupGate] = useState<{
+    cost: SetupCost;
+    args: { collateralUi: number; borrowUi: number };
+  } | null>(null);
+
+  // Held from the moment the user accepts the setup cost until the position
+  // actually settles, then written once. Recording at acceptance instead would
+  // log rent for borrows that were abandoned or that failed, which is the same
+  // bookkeeping-outruns-reality bug in a different place.
+  const [pendingSetup, setPendingSetup] = useState<PendingSetupRecord | null>(
+    null,
+  );
+  const { getAccessToken } = usePrivy();
+
+  // The wallet's collateral balance, read from chain at submit time rather than
+  // taken from the prop.
+  //
+  // The prop is a snapshot from before the sheet opened, and the collateral-sale
+  // funding route spends some of that very balance on the way through. Clamping
+  // a deposit against the stale figure asks for stock the wallet no longer holds
+  // and fails simulation. Jupiter's card has read fresh for this reason since
+  // before funding existed; this brings Kamino in line.
+  //
+  // "processed" matches what simulation reads: "confirmed" can lag a few slots
+  // and let a stale max through, which is the same bug one commitment level up.
+  const readFreshCollateralAtomic = useCallback(async (): Promise<string> => {
+    try {
+      const meta = xstockByMint(collateral.collateralMint);
+      const ata = getAssociatedTokenAddressSync(
+        new PublicKey(collateral.collateralMint),
+        new PublicKey(walletAddress),
+        false,
+        meta?.tokenProgram === "token" ? TOKEN_PROGRAM_ID : TOKEN_2022_PROGRAM_ID,
+      );
+      const fresh = await getConnection().getTokenAccountBalance(
+        ata,
+        "processed",
+      );
+      return fresh.value.amount;
+    } catch {
+      // No ATA or an RPC hiccup. Fall back to the prop rather than blocking a
+      // borrow that may not need the deposit leg at all.
+      return collateralBalanceAtomic;
+    }
+  }, [collateral.collateralMint, walletAddress, collateralBalanceAtomic]);
 
   const refreshPosition = useCallback(async () => {
     try {
@@ -169,12 +256,43 @@ export function KaminoBorrowCard({
     [signTxBase64],
   );
 
+  // Price the one-off account rent before asking for a signature, and stop
+  // here if the wallet cannot cover it.
+  //
+  // The check is advisory: if it cannot read the chain it gets out of the way
+  // rather than blocking a borrow that would have worked. The catch in
+  // runSubmit still translates the on-chain refusal if this was the reason.
   async function handleSubmit(args: {
     collateralUi: number;
     borrowUi: number;
   }) {
     try {
+      setFormState({ kind: "submitting", step: "Checking your wallet…" });
+      const cost = await estimateKaminoSetupCost({
+        connection: getConnection(),
+        walletAddress,
+      });
+      if (needsSetup(cost)) {
+        setSetupGate({ cost, args });
+        setFormState({ kind: "idle" });
+        return;
+      }
+    } catch (err) {
+      console.error("[kamino setup cost]", err);
+    }
+    await runSubmit(args);
+  }
+
+  async function runSubmit(args: {
+    collateralUi: number;
+    borrowUi: number;
+  }) {
+    try {
       let lastSig: string | null = null;
+
+      // Carried out of the deposit leg so the borrow below can size against
+      // what was actually posted, not what was typed.
+      let depositedUi = 0;
 
       if (args.collateralUi > 0) {
         setFormState({
@@ -183,30 +301,65 @@ export function KaminoBorrowCard({
         });
         // Clamp to the exact on-chain balance so a "Max" deposit can't request
         // one atomic unit more than the wallet holds.
+        const freshAtomic = await readFreshCollateralAtomic();
         const wantedAtomic = toAtomicString(
           args.collateralUi,
           collateral.decimals,
         );
         const clampedAtomic =
-          BigInt(wantedAtomic) > BigInt(collateralBalanceAtomic)
-            ? collateralBalanceAtomic
+          BigInt(wantedAtomic) > BigInt(freshAtomic)
+            ? freshAtomic
             : wantedAtomic;
-        const depositUi = Number(
+        depositedUi = Number(
           atomicToUiString(clampedAtomic, collateral.decimals),
         );
+        if (depositedUi <= 0) {
+          throw new Error(
+            `No ${collateral.symbol} left in this wallet to deposit.`,
+          );
+        }
         const depTx = await buildKaminoDepositTx({
           walletAddress,
           collateral,
-          collateralUi: depositUi,
+          collateralUi: depositedUi,
         });
         lastSig = await signSend(depTx);
       }
 
       if (args.borrowUi > 0) {
+        // Cap the draw at what the posted collateral can actually carry.
+        //
+        // Paying for the setup by selling collateral shrinks the deposit, and a
+        // borrow sized against the pre-sale figure can land above max LTV and be
+        // refused on chain. Concrete rather than theoretical: a max-LTV borrow
+        // has only the form's 1% buffer of headroom, and the sale eats it on any
+        // position where the setup cost is more than 1% of the collateral. The
+        // 1% here mirrors that same buffer.
+        //
+        // Note this CAPS rather than scales. A borrow the smaller deposit still
+        // carries safely is left exactly as the user asked for it; reducing it
+        // proportionally would quietly hand back less than they typed for no
+        // reason the chain requires.
+        //
+        // This can only ever reduce the borrow, never raise it.
+        let borrowUi = args.borrowUi;
+        if (oraclePrice != null) {
+          const collateralUsd =
+            ((position?.collateralUi ?? 0) + depositedUi) * oraclePrice;
+          const cap =
+            collateralUsd * ((collateral.maxLtvSnapshot * 100 - 1) / 100) -
+            (position?.debtUsdc ?? 0);
+          if (cap <= 0) {
+            throw new Error(
+              `The deposited ${collateral.symbol} does not support a loan this size. Deposit more, or borrow less.`,
+            );
+          }
+          borrowUi = Math.min(borrowUi, cap);
+        }
         setFormState({ kind: "submitting", step: `Borrowing ${BORROW_SYMBOL}…` });
         const borrowTx = await buildKaminoBorrowTx({
           walletAddress,
-          borrowUi: args.borrowUi,
+          borrowUi,
         });
         lastSig = await signSend(borrowTx);
       }
@@ -216,6 +369,12 @@ export function KaminoBorrowCard({
         return;
       }
       setFormState({ kind: "done", signature: lastSig });
+      // Best effort, and after the confirmation is on screen: a failed write
+      // here must not read as a failed borrow. See lib/position-setup-client.ts.
+      if (pendingSetup) {
+        void recordPositionSetup(getAccessToken, pendingSetup);
+        setPendingSetup(null);
+      }
       await onRefresh();
       await refreshPosition();
       onPositionChange();
@@ -225,9 +384,12 @@ export function KaminoBorrowCard({
         err instanceof KaminoKtxError &&
         err.code === "KLEND_OBLIGATION_NOT_FOUND"
           ? `Deposit ${collateral.symbol} before borrowing ${BORROW_SYMBOL}.`
-          : err instanceof Error
-            ? err.message
-            : String(err);
+          : // Ran out of SOL for the account rent. The preflight above normally
+            // catches this, but a balance can move between the check and the
+            // signature, and CLAUDE.md forbids putting the raw simulation dump
+            // on screen.
+            (describeInsufficientLamports(err) ??
+            (err instanceof Error ? err.message : String(err)));
       setFormState({ kind: "error", message });
     }
   }
@@ -319,8 +481,54 @@ export function KaminoBorrowCard({
           formState={formState}
           resetForm={() => setFormState({ kind: "idle" })}
           actionSlot={borrowSlot}
+          sliderOnly={sliderOnly}
         />
       ) : null}
+
+      {setupGate && (
+        <FirstPositionSheet
+          cost={setupGate.cost}
+          walletAddress={walletAddress}
+          walletUsdc={walletUsdc}
+          collateral={{
+            symbol: collateral.symbol,
+            mint: collateral.collateralMint,
+            decimals: collateral.decimals,
+            balanceUi: collateralBalance,
+            priceUsd: oraclePrice,
+          }}
+          solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
+          signTxBase64={signTxBase64}
+          onCancel={() => setSetupGate(null)}
+          onProceed={() => {
+            const { args, cost } = setupGate;
+            setPendingSetup(pendingRecordFor("kamino", cost));
+            setSetupGate(null);
+            void runSubmit(args);
+          }}
+          onFunded={async (funding) => {
+            // Re-price rather than trusting the swap's own estimate: the borrow
+            // that follows is the thing that must not fail, and it reads the
+            // same balance this does.
+            const fresh = await estimateKaminoSetupCost({
+              connection: getConnection(),
+              walletAddress,
+            });
+            if (isBlocked(fresh)) {
+              setSetupGate({ cost: fresh, args: setupGate.args });
+              return;
+            }
+            const { args } = setupGate;
+            // Logged against the cost the user was shown and agreed to, not the
+            // re-price above, which by now reads as covered.
+            setPendingSetup(
+              pendingRecordFor("kamino", setupGate.cost, funding),
+            );
+            setSetupGate(null);
+            await runSubmit(args);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -443,6 +651,7 @@ function KaminoOperateForm({
   formState,
   resetForm,
   actionSlot,
+  sliderOnly = false,
 }: {
   collateral: KaminoCollateralReserve;
   existingPosition: KaminoPosition | null;
@@ -457,16 +666,24 @@ function KaminoOperateForm({
   resetForm: () => void;
   // Header cell to render the submit into; falls back in place when absent.
   actionSlot: HTMLElement | null;
+  sliderOnly?: boolean;
 }) {
   const safeCFPct = collateral.maxLtvSnapshot * 100 * 0.6; // 60% of max LTV
+  // Rounded DOWN to the displayed precision, never up. toFixed rounds half away
+  // from zero, so a wallet holding 0.35779 prefilled "0.3578", which fails its
+  // own `collateralUi <= collateralBalance` check below and left the Borrow
+  // button disabled with nothing on screen saying why. Same fix, and same
+  // reason, as the Jupiter card in components/BorrowPanel.tsx.
+  const balanceInput = floorToDisplay(collateralBalance);
+
   const [colInput, setColInput] = useState<string>(() =>
-    collateralBalance > 0 ? collateralBalance.toFixed(4) : "0",
+    collateralBalance > 0 ? balanceInput : "0",
   );
   const [borrowInput, setBorrowInput] = useState<string>("");
 
   useEffect(() => {
     if (collateralBalance > 0 && colInput === "0") {
-      setColInput(collateralBalance.toFixed(4));
+      setColInput(balanceInput);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [collateralBalance]);
@@ -525,12 +742,16 @@ function KaminoOperateForm({
       onClick={() => onSubmit({ collateralUi, borrowUi })}
       className={BORROW_PILL_CLASS}
     >
-      {/* See the Jupiter card: one word until there is an amount to borrow. */}
+      {/* See the Jupiter card: one word until there is an amount to borrow.
+          The slider-only form always shows the figure, since the slider is the
+          only place the amount is set and the button is where it is read. */}
       {submitting
         ? formState.step
-        : borrowUi > 0
-          ? `Borrow $${borrowUi.toFixed(2)} against ${collateral.symbol}`
-          : "Borrow"}
+        : sliderOnly
+          ? `Borrow $${(borrowUi || 0).toFixed(2)}`
+          : borrowUi > 0
+            ? `Borrow $${borrowUi.toFixed(2)} against ${collateral.symbol}`
+            : "Borrow"}
     </button>
   );
 
@@ -540,6 +761,7 @@ function KaminoOperateForm({
 
   return (
     <div className="space-y-3">
+      {!sliderOnly && (
       <div className="grid grid-cols-2 gap-3">
         <NumberField
           label={`Deposit ${collateral.symbol}`}
@@ -549,7 +771,7 @@ function KaminoOperateForm({
             resetForm();
           }}
           right={collateral.symbol}
-          balanceLabel={`${collateralBalance.toFixed(4)} avail`}
+          balanceLabel={`${balanceInput} avail`}
           onMax={() => {
             setColInput(
               atomicToUiString(collateralBalanceAtomic, collateral.decimals),
@@ -578,6 +800,13 @@ function KaminoOperateForm({
           }
         />
       </div>
+      )}
+
+      {sliderOnly && collateralUi > 0 && (
+        <p className="text-xs text-white/50">
+          Posting {balanceInput} {collateral.symbol}, everything in the wallet.
+        </p>
+      )}
 
       {maxNewBorrow > 0 && (
         <div>
@@ -600,7 +829,18 @@ function KaminoOperateForm({
               setBorrowInput(Number(e.target.value).toFixed(2));
               resetForm();
             }}
-            className="w-full accent-aeras-blue"
+            // Unitless 0-1 for .aeras-range, which uses it to keep the fill edge
+            // under the thumb's centre. Guarded on a zero maximum: a market with
+            // nothing left to draw would divide by zero and blank the track.
+            style={
+              {
+                "--range-progress":
+                  maxNewBorrow > 0
+                    ? Math.min(1, Math.max(0, (borrowUi || 0) / maxNewBorrow))
+                    : 0,
+              } as CSSProperties
+            }
+            className="aeras-range"
           />
           <div className="mt-1 flex justify-between text-[10px] uppercase tracking-wider text-white/50">
             <span>0</span>
@@ -618,6 +858,7 @@ function KaminoOperateForm({
               <PriceChart
                 ticker={ticker}
                 marker={{ price: liquidationPrice, label: "Safety floor" }}
+                showRanges={!sliderOnly}
               />
             </div>
           )}

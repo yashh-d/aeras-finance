@@ -53,6 +53,7 @@ import {
 import { buildLighterDepositTransaction } from "./deposit";
 import { LIGHTER_INTENT_CHAIN_IDS } from "./constants";
 import type { MarginSource } from "./margin-sources";
+import { privyAuthHeaders } from "@/lib/privy/access-token";
 
 // Canonical USDC on each chain a margin deposit can be delivered to. Hardcoded
 // rather than derived: this is a payment destination, and a wrong address here
@@ -308,7 +309,11 @@ async function buildRouteRequest(input: {
     toToken,
     fromAmount: uiToAtomic(input.amountUsdc, input.decimals),
     fromAddress: input.fromAddress,
+    // Lighter's intent address, resolved just above from /api/lighter/account
+    // and never from the browser. One of the two shapes whose destination the
+    // proxy does not overwrite, so it has to name itself.
     toAddress,
+    intent: "lighter-margin",
     slippage: SLIPPAGE_PCT,
   };
 }
@@ -403,6 +408,8 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Only ever calls /api/trustware/route, which resolves the payout address from
+// the caller's Privy identity, so the token is always attached.
 async function postJson<T>(
   path: string,
   body: unknown,
@@ -410,7 +417,10 @@ async function postJson<T>(
 ): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(await privyAuthHeaders()),
+    },
     body: JSON.stringify(body),
     signal,
   });

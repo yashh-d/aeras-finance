@@ -25,18 +25,16 @@ import { submitLighterTx } from "./client";
 import {
   LIGHTER_MARGIN_MODE_ISOLATED,
   LIGHTER_TX_TYPE_CREATE_ORDER,
-  LIGHTER_TX_TYPE_UPDATE_LEVERAGE,
 } from "./constants";
 import { ensureTradingKey } from "./onboarding";
-import { wireInitialMarginFraction } from "./risk";
-import { signMarketOrder, signUpdateLeverage } from "./signer";
+import { signMarketOrder } from "./signer";
 import {
   computeHedgeSize,
   slippageBoundPrice,
   toWireInteger,
   type HedgeSize,
 } from "./sizing";
-import { currentNonce } from "./trade";
+import { currentNonce, setMarketLeverage } from "./trade";
 import type { LighterMarket } from "./types";
 
 // A hedge is a taker order on a book we do not control, so some bound is
@@ -159,34 +157,16 @@ export async function placeHedge(
   // Sent on every hedge rather than only when it differs. The setting is per
   // account per market and no endpoint reports its current value, so "already
   // 2x isolated" is not a state this code can observe. It costs a nonce and a
-  // round trip, and Lighter charges no fee for it.
-  const leverage = wireInitialMarginFraction(HEDGE_LEVERAGE, params.market);
-  const leverageTx = await signUpdateLeverage({
+  // round trip, and Lighter charges no fee for it. The send itself lives in
+  // trade.ts, shared with the perps ticket, and is fatal on failure for the
+  // reason given there.
+  await setMarketLeverage({
     accountIndex,
-    marketIndex: params.market.marketId,
-    initialMarginFraction: leverage.fraction,
-    marginMode: HEDGE_MARGIN_MODE,
+    market: params.market,
+    leverage: HEDGE_LEVERAGE,
     nonce,
+    what: "the hedge",
   });
-
-  try {
-    await submitLighterTx(LIGHTER_TX_TYPE_UPDATE_LEVERAGE, leverageTx.txInfo);
-  } catch (error) {
-    // Deliberately fatal rather than falling through to the order. Placing it
-    // anyway would open the position at the market default while the panel
-    // showed 2x figures, which is exactly the divergence this replaced.
-    //
-    // OPEN QUESTION, needs a live test: most venues refuse a margin-mode change
-    // while a position is open in that market. If adding to an existing hedge
-    // starts failing here, that is the cause, and the fix is to skip this step
-    // when the account already holds a position in this market (and to send the
-    // order under `nonce`, not `nonce + 1`, since a rejected transaction spends
-    // no nonce).
-    throw new Error(
-      `Could not set ${leverage.leverage}x isolated margin on ${params.market.symbol}, ` +
-        `so the hedge was not placed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
 
   const tx = await signMarketOrder({
     accountIndex,

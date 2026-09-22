@@ -2,6 +2,7 @@
 // injects the server-only API key and enforces the destination allowlist, so the
 // client never sees TRUSTWARE_API_KEY.
 
+import { privyAuthHeaders } from "@/lib/privy/access-token";
 import type { EquivalentBalances } from "./balances";
 import type { GoldHolding } from "./gold-holdings";
 import type { TrustwareQuoteRequest, TrustwareQuoteResponse } from "./types";
@@ -9,11 +10,17 @@ import type { TrustwareQuoteRequest, TrustwareQuoteResponse } from "./types";
 async function postProxy(
   path: string,
   req: TrustwareQuoteRequest,
+  // /route resolves the payout address from the caller's Privy identity, so it
+  // needs the access token. /quote returns only a price and stays anonymous.
+  authenticated: boolean,
 ): Promise<TrustwareQuoteResponse> {
   const res = await fetch(path, {
     method: "POST",
     cache: "no-store",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(authenticated ? await privyAuthHeaders() : {}),
+    },
     body: JSON.stringify(req),
   });
   const body = (await res.json()) as TrustwareQuoteResponse;
@@ -26,13 +33,13 @@ async function postProxy(
 export function fetchTrustwareQuoteViaProxy(
   req: TrustwareQuoteRequest,
 ): Promise<TrustwareQuoteResponse> {
-  return postProxy("/api/trustware/quote", req);
+  return postProxy("/api/trustware/quote", req, false);
 }
 
 export function fetchTrustwareRouteViaProxy(
   req: TrustwareQuoteRequest,
 ): Promise<TrustwareQuoteResponse> {
-  return postProxy("/api/trustware/route", req);
+  return postProxy("/api/trustware/route", req, true);
 }
 
 // Convertible holdings across both of the user's addresses. Either may be

@@ -42,6 +42,19 @@ export type PrivyIdentity = {
   privyDid: string;
   email: string | null;
   walletAddress: string | null;
+  // The Privy EMBEDDED wallets, and never an external one the user signed in
+  // with. Separate from walletAddress above, which tolerates a fallback.
+  //
+  // This is the distinction that makes them usable as a payout destination.
+  // An external wallet is a login method and a funding source (CLAUDE.md,
+  // Privy section); the embedded wallet is the account the app operates on.
+  // Resolving a destination to a connected Phantom or MetaMask would deliver
+  // funds somewhere the app does not otherwise read or sign for, so these two
+  // fields are strict and are null when Privy has not provisioned yet.
+  embedded: {
+    solana: string | null;
+    evm: string | null;
+  };
 };
 
 function extractEmail(user: User): string | null {
@@ -65,6 +78,21 @@ function extractWallet(user: User): string | null {
     fallback ??= acct.address;
   }
   return fallback;
+}
+
+// The embedded wallet for one chain type, with no fallback. `chain_type` is
+// "solana" or "ethereum"; the EVM wallet carries the same 0x address on every
+// EVM chain, so one entry covers Ethereum, BNB Chain, Base and Monad.
+function extractEmbeddedWallet(
+  user: User,
+  chainType: "solana" | "ethereum",
+): string | null {
+  for (const acct of user.linked_accounts ?? []) {
+    if (acct.type !== "wallet") continue;
+    if (acct.chain_type !== chainType) continue;
+    if (acct.wallet_client_type === "privy") return acct.address;
+  }
+  return null;
 }
 
 function tokenFromHeader(request: Request): string | null {
@@ -101,5 +129,9 @@ export async function authenticate(
     privyDid: user.id,
     email: extractEmail(user),
     walletAddress: extractWallet(user),
+    embedded: {
+      solana: extractEmbeddedWallet(user, "solana"),
+      evm: extractEmbeddedWallet(user, "ethereum"),
+    },
   };
 }

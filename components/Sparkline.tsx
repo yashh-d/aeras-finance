@@ -16,13 +16,25 @@ export function Sparkline({
   values,
   width = 72,
   height = 22,
+  stretch = false,
 }: {
   values: number[] | undefined;
   width?: number;
   height?: number;
+  // Fill the container's width instead of sitting at `width`. Used by a card
+  // where the line is the full-width element. The height still comes from
+  // `height`, and the stroke keeps its weight while the drawing distorts to
+  // fit, which is what non-scaling-stroke is for.
+  stretch?: boolean;
 }) {
   if (!values || values.length < 2) {
-    return <div style={{ width, height }} aria-hidden />;
+    return (
+      <div
+        style={stretch ? { height } : { width, height }}
+        className={stretch ? "w-full" : undefined}
+        aria-hidden
+      />
+    );
   }
 
   let low = Infinity;
@@ -50,10 +62,11 @@ export function Sparkline({
 
   return (
     <svg
-      width={width}
+      width={stretch ? undefined : width}
       height={height}
       viewBox={`0 0 ${width} ${height}`}
-      className="overflow-visible"
+      preserveAspectRatio={stretch ? "none" : undefined}
+      className={stretch ? "w-full overflow-visible" : "overflow-visible"}
       aria-hidden
     >
       <polyline
@@ -63,6 +76,7 @@ export function Sparkline({
         strokeWidth={1.25}
         strokeLinejoin="round"
         strokeLinecap="round"
+        vectorEffect={stretch ? "non-scaling-stroke" : undefined}
       />
     </svg>
   );

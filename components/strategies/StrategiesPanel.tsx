@@ -3,10 +3,9 @@
 // The Strategies page. One row per asset with a borrow market, with the live
 // numbers each strategy turns on: what it costs to borrow against, what the
 // spread to the best USDC vault is, and how much leverage the venue allows.
-// A row opens into the three tickets.
-//
-// Its own page for now, rather than a strip on the buy ticket, so the three
-// flows can be tried end to end before they are folded into Markets. See
+// A row opens into the three strategy buttons and the chosen ticket, the same
+// two pieces the Markets row expansion and the Home asset detail draw under
+// their chart (components/strategies/AssetStrategies.tsx). See
 // docs/buy-strategies-plan.md.
 
 import { useState } from "react";
@@ -22,7 +21,6 @@ import {
 } from "@/lib/strategies/math";
 import { useStrategyRates, type StrategyRates } from "@/lib/strategies/rates";
 import {
-  pickRun,
   STRATEGY_NAME,
   useStrategyRuns,
   type StrategyKind,
@@ -30,22 +28,10 @@ import {
 } from "@/lib/strategies/runs-client";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 
-import { EarnTicket } from "./EarnTicket";
-import { LadderTicket } from "./LadderTicket";
-import { LeverageTicket } from "./LeverageTicket";
+import { StrategyStrip, StrategyTicket } from "./AssetStrategies";
 import { fmtPct, fmtSignedPct } from "./shared";
 
 type Strategy = StrategyKind;
-
-const STRATEGY_LABEL = STRATEGY_NAME;
-
-const STRATEGY_BLURB: Record<Strategy, string> = {
-  earn: "Buy the asset, borrow USDC against it on Jupiter Lend, and put the USDC in the Hyperithm USDC Apex vault on Monad. You keep the asset and earn the spread between the vault and the loan.",
-  leverage:
-    "Buy a multiple of what you pay. One transaction on Jupiter Lend: a flashloan buys the whole position, the vault lends the difference.",
-  ladder:
-    "Buy, borrow against it, and buy again with the loan. You pick what each round buys. Stops at the floor or when you say.",
-};
 
 const COL_VENUE = "hidden w-28 sm:block";
 const COL_RATE = "w-20 text-right";
@@ -121,74 +107,29 @@ export function StrategiesPanel({
                   onToggle={() => setOpenMint(expanded ? null : row.xstock.mint)}
                 />
                 {expanded && (
-                  <div className="border-t border-white/10 px-1 py-5">
-                    <div className="mb-4 inline-flex rounded-lg border border-white/10 p-0.5 text-xs">
-                      {(Object.keys(STRATEGY_LABEL) as Strategy[]).map((s) => (
-                        <button
-                          key={s}
-                          type="button"
-                          onClick={() => setStrategy(s)}
-                          className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
-                            strategy === s
-                              ? "bg-white/10 text-white"
-                              : "text-white/50 hover:text-white"
-                          }`}
-                        >
-                          {STRATEGY_LABEL[s]}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="grid gap-6 lg:grid-cols-5">
-                      <div className="space-y-3 lg:col-span-2">
-                        <div className="text-sm text-white/60">
-                          {STRATEGY_BLURB[strategy]}
-                        </div>
-                        <Mechanics row={row} strategy={strategy} />
-                      </div>
-                      <div className="lg:col-span-3">
-                        {/* Keyed so switching asset or strategy mounts a fresh
-                            ticket; a half-run ladder must not carry its rounds
-                            over to another asset. */}
-                        {strategy === "earn" ? (
-                          <EarnTicket
-                            key={`earn-${row.xstock.mint}`}
-                            row={row}
-                            earn={rates.defaultEarn}
-                            earnOptions={rates.earnOptions}
-                            walletAddress={walletAddress}
-                            balances={balances}
-                            prices={prices}
-                            store={store}
-                            saved={pickRun(store.runs, "earn", row.xstock.mint)}
-                            onRefresh={onRefresh}
-                          />
-                        ) : strategy === "leverage" ? (
-                          <LeverageTicket
-                            key={`lev-${row.xstock.mint}`}
-                            row={row}
-                            walletAddress={walletAddress}
-                            balances={balances}
-                            prices={prices}
-                            store={store}
-                            saved={pickRun(store.runs, "leverage", row.xstock.mint)}
-                            onRefresh={onRefresh}
-                          />
-                        ) : (
-                          <LadderTicket
-                            key={`ladder-${row.xstock.mint}`}
-                            row={row}
-                            rows={rates.rows}
-                            walletAddress={walletAddress}
-                            balances={balances}
-                            prices={prices}
-                            store={store}
-                            saved={pickRun(store.runs, "ladder", row.xstock.mint)}
-                            onRefresh={onRefresh}
-                          />
-                        )}
-                      </div>
-                    </div>
+                  // Capped in width: the ticket is a column of fields and a
+                  // preview, and stretched across the whole card it read as a
+                  // form with nothing on its right.
+                  <div className="space-y-4 border-t border-white/10 px-1 py-5 lg:max-w-2xl">
+                    <StrategyStrip
+                      row={row}
+                      earnApy={rates.defaultEarn?.apy ?? null}
+                      runs={store.runs.filter((r) => r.mint === row.xstock.mint)}
+                      selected={strategy}
+                      // No market ticket here to return to, so pressing the
+                      // chosen strategy again keeps it.
+                      onSelect={(s) => s && setStrategy(s)}
+                    />
+                    <StrategyTicket
+                      strategy={strategy}
+                      row={row}
+                      rates={rates}
+                      store={store}
+                      walletAddress={walletAddress}
+                      balances={balances}
+                      prices={prices}
+                      onRefresh={onRefresh}
+                    />
                   </div>
                 )}
               </div>
@@ -295,35 +236,5 @@ function Row({
         />
       </div>
     </button>
-  );
-}
-
-// The numbers the selected strategy turns on for this asset, beside the
-// ticket, so the user is not reading them off the row above.
-function Mechanics({ row, strategy }: { row: StrategyRates; strategy: Strategy }) {
-  const lines: [string, string][] = [
-    ["Venue", row.route.venueLabel],
-    ["Collateral factor", fmtPct(row.route.collateralFactor, 0)],
-    ["Liquidation threshold", fmtPct(row.route.liquidationThreshold, 0)],
-    ["USDC borrow rate", fmtPct(row.borrowApr)],
-  ];
-  if (strategy === "leverage") {
-    lines.push([
-      "Max leverage",
-      `${maxLeverageForRoute(row.route).toFixed(1)}×${row.route.venue === "kamino" ? " in steps" : ""}`,
-    ]);
-  }
-  if (row.liquidityUsd != null) {
-    lines.push(["USDC left to lend", `$${Math.floor(row.liquidityUsd).toLocaleString()}`]);
-  }
-  return (
-    <dl className="space-y-1.5 text-xs">
-      {lines.map(([k, v]) => (
-        <div key={k} className="flex justify-between gap-3">
-          <dt className="text-white/50">{k}</dt>
-          <dd className="font-mono tabular-nums text-white">{v}</dd>
-        </div>
-      ))}
-    </dl>
   );
 }

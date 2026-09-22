@@ -23,6 +23,8 @@ export function AssetTradePanel({
   auth,
   onRefresh,
   autoFocus = false,
+  variant,
+  onLimitPriceChange,
 }: {
   xstock: XStock;
   prices: JupiterPriceMap | null;
@@ -37,6 +39,10 @@ export function AssetTradePanel({
   // where opening an asset is already the decision to trade it; off for the
   // Markets row expansion, which happens inside a scrolling list.
   autoFocus?: boolean;
+  // Which layout the market ticket draws. See SwapForm.
+  variant?: "inline" | "hero";
+  // The limit form's price, for a chart that draws it. See TriggerForm.
+  onLimitPriceChange?: (price: number | null, direction: "buy" | "sell") => void;
 }) {
   const [tab, setTab] = useState<"market" | "limit">("market");
   // Bumped after a limit order is placed so the open-orders list refetches.
@@ -84,6 +90,7 @@ export function AssetTradePanel({
           onBalanceChange={onRefresh}
           modeToggle={modeToggle}
           autoFocus={autoFocus}
+          variant={variant}
         />
       ) : (
         <TriggerForm
@@ -96,6 +103,7 @@ export function AssetTradePanel({
           onOrderPlaced={() => setOrdersRefresh((n) => n + 1)}
           modeToggle={modeToggle}
           autoFocus={autoFocus}
+          onPriceChange={onLimitPriceChange}
         />
       )}
 

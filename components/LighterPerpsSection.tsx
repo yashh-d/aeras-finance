@@ -15,27 +15,20 @@
 // tabbed rail. That is chrome, not content, so sharing it costs neither venue
 // anything it was saying before.
 //
-// One thing this surface does not offer. There is no leverage control: the
-// ticket sizes margin at the market's own initial margin fraction, which is
-// what an account reserves when no UpdateLeverage was ever sent for that market.
+// Leverage is the user's choice here, as of 2026-09-11, and the ticket sends
+// it. Every order goes out behind an UpdateLeverage (isolated, at the chosen
+// leverage) through the same helper the hedge path uses, so the margin and the
+// liquidation price the ticket draws are the ones the exchange applies at
+// fill. Before this the ticket sized margin at the market default while a
+// hedged market had already been set to isolated 2x by placeHedge, and the
+// figures were wrong by the ratio of the two.
 //
-// The tag blocker that used to be the reason is gone. UpdateLeverage is tag 20,
-// now in constants.ts and verified by scripts/lighter-leverage-check.mts down to
-// the argument order. Adding a control here is a product decision, not a
-// research one.
-//
-// KNOWN GAP, and it is the same class of bug the hedge panel just had. Leverage
-// on Lighter is per account per MARKET, not per position, and placeHedge now
-// sets isolated 2x on whatever market it hedges. So once a user has hedged TSLA,
-// the TSLA market on THIS tab is isolated 2x too, while the line below still
-// prices margin at the market default of 6.66%. The figure would be understated
-// by roughly 7.5x, which is the hedge panel's old bug pointing the other way.
-//
-// It needs one of: this ticket sending its own UpdateLeverage before an order,
-// or a read of the account's current per-market setting to price against. No
-// endpoint is known to report the latter, so the former is the likelier fix.
-// Until then the numbers here are correct only for markets the user has never
-// hedged.
+// One case is deliberately left alone. Leverage on Lighter is per account per
+// MARKET, and a margin-mode change with a position open in that market is
+// expected to be refused (unverified live). So when the account already holds
+// a position on the selected market the control is locked, the order is sent
+// under the market's current setting, and no liquidation estimate is shown,
+// because that setting is not something any endpoint reports.
 
 import { useMemo, useState } from "react";
 
@@ -60,8 +53,18 @@ import {
   isFeeFree,
   liquidationDistance,
   liquidationPrice,
+  marginForLeverage,
 } from "@/lib/lighter/risk";
-import { computeOrderSize, type OrderSize } from "@/lib/lighter/sizing";
+import {
+  computeOrderSize,
+  minimumFillableNotional,
+  type OrderSize,
+} from "@/lib/lighter/sizing";
+import {
+  clampLeverage,
+  DEFAULT_TICKET_LEVERAGE,
+  maxNotionalUsd,
+} from "@/lib/lighter/ticket-math";
 import {
   closeLighterPosition,
   placeLighterTrade,
@@ -69,6 +72,7 @@ import {
 } from "@/lib/lighter/trade";
 import type { LighterMarket, LighterPosition } from "@/lib/lighter/types";
 import { useMarginFunding } from "@/lib/lighter/use-margin-funding";
+import type { LighterOnboarding } from "@/lib/lighter/onboarding";
 import type { UseLighterPerps } from "@/lib/lighter/use-lighter-perps";
 import type { AccountBalances } from "@/lib/solana/balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
@@ -97,17 +101,29 @@ export function LighterPerpsSection({
   perps,
   balances,
   scan,
+  initialMarket,
+  embedded = false,
 }: {
   perps: UseLighterPerps;
   balances: AccountBalances | null;
   scan: WalletScan;
+  // The market to open on, as a Lighter symbol. The Terminal passes it when a
+  // perp chip is clicked; without it the section opens on DEFAULT_SYMBOL. Read
+  // once on mount: the tab unmounts when the section changes, so a later click
+  // elsewhere mounts it afresh.
+  initialMarket?: string;
+  // The Terminal's use: notices and the ticket only, on the market named by
+  // `initialMarket`, with no header, chart, selector or positions rail. The
+  // chart lives in the Terminal's own column and the market is fixed by the
+  // asset selected there. Same hooks, same trade path, same margin cards.
+  embedded?: boolean;
 }) {
   const wallet = useEmbeddedEvmWallet();
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
   // Held as a symbol rather than an index so the choice survives the catalog
   // reloading underneath it.
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialMarket ?? null);
 
   // The margin deposit and withdraw forms, opened from the ticket. One at a
   // time: both describe the same balance.
@@ -140,7 +156,24 @@ export function LighterPerpsSection({
     );
   }, [perps, selected]);
 
-  const tradable = perps.onboarding.status === "ready";
+  // An account that exists and holds margin is enough to place an order.
+  //
+  // This used to require "ready", which is unreachable from here and made the
+  // action button permanently dead. resolveOnboarding only returns "ready" when
+  // it is handed a derived trading key to compare against the registered one,
+  // and this surface never derives one, because deriving costs the user a
+  // signature prompt and doing it on page load would prompt everyone who merely
+  // opened the tab. So the status here is always "needs-key" once an account
+  // exists, and the button was gated on a value it could never see.
+  //
+  // Placing the order is what derives the key. placeLighterTrade calls
+  // ensureTradingKey, which registers it if missing and reports back
+  // "key-registering" so the user retries once. The hedge panel has always
+  // worked this way and does not gate on onboarding at all; this brings the two
+  // into line rather than inventing a third behaviour.
+  const tradable =
+    perps.onboarding.status === "ready" ||
+    perps.onboarding.status === "needs-key";
 
   // What the account is already in on the market being sized, which is the one
   // position the ticket has to state. Every other position lives in the rail.
@@ -158,7 +191,7 @@ export function LighterPerpsSection({
     }
   }
 
-  async function onTrade(side: TradeSide, notionalUsd: string) {
+  async function onTrade(side: TradeSide, notionalUsd: string, leverage: number | null) {
     if (!wallet.address || !market) return;
     await withProvider(async (provider) => {
       const outcome = await placeLighterTrade({
@@ -167,8 +200,9 @@ export function LighterPerpsSection({
         market,
         side,
         notionalUsd,
+        leverage: leverage ?? undefined,
       });
-      applyOutcome(outcome, (size) =>
+      applyOutcome(outcome, market, (size) =>
         `${side === "long" ? "Long" : "Short"} ${usd(Number(size?.notionalUsd ?? notionalUsd))} of ${market.symbol} submitted.`,
       );
     });
@@ -185,7 +219,7 @@ export function LighterPerpsSection({
         size: position.size,
         isShort: position.isShort,
       });
-      applyOutcome(outcome, () => `Closing ${position.symbol}.`);
+      applyOutcome(outcome, positionMarket, () => `Closing ${position.symbol}.`);
     });
   }
 
@@ -194,8 +228,13 @@ export function LighterPerpsSection({
   // non-error outcomes that are not failures (a key still registering, an order
   // the exchange would reject) are the ones easiest to report as successes by
   // accident.
+  // `orderMarket` is the market the ORDER was on, which is not always the one
+  // selected: closing a position sizes against that position's market. Passing
+  // it explicitly means a rejected close reports its own market's minimum
+  // rather than whichever market the picker happens to be showing.
   function applyOutcome(
     outcome: Awaited<ReturnType<typeof placeLighterTrade>>,
+    orderMarket: LighterMarket,
     describe: (size?: OrderSize) => string,
   ) {
     if (outcome.kind === "submitted") {
@@ -211,7 +250,7 @@ export function LighterPerpsSection({
       setStatus({ kind: "error", message: outcome.reason });
       return;
     }
-    setStatus({ kind: "error", message: tooSmall(outcome.size) });
+    setStatus({ kind: "error", message: tooSmall(outcome.size, orderMarket) });
   }
 
   const notices = (
@@ -308,6 +347,41 @@ export function LighterPerpsSection({
     },
   ];
 
+  if (embedded) {
+    return (
+      <div className="space-y-3">
+        {notices}
+        {market ? (
+          <Ticket
+            market={market}
+            tradable={tradable}
+            disabledReason={reasonFor(perps.onboarding.status)}
+            busy={status.kind === "working"}
+            availableMarginUsd={perps.availableMarginUsd}
+            openHere={openHere}
+            canWithdraw={
+              perps.state?.account != null && perps.availableMarginUsd > 0
+            }
+            canAddMargin={perps.onboarding.status !== "no-wallet"}
+            onAddMargin={() => {
+              setWithdrawOpen(false);
+              setMarginOpen(true);
+            }}
+            onWithdraw={() => {
+              setMarginOpen(false);
+              setWithdrawOpen(true);
+            }}
+            onTrade={(side, notional, leverage) => void onTrade(side, notional, leverage)}
+          />
+        ) : (
+          <div className={`${PANEL} p-4 text-sm text-white/45`}>
+            No tradeable market.
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <PerpsTerminal
       header={
@@ -396,10 +470,10 @@ export function LighterPerpsSection({
           <Ticket
             market={market}
             tradable={tradable}
+            disabledReason={reasonFor(perps.onboarding.status)}
             busy={status.kind === "working"}
             availableMarginUsd={perps.availableMarginUsd}
             openHere={openHere}
-            hasOtherPositions={perps.positions.length > 0}
             canWithdraw={
               perps.state?.account != null && perps.availableMarginUsd > 0
             }
@@ -412,7 +486,7 @@ export function LighterPerpsSection({
               setMarginOpen(false);
               setWithdrawOpen(true);
             }}
-            onTrade={(side, notional) => void onTrade(side, notional)}
+            onTrade={(side, notional, leverage) => void onTrade(side, notional, leverage)}
           />
         ) : null
       }
@@ -424,10 +498,10 @@ export function LighterPerpsSection({
 function Ticket({
   market,
   tradable,
+  disabledReason,
   busy,
   availableMarginUsd,
   openHere,
-  hasOtherPositions,
   canAddMargin,
   canWithdraw,
   onAddMargin,
@@ -436,23 +510,32 @@ function Ticket({
 }: {
   market: LighterMarket;
   tradable: boolean;
+  // What is actually blocking, when something is. Passed in rather than derived
+  // here because the blocker is an account-level fact and the ticket only knows
+  // about a market.
+  disabledReason?: string;
   busy: boolean;
   availableMarginUsd: number;
   // The position on THIS market, if any. Stated in the ticket because it is
-  // what the order being sized will add to or offset.
+  // what the order being sized will add to or offset, and because it locks
+  // the leverage control.
   openHere?: LighterPosition;
-  // Whether the account already holds a position somewhere. Margin is cross, so
-  // a liquidation price computed for this order alone is only right when it
-  // would be the only one. See the caveat at the top of lib/lighter/risk.ts.
-  hasOtherPositions: boolean;
   canAddMargin: boolean;
   canWithdraw: boolean;
   onAddMargin: () => void;
   onWithdraw: () => void;
-  onTrade: (side: TradeSide, notionalUsd: string) => void;
+  // Leverage is null when the order must land under the market's current
+  // setting, which is the open-position case described at the top of the file.
+  onTrade: (side: TradeSide, notionalUsd: string, leverage: number | null) => void;
 }) {
   const [notional, setNotional] = useState("500");
   const [side, setSide] = useState<TicketSide>("long");
+  const [chosenLeverage, setChosenLeverage] = useState(DEFAULT_TICKET_LEVERAGE);
+  // Clamped to the market on every render rather than reset on switch, so a
+  // 20x choice survives moving to a 10x market as 10x and comes back as 20x.
+  const leverage = clampLeverage(chosenLeverage, market);
+  // Adding to an open position keeps the setting it was opened under.
+  const leverageLocked = openHere != null;
 
   // Sizing throws on anything that is not a positive decimal, which is the
   // right behaviour for the money path and the wrong one for a preview that
@@ -475,43 +558,47 @@ function Ticket({
 
   const valid = sized != null && sized.baseAmount !== "0";
 
-  // What Lighter reserves at the market's own default. No leverage control is
-  // offered, so this is the figure rather than an estimate of one.
-  const requiredMarginUsd = valid
-    ? Number(sized.notionalUsd) * market.initialMarginFraction
-    : 0;
+  // What the exchange reserves at the chosen leverage, since the order goes
+  // out behind an UpdateLeverage for exactly that. With the control locked the
+  // position's setting is unknown and the market default is the only figure on
+  // hand, which the row is labelled as.
+  const requiredMarginUsd = !valid
+    ? 0
+    : leverageLocked
+      ? Number(sized.notionalUsd) * market.initialMarginFraction
+      : marginForLeverage(Number(sized.notionalUsd), leverage, market).marginUsd;
   const affordable = requiredMarginUsd <= availableMarginUsd;
 
-  // The largest order the free margin covers, at the market's own initial
-  // margin fraction. This is what the sizing slider is a fraction of, and it is
-  // capped by the exchange's own per-order limit so 100% is never a size the
-  // venue would refuse.
-  const maxNotionalUsd = useMemo(() => {
-    if (market.initialMarginFraction <= 0) return 0;
-    const byMargin = availableMarginUsd / market.initialMarginFraction;
-    const byOrderCap = Number(market.orderQuoteLimit);
-    return Number.isFinite(byOrderCap) && byOrderCap > 0
-      ? Math.min(byMargin, byOrderCap)
-      : byMargin;
-  }, [availableMarginUsd, market.initialMarginFraction, market.orderQuoteLimit]);
+  // The largest order the free margin covers at the chosen leverage. This is
+  // what the sizing slider is a fraction of. Plain arithmetic, not memoised:
+  // it is four operations on numbers already in hand.
+  const maxNotional = leverageLocked
+    ? market.initialMarginFraction > 0
+      ? Math.min(
+          availableMarginUsd / market.initialMarginFraction,
+          Number(market.orderQuoteLimit) || Infinity,
+        )
+      : 0
+    : maxNotionalUsd(availableMarginUsd, leverage, market);
 
-  // Only meaningful for a position that would be alone in the account, which is
-  // the assumption risk.ts documents. Shown as an estimate rather than a quote,
-  // and withheld entirely rather than shown wrong.
+  // An isolated position's liquidation depends only on its own margin, which
+  // is what makes the estimate honest whatever else the account holds. It is
+  // withheld when the control is locked, because then the margin behind the
+  // position is not known.
   const liquidation =
-    valid && !hasOtherPositions
+    valid && !leverageLocked
       ? {
           price: liquidationPrice({
             entryPriceUsd: Number(market.markPrice),
             size: Number(sized.size),
-            collateralUsd: availableMarginUsd,
+            collateralUsd: requiredMarginUsd,
             isShort: side === "short",
             market,
           }),
           distance: liquidationDistance({
             entryPriceUsd: Number(market.markPrice),
             size: Number(sized.size),
-            collateralUsd: availableMarginUsd,
+            collateralUsd: requiredMarginUsd,
             isShort: side === "short",
             market,
           }),
@@ -545,7 +632,16 @@ function Ticket({
       value: valid ? `${trim(sized.size)} ${market.symbol}` : "—",
     },
     { label: "Order value", value: valid ? usd(Number(sized.notionalUsd)) : "—" },
-    { label: "Margin required", value: usd(requiredMarginUsd) },
+    {
+      label: "Leverage",
+      value: leverageLocked ? "Position's current setting" : `${leverage}× isolated`,
+      muted: leverageLocked,
+    },
+    {
+      label: leverageLocked ? "Margin (at market default)" : "Margin required",
+      value: usd(requiredMarginUsd),
+      muted: leverageLocked,
+    },
     {
       label: "Fees",
       value: isFeeFree(market)
@@ -573,7 +669,7 @@ function Ticket({
 
   const warnings: string[] = [];
   if (sized != null && !valid) {
-    warnings.push(tooSmall(sized));
+    warnings.push(tooSmall(sized, market));
   }
   if (valid && sized.limitedBy === "quote-limit") {
     warnings.push(
@@ -595,18 +691,30 @@ function Ticket({
       amount={notional}
       onAmount={setNotional}
       presets={NOTIONALS}
-      sizing={{ maxUsd: maxNotionalUsd }}
+      sizing={{ maxUsd: maxNotional }}
+      leverage={{
+        value: leverage,
+        min: 1,
+        max: market.maxLeverage,
+        onChange: (next) => setChosenLeverage(clampLeverage(next, market)),
+        saving: busy || leverageLocked,
+        lockedReason: leverageLocked
+          ? `You already hold ${market.symbol}. Leverage is set per market on Lighter and cannot change with a position open, so this order adds at the position's current setting.`
+          : undefined,
+      }}
       rows={rows}
       warnings={warnings}
       tradable={tradable}
       busy={busy}
       submittable={valid}
-      disabledReason="Post margin to trade. Your account is created by the first deposit."
-      onSubmit={(next) => onTrade(next, notional)}
+      disabledReason={disabledReason}
+      onSubmit={(next) => onTrade(next, notional, leverageLocked ? null : leverage)}
       footnote={
-        valid && hasOtherPositions
-          ? "No liquidation price is shown because you already hold a position. Margin is cross, so the price depends on all of them together."
-          : undefined
+        valid && leverageLocked
+          ? "No liquidation price is shown because the position's margin setting is not reported by the exchange."
+          : valid
+            ? "Isolated margin: this position is walled off from the rest of your balance, so it liquidates at the price shown and cannot draw on other margin to survive a move."
+            : undefined
       }
     />
   );
@@ -756,11 +864,57 @@ function Notice({
 // Why the exchange would reject this order, in the user's terms. Both minimums
 // can bind first depending on the market, so the reason is read off the size
 // rather than guessed from the notional.
-function tooSmall(size: OrderSize): string {
+// Why the exchange would reject this order, with the number that fixes it.
+//
+// The old copy said "below the minimum order value for this market" and stopped
+// there, which is unhelpful precisely when a user is most likely to hit it:
+// every market's minimum is $10, and $10 is refused, because the size is
+// floored to the market increment before the value is checked and $10 of SPY
+// floors to $9.96. Someone typing the minimum was told their amount was below
+// the minimum. Verified against all 230 live markets: every one rejects a bare
+// $10, and every one accepts minimumFillableNotional.
+function tooSmall(size: OrderSize, market: LighterMarket): string {
+  const floor = minimumFillable(market);
   if (size.limitedBy === "below-min-notional") {
-    return "That is below the minimum order value for this market.";
+    return `Too small for ${market.symbol}. The smallest order it accepts is ${usd(floor)}, because the size is rounded to the market's increment before its value is checked.`;
   }
-  return "That is below the minimum order size for this market.";
+  return `Too small for ${market.symbol}. The smallest order it accepts is ${usd(floor)}.`;
+}
+
+// The market's floor, rounded UP to whole cents. Rounding to nearest could quote
+// a figure a cent below the real minimum, which would be a number that fails the
+// moment the user types it.
+function minimumFillable(market: LighterMarket): number {
+  try {
+    return (
+      Math.ceil(
+        Number(
+          minimumFillableNotional({
+            marketPriceUsd: market.markPrice,
+            sizeDecimals: market.sizeDecimals,
+            minBaseAmount: market.minBaseAmount,
+            minQuoteAmount: market.minQuoteAmount,
+            orderQuoteLimit: market.orderQuoteLimit,
+          }),
+        ) * 100,
+      ) / 100
+    );
+  } catch {
+    return Number(market.minQuoteAmount);
+  }
+}
+
+// What is actually stopping an order, when something is. Derived from the
+// onboarding status rather than hardcoded: the old copy told every blocked user
+// to post margin, including those who already had.
+function reasonFor(status: LighterOnboarding["status"]): string | undefined {
+  if (status === "no-wallet") {
+    return "Waiting for your wallet to finish setting up.";
+  }
+  if (status === "needs-deposit") {
+    return "Post margin to trade. Your account is created by the first deposit.";
+  }
+  return undefined;
 }
 
 function message(err: unknown): string {

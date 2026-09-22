@@ -65,7 +65,7 @@ export function ActivityPanel({ walletAddress }: { walletAddress: string }) {
               Activity
             </div>
             <h2 className="font-light text-2xl tracking-tight text-white">
-              Recent on-chain activity
+              Recent onchain activity
             </h2>
           </div>
           <button

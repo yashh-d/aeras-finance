@@ -35,12 +35,20 @@ export async function GET(request: Request) {
     );
   }
 
-  const order = await fetchUltraOrderDirect({
-    inputMint,
-    outputMint,
-    amount,
-    taker,
-  });
-
-  return NextResponse.json(order);
+  try {
+    const order = await fetchUltraOrderDirect({
+      inputMint,
+      outputMint,
+      amount,
+      taker,
+    });
+    return NextResponse.json(order);
+  } catch (err) {
+    // An upstream failure, not a fault in this route. Without this the throw
+    // became an opaque Next 500 with no body, so a Jupiter 400 that said
+    // exactly what was wrong reached the ticket as "Order proxy failed: 500".
+    // 502 with the reason, matching the chart and candles proxies.
+    const msg = err instanceof Error ? err.message : String(err);
+    return NextResponse.json({ error: msg }, { status: 502 });
+  }
 }

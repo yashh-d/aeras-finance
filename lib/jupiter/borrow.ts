@@ -1,5 +1,7 @@
 import BN from "bn.js";
 import bs58 from "bs58";
+import { numberToAtomicString } from "@/lib/decimal";
+import { getProgramAccountsWithFallback } from "@/lib/solana/program-accounts";
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
   TOKEN_2022_PROGRAM_ID,
@@ -200,10 +202,7 @@ export function parseLiveVault(raw: RawVault): LiveVaultState {
 // Convert a UI float to a BN of base units. Same logic as lib/jupiter/ultra.toAtomic,
 // but BN-typed for the SDK.
 export function toAtomicBN(amount: number, decimals: number): BN {
-  const [whole, frac = ""] = amount.toString().split(".");
-  const fracPadded = (frac + "0".repeat(decimals)).slice(0, decimals);
-  const combined = `${whole}${fracPadded}`.replace(/^0+/, "") || "0";
-  return new BN(combined);
+  return new BN(numberToAtomicString(amount, decimals));
 }
 
 export function fromAtomicBN(amount: BN, decimals: number): number {
@@ -366,7 +365,14 @@ export function readStoredNftId(
 
 // Scan the wallet's NFTs for an existing Jupiter Lend position-NFT in this
 // vault. Used to auto-recover after localStorage is cleared so the next borrow
-// reuses the existing NFT instead of paying ~0.015 SOL rent for a new one.
+// reuses the existing NFT instead of paying rent for a new one.
+//
+// That rent is 0.004446 SOL: the position record, the NFT mint and the token
+// account holding it, measured on live mainnet accounts in vault 77 on
+// 2026-09-05 and priced at today's rent. This comment previously said
+// "~0.015 SOL", which is 3.4x too high. The scan still earns its keep, just for
+// less than it claimed. See lib/jupiter/first-position.ts, which prices the same
+// three accounts for the borrow preflight.
 //
 // Strategy: one getProgramAccounts call to enumerate Position accounts in this
 // vault, cross-reference each `positionMint` with the user's NFT mints.
@@ -399,7 +405,10 @@ export async function findExistingNftId(
   // 2. Enumerate Position accounts in this vault.
   const vaultIdBuf = Buffer.alloc(2);
   vaultIdBuf.writeUInt16LE(vault.vaultId);
-  const positions = await connection.getProgramAccounts(
+  // Routed rather than called on `connection` directly: the primary RPC does not
+  // serve getProgramAccounts on our plan. See lib/solana/program-accounts.ts.
+  const positions = await getProgramAccountsWithFallback(
+    connection,
     JUPITER_LEND_PROGRAM_ID,
     {
       filters: [

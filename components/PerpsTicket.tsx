@@ -55,6 +55,10 @@ export interface TicketLeverage {
   max: number;
   onChange: (next: number) => void;
   saving?: boolean;
+  // Quick picks under the slider. Omitted, the slider stands alone.
+  presets?: readonly number[];
+  // Why the control is locked, when it is. Shown under it.
+  lockedReason?: string;
 }
 
 export interface TicketSizing {
@@ -280,6 +284,29 @@ export function PerpsTicket({
             <span>{leverage.min}×</span>
             <span>{leverage.max}× max</span>
           </div>
+          {leverage.presets && leverage.presets.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {leverage.presets.map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  disabled={leverage.saving}
+                  onClick={() => leverage.onChange(n)}
+                  aria-pressed={leverage.value === n}
+                  className={`rounded-lg border px-2.5 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                    leverage.value === n
+                      ? "border-white/25 bg-white/10 text-white"
+                      : "border-white/10 text-white/55 hover:border-white/20 hover:text-white"
+                  }`}
+                >
+                  {n}×
+                </button>
+              ))}
+            </div>
+          )}
+          {leverage.lockedReason && (
+            <p className="mt-2 text-[11px] leading-relaxed text-white/40">{leverage.lockedReason}</p>
+          )}
         </div>
       )}
 

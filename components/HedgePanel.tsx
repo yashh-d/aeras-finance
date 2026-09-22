@@ -80,7 +80,7 @@ type Status =
   | { kind: "done"; symbol: string; txHash: string }
   | { kind: "error"; message: string };
 
-import { GLASS_SURFACE, INSET_PANEL } from "@/lib/ui/surface";
+import { INSET_PANEL } from "@/lib/ui/surface";
 
 const PANEL = INSET_PANEL;
 const LABEL =
@@ -254,8 +254,14 @@ export function HedgePanel({ balances, prices, scan }: Props) {
     });
   }
 
+  // No card surface around this tab, matching Perps. The markets card, the
+  // stat strip, the hedge rows and every notice already carry their own
+  // surface, so a glass card around all of them drew a frame around frames.
+  // On the Ondo venue it was literally a card inside a card: OndoMarketsCard
+  // draws its own GLASS_SURFACE. Page padding on <main> keeps content off the
+  // viewport edge.
   return (
-    <div className={`${GLASS_SURFACE} p-4 text-white lg:p-5`}>
+    <div className="text-white">
       <TopBar
         venue={venue}
         onVenue={setVenue}

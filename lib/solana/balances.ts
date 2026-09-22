@@ -63,9 +63,6 @@ export function totalAccountUsd(
 // needs to catch out-of-band changes. 15s was hammering the RPC (429/413s).
 const POLL_MS = 60_000;
 
-// Read literally so Next inlines it. next.config.ts sets this variable from
-// lib/solana/rpc-url.ts, which prefers a Helius credential over whatever
-// .env.local names as NEXT_PUBLIC_SOLANA_RPC_URL.
 function getRpcUrl(): string {
   const url = process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
   if (!url) {

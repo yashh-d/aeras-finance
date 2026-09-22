@@ -30,6 +30,7 @@ import {
   type TrustwareQuoteResponse,
 } from "@/lib/trustware/types";
 import { selectStableHoldings } from "@/lib/trustware/stables";
+import { privyAuthHeaders } from "@/lib/privy/access-token";
 
 const ETHEREUM_CHAIN = "1";
 const ETHEREUM_USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
@@ -162,9 +163,16 @@ async function routeUsdcToEth(
   toAddress: string,
   fromAmountAtomic: bigint,
 ): Promise<TrustwareQuoteResponse> {
+  // No `intent`: this is the swap shape, and the proxy resolves the recipient
+  // to the user's own embedded EVM wallet. Callers already pass exactly that
+  // (`args.evm.address`), so the substitution is a no-op here and the argument
+  // is kept for the pricing probe's own readability.
   const res = await fetch("/api/trustware/route", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(await privyAuthHeaders()),
+    },
     body: JSON.stringify({
       fromChain: TRUSTWARE_SOLANA_CHAIN,
       toChain: ETHEREUM_CHAIN,

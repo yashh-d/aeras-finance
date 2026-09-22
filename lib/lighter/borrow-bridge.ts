@@ -51,6 +51,7 @@ import {
   MAX_FUNDING_LOSS_BPS,
   type FundingRoute,
 } from "./borrow-funding";
+import { privyAuthHeaders } from "@/lib/privy/access-token";
 
 // Canonical USDC on each chain a bridge road can deliver to. Hardcoded rather
 // than derived, because this is a payment destination: a wrong address here does
@@ -109,7 +110,10 @@ export async function prepareSolanaBridge(args: {
       toToken,
       fromAmount,
       fromAddress,
+      // Lighter's intent address, not the user's wallet, so this is one of the
+      // two shapes whose destination survives the proxy. It has to say so.
       toAddress,
+      intent: "lighter-margin",
       slippage: SLIPPAGE_PCT,
     },
     args.signal,
@@ -181,6 +185,8 @@ export async function finishSolanaBridge(args: {
   return signature;
 }
 
+// Only ever calls /api/trustware/route, which resolves the payout address from
+// the caller's Privy identity, so the token is always attached.
 async function postJson<T>(
   path: string,
   body: unknown,
@@ -188,7 +194,10 @@ async function postJson<T>(
 ): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(await privyAuthHeaders()),
+    },
     body: JSON.stringify(body),
     signal,
   });

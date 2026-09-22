@@ -10,9 +10,10 @@
 // label is read.
 
 // The menu renders into a portal on document.body rather than next to the
-// button. It has to: every Card on the app surface carries `backdrop-blur-2xl`,
-// and a backdrop-filter creates a stacking context, so an absolutely positioned
-// child is sealed inside its own card no matter how high its z-index goes. The
+// button. It has to: every Card on the app surface is a stacking context of its
+// own (GLASS_SURFACE carries `isolate`, and carried a backdrop blur before
+// that), so an absolutely positioned child is sealed inside its own card no
+// matter how high its z-index goes. The
 // wallet card comes before the price chart card in the DOM, so the chart painted
 // straight over the open menu. A portal leaves that stacking context entirely,
 // which also makes the menu immune to any `overflow-hidden` or transform an
@@ -63,10 +64,14 @@ interface MenuCoords {
 
 export function FundMenu({
   label = "Fund",
+  logo,
   groups,
   busyLabel,
 }: {
   label?: string;
+  // A mark before the label on the trigger, for a menu whose label names an
+  // asset (the ticket's pay-with control) rather than an action.
+  logo?: string;
   groups: FundGroup[];
   // Shown in place of the label while a wallet is being provisioned.
   busyLabel?: string | null;
@@ -135,6 +140,14 @@ export function FundMenu({
         aria-haspopup="menu"
         className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/15 bg-white/10 px-3 py-2.5 text-sm font-medium text-white transition-colors hover:border-white/25 hover:bg-white/15"
       >
+        {logo && !busyLabel && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={logo}
+            alt=""
+            className="size-4 shrink-0 rounded-full object-cover"
+          />
+        )}
         {busyLabel ?? label}
         <ChevronDown
           className={`size-3.5 text-white/50 transition-transform ${

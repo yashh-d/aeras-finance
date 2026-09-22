@@ -19,6 +19,7 @@ export function AmountField({
   ariaLabel,
   id,
   autoFocus = false,
+  hero = false,
 }: {
   value: string;
   onChange: (next: string) => void;
@@ -33,8 +34,14 @@ export function AmountField({
   // Take the caret on mount. For a ticket the user opened in order to type an
   // amount, so the first keystroke lands in the right place.
   autoFocus?: boolean;
+  // The Terminal ticket's figure: larger, lighter and centred, with the unit
+  // named above it by the caller rather than beside it here.
+  hero?: boolean;
 }) {
   const generatedId = useId();
+  const figure = hero
+    ? "text-5xl font-light leading-none tabular-nums"
+    : "text-3xl font-medium leading-tight tabular-nums";
   const inputRef = useRef<HTMLInputElement>(null);
   const shown = value === "" ? placeholder : value;
 
@@ -51,18 +58,11 @@ export function AmountField({
   }, [autoFocus]);
 
   return (
-    <div className="flex items-baseline gap-2">
-      {prefix && (
-        <span className="text-3xl font-medium leading-tight tabular-nums text-white/30">
-          {prefix}
-        </span>
-      )}
+    <div className={`flex items-baseline gap-2 ${hero ? "justify-center" : ""}`}>
+      {prefix && <span className={`${figure} text-white/30`}>{prefix}</span>}
       <span className="relative inline-block">
         {/* Sizes the input. Must share every metric-affecting class with it. */}
-        <span
-          aria-hidden
-          className="invisible block whitespace-pre text-3xl font-medium leading-tight tabular-nums"
-        >
+        <span aria-hidden className={`invisible block whitespace-pre ${figure}`}>
           {shown}
         </span>
         <input
@@ -75,7 +75,7 @@ export function AmountField({
           value={value}
           placeholder={placeholder}
           onChange={(e) => onChange(sanitizeDecimal(e.target.value))}
-          className="absolute inset-0 w-full bg-transparent text-3xl font-medium leading-tight tabular-nums text-white outline-none placeholder:text-white/25"
+          className={`absolute inset-0 w-full bg-transparent ${figure} text-white outline-none placeholder:text-white/25`}
         />
       </span>
       {unit}

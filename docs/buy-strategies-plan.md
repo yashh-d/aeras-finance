@@ -102,19 +102,24 @@ which is bookkeeping this repo does not have yet (see slice 4).
 
 ## Where it lives in the UI
 
-A strategy strip under the market buy ticket in `AssetTradePanel`, rendered
-only when `borrowRouteFor(xstock.mint)` resolves. Both surfaces that mount
-`AssetTradePanel` get it for free: the Home asset detail and the Markets row
-expansion in `app/app/page.tsx`. The Markets row header also gets a strategy
-column so the catalog can be sorted by Buy + Earn rate and by max leverage.
+Three buttons under the asset's chart, rendered only when
+`borrowRouteFor(xstock.mint)` resolves and there is a wallet to sign with:
+`components/strategies/AssetStrategies.tsx`, mounted by the Markets row
+expansion and the Home asset detail in `app/app/page.tsx` (as of 2026-09-20).
+They sit beside `AssetTradePanel` rather than inside it, because the buttons go
+under the chart and the ticket they open takes the market ticket's place; both
+are siblings of the trade panel on each surface. The Strategies page draws the
+same strip and ticket in its row expansion, without the market ticket to return
+to. The sortable strategy column on the Markets header is not built.
 
-The strip is three tiles. Each names the strategy, shows one live number (the
-net APY, the max multiple, the rounds available), and opens a ticket in place
-of the market ticket. The ticket takes a USDC amount, the strategy's one
-parameter (borrow ratio, leverage, floor), and a preview block in the shape of
-`LoopingPanel`'s: exposure, debt, LTV, liquidation price, drawdown to
-liquidation, carry, swap price impact. The submit button reads the number of
-signatures it will ask for.
+Each button names the strategy and shows one live number (the net rate, the
+max multiple, the borrow rate) or the state of a saved run on it ("Resume",
+"Open"). There is no prose beside the ticket: what a strategy does is in its
+preview, priced on the amount typed. The ticket takes a USDC amount, the
+strategy's one parameter (borrow ratio, leverage, floor), and a preview block
+in the shape of `LoopingPanel`'s: exposure, debt, LTV, liquidation price,
+drawdown to liquidation, carry, swap price impact. The submit button reads the
+number of signatures it will ask for.
 
 ## Shared foundation
 

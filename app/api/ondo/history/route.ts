@@ -25,11 +25,14 @@ export const dynamic = "force-dynamic";
 // spec takes a `from`/`to` window in seconds, so the caller's bar count is
 // turned into one here at the resolution's bar length.
 
+// "30" is deliberately absent. Ondo advertises it and then answers it with HTTP
+// 400 while every neighbouring resolution works, measured live 2026-09-10 on
+// BTC-USD.P and SPY-USD.P. Leaving it in meant this route could 502 on a
+// resolution it had just told the caller was valid.
 const RESOLUTION_SECONDS: Record<string, number> = {
   "1": 60,
   "5": 5 * 60,
   "15": 15 * 60,
-  "30": 30 * 60,
   "60": 60 * 60,
   "240": 4 * 60 * 60,
   "1D": 24 * 60 * 60,
@@ -112,11 +115,31 @@ export async function GET(request: Request) {
       volume: history.v?.[i] ?? 0,
     }));
 
-    return NextResponse.json({ market: resolved.market, candles });
+    return NextResponse.json({
+      market: resolved.market,
+      candles: trimPadding(candles),
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : String(err) },
       { status: 502 },
     );
   }
+}
+
+// Ondo pads a series to the requested countback with all-zero bars when the
+// market is younger than the window, and it pads the FRONT. Asking for 500 daily
+// bars on BTC returns 432 bars of open, high, low, close and volume all zero,
+// then 68 real ones; SPY returns 467 and 33. Measured live 2026-09-10.
+//
+// They are filler, not untraded sessions: a genuinely quiet bar still carries
+// prices and only zero volume. Left in, they drag the chart's price axis down to
+// zero and flatten every real candle into a line at the top, and a change
+// percentage measured from the first bar divides by zero.
+//
+// Trimmed from the front only, and by price rather than volume, so a real bar
+// that simply did not trade is kept and a gap mid-series would be too.
+function trimPadding(candles: OndoCandle[]): OndoCandle[] {
+  const first = candles.findIndex((candle) => candle.open > 0);
+  return first <= 0 ? (first === 0 ? candles : []) : candles.slice(first);
 }

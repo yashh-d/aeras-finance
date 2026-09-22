@@ -65,7 +65,7 @@ import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import type { AccountBalances } from "@/lib/solana/balances";
 import type { WalletScan } from "@/lib/trustware/use-wallet-scan";
-import { GLASS_SURFACE, INSET_PANEL } from "@/lib/ui/surface";
+import { INSET_PANEL } from "@/lib/ui/surface";
 
 // Inner panels sit on top of the outer glass card, so they are a lift in the
 // same white wash rather than a second opaque fill: stacking two opaque greys
@@ -100,10 +100,13 @@ export function PerpsPanel({
   balances,
   prices,
   scan,
+  initialMarket,
 }: {
   balances: AccountBalances | null;
   prices: JupiterPriceMap | null;
   scan: WalletScan;
+  // A Lighter market to open on. See LighterPerpsSection.
+  initialMarket?: string;
 }) {
   const wallet = useEmbeddedEvmWallet();
 
@@ -241,8 +244,12 @@ export function PerpsPanel({
     }
   }
 
+  // No card surface around this tab. The terminal, the ticket, the positions
+  // table and every notice already carry their own bordered panel, so a glass
+  // card around all of them drew a frame around frames. The page padding on
+  // <main> still keeps the content off the viewport edge.
   return (
-    <div className={`${GLASS_SURFACE} p-4 text-white lg:p-5`}>
+    <div className="text-white">
       <TopBar
         venue={venue}
         onVenue={setVenue}
@@ -253,7 +260,12 @@ export function PerpsPanel({
       />
 
       {venue === "lighter" ? (
-        <LighterPerpsSection perps={lighter} balances={balances} scan={scan} />
+        <LighterPerpsSection
+          perps={lighter}
+          balances={balances}
+          scan={scan}
+          initialMarket={initialMarket}
+        />
       ) : (
         // Called, not rendered as <OndoBody />. A function declared inside a
         // component is a new identity on every render, so React would treat it

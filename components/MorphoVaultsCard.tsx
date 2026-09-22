@@ -15,7 +15,13 @@
 // between them moves into the expanded row (MorphoVenuePanel). The table stays
 // one row per asset either way.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+} from "react";
 import { formatUnits, parseUnits } from "viem";
 
 import { AssetLogo } from "@/components/AssetLogo";
@@ -327,11 +333,6 @@ function MorphoVaultForm({
       return 0n;
     }
   })();
-  // The part of the deposit that has to come from Solana.
-  const shortfallAtomic =
-    mode === "deposit" && amountAtomic > BigInt(usdcBalanceAtomic)
-      ? amountAtomic - BigInt(usdcBalanceAtomic)
-      : 0n;
   const overLimit = amountAtomic > BigInt(maxAtomic);
   const busy = state.kind === "busy";
   const disabled = busy || amountAtomic <= 0n || overLimit || !evm.ready;
@@ -438,7 +439,18 @@ function MorphoVaultForm({
                 );
                 if (state.kind !== "idle") setState({ kind: "idle" });
               }}
-              className="w-full accent-aeras-blue"
+              // Unitless 0-1 for .aeras-range, which uses it to keep the fill
+              // edge under the thumb's centre. This block only renders when
+              // maxUi > 0, so the divide is safe here.
+              style={
+                {
+                  "--range-progress": Math.min(
+                    1,
+                    Math.max(0, (Number(input) || 0) / maxUi),
+                  ),
+                } as CSSProperties
+              }
+              className="aeras-range"
             />
           </div>
         ) : (
@@ -465,24 +477,10 @@ function MorphoVaultForm({
       {mode === "deposit" &&
         amountAtomic > 0n &&
         !overLimit &&
-        (shortfallAtomic > 0n || needsMonadGas(monBalanceAtomic)) && (
+        needsMonadGas(monBalanceAtomic) && (
           <p className="text-[11px] text-white/60">
-            {shortfallAtomic > 0n && (
-              <>
-                {Number(
-                  formatUnits(shortfallAtomic, USDC_DECIMALS),
-                ).toLocaleString(undefined, { maximumFractionDigits: 2 })}{" "}
-                USDC of this comes from your Solana wallet, converted to Monad
-                through Trustware before the deposit.{" "}
-              </>
-            )}
-            {needsMonadGas(monBalanceAtomic) && (
-              <>
-                A one-time 0.50 USDC from your Solana wallet buys MON to pay
-                Monad gas.{" "}
-              </>
-            )}
-            Bridging takes a few minutes.
+            A one-time 0.50 USDC from your Solana wallet buys MON to pay Monad
+            gas. Bridging takes a few minutes.
           </p>
         )}
       {!evm.ready && (
@@ -533,9 +531,7 @@ function MorphoVaultForm({
 
       <p className="text-[11px] text-white/50">
         {vault.name} is a Morpho Vaults V2 vault on Monad, managed by{" "}
-        {vault.curator}. This position settles on Monad, not on Solana: the
-        shares sit in your embedded EVM wallet. The rate is variable and net of
-        the curator&rsquo;s fee.
+        {vault.curator}.
       </p>
     </div>
   );

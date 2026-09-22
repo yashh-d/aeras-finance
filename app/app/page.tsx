@@ -1,32 +1,52 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { usePrivy, type WalletWithMetadata } from "@privy-io/react-auth";
 import { ChevronDown, ChevronLeft, Search } from "lucide-react";
 import { ActivityPanel } from "@/components/ActivityPanel";
 import { AssetGrid } from "@/components/AssetGrid";
 import { AssetLogo, LendingBadge } from "@/components/AssetLogo";
+import { AssetTile, ViewToggle } from "@/components/AssetTile";
 import { AssetTradePanel } from "@/components/AssetTradePanel";
 import { BorrowPanel } from "@/components/BorrowPanel";
 import { EarnPanel } from "@/components/EarnPanel";
 import { HedgePanel } from "@/components/HedgePanel";
+import { HomeCharts } from "@/components/HomeCharts";
 import { PerpsPanel } from "@/components/PerpsPanel";
 import { PositionsPanel } from "@/components/PositionsPanel";
+import {
+  AssetStrategyStrip,
+  AssetStrategyTicket,
+  useAssetStrategies,
+} from "@/components/strategies/AssetStrategies";
 import { StrategiesPanel } from "@/components/strategies/StrategiesPanel";
+import { TerminalPanel } from "@/components/TerminalPanel";
 import { PriceChart } from "@/components/PriceChart";
 import { WalletPanel } from "@/components/WalletPanel";
 import { WaitlistPending, type UserView } from "@/components/WaitlistPending";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
 import { hasLendingMarket } from "@/lib/borrow/availability";
+import { formatUsdPrice } from "@/lib/format";
+import {
+  DEFAULT_CHART_SELECTIONS,
+  nextChartSelection,
+  type ChartSelection,
+} from "@/lib/jupiter/chart-assets";
 import { fetchSparklines, type SparklinesResponse } from "@/lib/jupiter/charts";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { useJupiterPrices } from "@/lib/jupiter/use-prices";
 import { useLighterBalance } from "@/lib/lighter/use-lighter-balance";
 import { useMonadBalances } from "@/lib/morpho/use-monad-balances";
-import { totalPortfolioUsd } from "@/lib/solana/holdings";
+import {
+  portfolioHoldings,
+  sumHoldingsUsd,
+  type PortfolioHolding,
+} from "@/lib/solana/holdings";
 import { useWalletScan, type WalletScan } from "@/lib/trustware/use-wallet-scan";
 import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
+import { useEarnPositions } from "@/lib/positions/use-earn-positions";
+import { useViewMode } from "@/lib/ui/use-view-mode";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 import {
   XSTOCK_CATEGORIES,
@@ -131,6 +151,7 @@ export default function AppPage() {
     return (
       <div
         className="flex flex-1 items-center justify-center px-6 py-12"
+        data-app-canvas
         style={{ backgroundColor: "#08090a" }}
       >
         <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
@@ -147,6 +168,7 @@ export default function AppPage() {
     return (
       <div
         className="flex min-h-screen items-center justify-center px-6 py-12"
+        data-app-canvas
         style={{ backgroundColor: "#08090a" }}
       >
         <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
@@ -180,6 +202,7 @@ export default function AppPage() {
     return (
       <div
         className="flex flex-1 items-center justify-center px-6 py-12"
+        data-app-canvas
         style={{ backgroundColor: "#08090a" }}
       >
         <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
@@ -193,6 +216,7 @@ export default function AppPage() {
     return (
       <div
         className="flex min-h-screen items-center justify-center px-6 py-12"
+        data-app-canvas
         style={{ backgroundColor: "#08090a" }}
       >
         <main className={`w-full max-w-md ${GLASS_SURFACE} p-8`}>
@@ -265,6 +289,12 @@ function SignedIn({
   onLogout: () => void;
 }) {
   const [ticker, setTicker] = useState<XStock>(XSTOCKS[0]);
+  // What the three Home charts show. Held here rather than in the chart
+  // component because the asset grid steers the first slot: clicking a row
+  // has to land in the same state the chart pickers write to.
+  const [chartSelections, setChartSelections] = useState<ChartSelection[]>(
+    () => [...DEFAULT_CHART_SELECTIONS],
+  );
   // Which asset Home's grid has drilled into. Null shows the full grid.
   const [openAsset, setOpenAsset] = useState<XStock | null>(null);
   const [activeSection, setActiveSection] = useState<Section>("portfolio");
@@ -300,29 +330,116 @@ function SignedIn({
     refreshScan();
     await Promise.all([settleBalances(), refreshMonad(), refreshLighter()]);
   }, [refreshScan, settleBalances, refreshMonad, refreshLighter]);
-  const solanaTotalUsd = totalPortfolioUsd(
-    balances,
-    prices,
-    walletScan.held,
-    walletScan.native,
-    walletScan.nativePrices,
-    // Both were missing, and both are rendered as rows by the wallet panel
-    // below. USDC withdrawn from Lighter lands on Ethereum and arrives in
-    // `stables`, so without it a withdrawal read as money vanishing.
-    walletScan.ondo,
-    walletScan.stables,
+  // The account enumerated once, one entry per asset per chain. Everything that
+  // shows a total or draws holding rows reads this list, so the two cannot
+  // disagree. `ondo` and `stables` are in it because the wallet panel renders
+  // them as rows: USDC withdrawn from Lighter lands on Ethereum and arrives in
+  // `stables`, and without it a withdrawal read as money vanishing.
+  const solanaHoldings = useMemo(
+    () =>
+      portfolioHoldings(
+        balances,
+        prices,
+        walletScan.held,
+        walletScan.native,
+        walletScan.nativePrices,
+        walletScan.ondo,
+        walletScan.stables,
+      ),
+    [
+      balances,
+      prices,
+      walletScan.held,
+      walletScan.native,
+      walletScan.nativePrices,
+      walletScan.ondo,
+      walletScan.stables,
+    ],
   );
-  // Monad USDC at par, MON at the native price feed's rate (0 while the price
-  // is loading, so the total can only understate, never invent value).
-  const monadUsd =
-    (monad.balances?.usdcUi ?? 0) +
-    (monad.balances?.monUi ?? 0) * (walletScan.nativePrices["monad"] ?? 0);
-  // Lighter margin counts the same way: 0 while loading, so a slow read can
-  // only understate the total.
-  const offSolanaUsd = monadUsd + (lighter.usd ?? 0);
+  // Monad and Lighter sit outside the Trustware scan, so they are read
+  // separately and appended here. Both count 0 while their read is in flight,
+  // so a slow response can only understate the total, never invent value.
+  const monPrice = walletScan.nativePrices["monad"];
+  const offSolanaHoldings = useMemo<PortfolioHolding[]>(() => {
+    const out: PortfolioHolding[] = [];
+    const usdc = monad.balances?.usdcUi ?? 0;
+    if (usdc > 0)
+      out.push({
+        key: "monad:USDC",
+        symbol: "USDC",
+        name: "US Dollar",
+        chainLabel: "Monad",
+        amount: usdc,
+        usd: usdc,
+        kind: "stable",
+      });
+    const mon = monad.balances?.monUi ?? 0;
+    if (mon > 0 && monPrice)
+      out.push({
+        key: "monad:MON",
+        symbol: "MON",
+        name: "Gas",
+        chainLabel: "Monad",
+        amount: mon,
+        usd: mon * monPrice,
+        kind: "native",
+      });
+    // Not a wallet balance: it left the wallet when it was deposited, but it is
+    // still the user's money. Total account value, so it moves with open
+    // positions' PnL, which is why the amount and the USD figure are the same
+    // number rather than a token quantity.
+    if (lighter.usd != null && lighter.usd > 0)
+      out.push({
+        key: "lighter:USDC",
+        symbol: "USDC",
+        name: "Perps margin",
+        chainLabel: "Lighter",
+        amount: lighter.usd,
+        usd: lighter.usd,
+        kind: "stable",
+      });
+    return out;
+  }, [monad.balances, monPrice, lighter.usd]);
+
+  // Vault deposits. Same reasoning as the Lighter margin row above: the assets
+  // left the token account when they were deposited and are still the user's,
+  // so they are holdings rather than positions as far as this total is
+  // concerned. Nothing here is double counted, because AccountBalances tracks
+  // USDC, SOL and the curated xStock mints, and a deposit is held as vault
+  // SHARES under a different mint entirely.
+  //
+  // Read once, here, and handed to the wallet card. Both totals then move on
+  // one number instead of two sums of the same thing.
+  const earn = useEarnPositions({
+    walletAddress: walletAddress ?? undefined,
+    evmAddress: walletScan.evmAddress ?? undefined,
+  });
+  const earnHoldings = useMemo<PortfolioHolding[]>(
+    () =>
+      earn.rows.map((row) => ({
+        key: row.key,
+        symbol: row.symbol,
+        name: row.venue,
+        chainLabel: row.venue,
+        amount: row.amount ?? row.usd,
+        usd: row.usd,
+        // Every vault the app offers takes a dollar-denominated deposit today,
+        // so flat is right. A vault in a volatile asset would need a chartMint
+        // here or the trend line would understate it, the same gap the caption
+        // already states for gas.
+        kind: "stable" as const,
+      })),
+    [earn.rows],
+  );
+
+  const holdings = useMemo(
+    () => [...solanaHoldings, ...offSolanaHoldings, ...earnHoldings],
+    [solanaHoldings, offSolanaHoldings, earnHoldings],
+  );
+  const offSolanaUsd = sumHoldingsUsd([...offSolanaHoldings, ...earnHoldings]);
   const totalUsd =
-    solanaTotalUsd != null
-      ? solanaTotalUsd + offSolanaUsd
+    balances != null
+      ? sumHoldingsUsd(holdings)
       : offSolanaUsd > 0
         ? offSolanaUsd
         : null;
@@ -334,6 +451,12 @@ function SignedIn({
   function handleAssetSelect(x: XStock) {
     setTicker(x);
     setOpenAsset(x);
+    // The first chart follows the grid, as the single chart did before there
+    // were three. The other two keep whatever the user picked.
+    setChartSelections((prev) => [
+      { kind: "asset", key: x.mint },
+      ...prev.slice(1),
+    ]);
   }
 
   return (
@@ -341,8 +464,12 @@ function SignedIn({
     // theme token: a token added to @theme needs a dev-server restart to
     // register, and a class that silently fails here drops the whole page onto
     // the white body background with white type on top of it.
+    //
+    // data-app-canvas carries that same colour up to the page canvas; globals.css
+    // says why. Every wrapper on this surface needs it, not just this one.
     <div
       className="relative flex min-h-screen flex-col text-white lg:flex-row"
+      data-app-canvas
       style={{ backgroundColor: "#08090a" }}
     >
       {/* Two low-alpha pools in the brand blue. Without them the canvas reads as
@@ -357,7 +484,10 @@ function SignedIn({
       />
 
       {/* Sidebar (full-height on desktop, top hero on mobile) */}
-      <aside className="relative border-b border-white/[0.08] bg-white/[0.035] text-white backdrop-blur-2xl lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-72 lg:flex-col lg:border-b-0 lg:border-r lg:p-7 xl:w-80">
+      {/* No backdrop blur, for the reason GLASS_SURFACE gives: this sits beside
+          the content in a flex row rather than over it, so the blur only ever
+          resampled the flat canvas behind it, once per scrolled frame. */}
+      <aside className="relative border-b border-white/[0.08] bg-white/[0.035] text-white lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-72 lg:flex-col lg:border-b-0 lg:border-r lg:p-7 xl:w-80">
         <div className="flex items-center justify-between p-6 lg:p-0">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -383,7 +513,7 @@ function SignedIn({
           </div>
           <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-white/50">
             <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
-            Live · 10s
+            Live
           </div>
         </div>
 
@@ -392,6 +522,11 @@ function SignedIn({
             label="Home"
             active={activeSection === "portfolio"}
             onClick={() => setActiveSection("portfolio")}
+          />
+          <SidebarNavItem
+            label="Terminal"
+            active={activeSection === "terminal"}
+            onClick={() => setActiveSection("terminal")}
           />
           <SidebarNavItem
             label="Markets"
@@ -498,8 +633,8 @@ function SignedIn({
             walletAddress ? (
               <PositionsPanel
                 walletAddress={walletAddress}
-                balances={balances}
-                prices={prices}
+                holdings={holdings}
+                walletUsd={totalUsd}
               />
             ) : (
               <p className="text-sm text-white/50">
@@ -553,6 +688,18 @@ function SignedIn({
                 Waiting for embedded Solana wallet to provision...
               </p>
             )
+          ) : activeSection === "terminal" ? (
+            // The ticket handles a wallet that is still provisioning itself,
+            // so the tape, strip, chart and news show without one.
+            <TerminalPanel
+              prices={prices}
+              pricesError={pricesError}
+              balances={balances}
+              scan={walletScan}
+              walletAddress={walletAddress ?? null}
+              auth={auth}
+              onRefresh={settleAll}
+            />
           ) : activeSection === "markets" ? (
             <MarketsSection
               prices={prices}
@@ -602,6 +749,7 @@ function SignedIn({
                     balancesRefreshing={balancesRefreshing}
                     prices={prices}
                     scan={walletScan}
+                    earn={earn}
                     onSent={settleAll}
                     onRefresh={refreshAll}
                   />
@@ -631,11 +779,33 @@ function SignedIn({
                 </Card>
               </div>
 
-              {/* Chart + Borrow side by side on desktop */}
+              {/* Charts + Borrow side by side on desktop. Three charts, each
+                  its own card with its own picker across equities,
+                  commodities, RWA, perps and crypto; the grid click above
+                  steers the first one. HomeCharts draws its own cards, so
+                  this column is a plain span rather than a Card. */}
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-                <Card className="lg:col-span-2">
-                  <PriceChart ticker={ticker} />
-                </Card>
+                <div className="lg:col-span-2">
+                  <HomeCharts
+                    selections={chartSelections}
+                    onChange={(index, next) =>
+                      setChartSelections((prev) =>
+                        prev.map((s, i) => (i === index ? next : s)),
+                      )
+                    }
+                    onAdd={() =>
+                      setChartSelections((prev) => [
+                        ...prev,
+                        nextChartSelection(prev),
+                      ])
+                    }
+                    onRemove={(index) =>
+                      setChartSelections((prev) =>
+                        prev.filter((_, i) => i !== index),
+                      )
+                    }
+                  />
+                </div>
 
                 <Card className="lg:col-span-3">
                   <BorrowPanel
@@ -697,6 +867,10 @@ function MarketsSection({
   const [sparks, setSparks] = useState<SparklinesResponse | null>(null);
   const [expandedMint, setExpandedMint] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Markets keeps its own remembered layout, separate from Home's. The two
+  // surfaces show different things: this one carries a holdings column and the
+  // whole catalog, so the dense table can be right here and tiles right there.
+  const [view, setView] = useViewMode(MARKETS_VIEW_STORAGE_KEY);
   const [category, setCategory] = useState<XStockCategory | "all">("all");
   // Categories the user has clicked "See all" on. Only meaningful while the
   // full catalog is showing; picking one category or typing a search reveals
@@ -759,17 +933,20 @@ function MarketsSection({
             Buy, sell and use as collateral
           </h2>
         </div>
-        {pricesError ? (
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-aeras-warning">
-            <span className="inline-block size-1.5 rounded-full bg-aeras-warning" />
-            Price feed offline
-          </span>
-        ) : (
-          <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-white/50">
-            <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
-            Live · 10s
-          </span>
-        )}
+        <div className="flex shrink-0 items-center gap-3">
+          {pricesError ? (
+            <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-aeras-warning">
+              <span className="inline-block size-1.5 rounded-full bg-aeras-warning" />
+              Price feed offline
+            </span>
+          ) : (
+            <span className="inline-flex shrink-0 items-center gap-1.5 text-xs text-white/50">
+              <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
+              Live
+            </span>
+          )}
+          <ViewToggle view={view} onChange={setView} />
+        </div>
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -838,38 +1015,93 @@ function MarketsSection({
                 )}
               </div>
 
-              <div className="mt-4 divide-y divide-white/10">
-                <MarketsRowHeader />
-                {rows.map((x) => {
-                  const expanded = expandedMint === x.mint;
-                  return (
-                    <div key={x.mint}>
-                      <MarketsRow
-                        xstock={x}
-                        entry={prices?.[x.mint]}
-                        sparkline={sparks?.[x.mint]}
-                        held={balances?.xstocks[x.mint] ?? 0}
-                        expanded={expanded}
-                        borrowable={hasLendingMarket(x.mint)}
-                        onToggle={() =>
-                          setExpandedMint(expanded ? null : x.mint)
-                        }
-                      />
-                      {expanded && (
-                        <MarketsRowExpanded
+              {view === "grid" ? (
+                // The ticket is a full-width GRID ITEM rather than something
+                // nested under a tile. `col-span-full` makes auto-placement put
+                // it on its own row, so it opens beneath the clicked tile's row
+                // and pushes the rest down, which is what the list view does.
+                // Nesting it inside the tile's cell would instead stretch one
+                // column and leave the row ragged.
+                //
+                // Fragment rather than a wrapping div for the same reason: a
+                // wrapper would become a single grid cell holding both.
+                //
+                // `grid-flow-row-dense` is load-bearing, not a flourish. Without
+                // it, a full-width item that cannot fit in the rest of the
+                // current row moves to the next one and LEAVES THE REMAINING
+                // CELLS EMPTY: clicking the second of four tiles opened the
+                // ticket under a row with two blank holes beside it. Dense
+                // backfills those cells with the following tiles, so the row
+                // stays full and the ticket still lands directly under it.
+                // Reading order is preserved because every tile is one column
+                // wide; the only effect is that tiles after the ticket in the
+                // DOM can render before it, which is exactly the intent.
+                <div className="mt-4 grid grid-flow-row-dense grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+                  {rows.map((x) => {
+                    const expanded = expandedMint === x.mint;
+                    return (
+                      <Fragment key={x.mint}>
+                        <AssetTile
                           xstock={x}
-                          prices={prices}
-                          balances={balances}
-                          scan={scan}
-                          walletAddress={walletAddress}
-                          auth={auth}
-                          onRefresh={onRefresh}
+                          entry={prices?.[x.mint]}
+                          sparkline={sparks?.[x.mint]}
+                          selected={expanded}
+                          held={balances?.xstocks[x.mint] ?? 0}
+                          onClick={() =>
+                            setExpandedMint(expanded ? null : x.mint)
+                          }
                         />
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                        {expanded && (
+                          <div className="col-span-full">
+                            <MarketsRowExpanded
+                              xstock={x}
+                              prices={prices}
+                              balances={balances}
+                              scan={scan}
+                              walletAddress={walletAddress}
+                              auth={auth}
+                              onRefresh={onRefresh}
+                            />
+                          </div>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="mt-4 divide-y divide-white/10">
+                  <MarketsRowHeader />
+                  {rows.map((x) => {
+                    const expanded = expandedMint === x.mint;
+                    return (
+                      <div key={x.mint}>
+                        <MarketsRow
+                          xstock={x}
+                          entry={prices?.[x.mint]}
+                          sparkline={sparks?.[x.mint]}
+                          held={balances?.xstocks[x.mint] ?? 0}
+                          expanded={expanded}
+                          borrowable={hasLendingMarket(x.mint)}
+                          onToggle={() =>
+                            setExpandedMint(expanded ? null : x.mint)
+                          }
+                        />
+                        {expanded && (
+                          <MarketsRowExpanded
+                            xstock={x}
+                            prices={prices}
+                            balances={balances}
+                            scan={scan}
+                            walletAddress={walletAddress}
+                            auth={auth}
+                            onRefresh={onRefresh}
+                          />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           );
         })
@@ -879,8 +1111,14 @@ function MarketsSection({
 }
 
 // Rows shown per category before "See all". Five keeps every group to roughly
-// one screen of the card while still showing enough to judge the group.
+// one screen of the card while still showing enough to judge the group. It is a
+// count of ENTRIES, not of rendered lines, so the grid shows the same five and
+// "See all" means the same thing in both views.
 const GROUP_PREVIEW_ROWS = 5;
+
+// Markets remembers its layout separately from Home's. See the comment where it
+// is read, and lib/ui/use-view-mode.ts for why this is an external store.
+const MARKETS_VIEW_STORAGE_KEY = "aeras.markets.assets.view";
 
 // Column geometry for the catalog, shared by the header and every row so the
 // figures line up. Each numeric column is a fixed width and always rendered,
@@ -1046,6 +1284,9 @@ function MarketsRowExpanded({
   auth: ReturnType<typeof useTriggerAuth>;
   onRefresh: () => void;
 }) {
+  // Null for an asset with no borrow market, which keeps the market ticket
+  // alone. See components/strategies/AssetStrategies.tsx.
+  const strategies = useAssetStrategies(xstock, walletAddress);
   return (
     <div className="border-t border-white/10 px-1 py-5">
       <div className="grid gap-6 lg:grid-cols-2">
@@ -1054,8 +1295,20 @@ function MarketsRowExpanded({
             grey box was the only thing on this row pretending to be a surface
             inside a row that is already inside one. */}
         {/* No logo in the heading: the row above this one already draws it, and
-            a second badge lands a few pixels under the first. */}
-        <PriceChart ticker={xstock} heightClass="h-72" showLogo={false} />
+            a second badge lands a few pixels under the first. Detailed: this is
+            the surface a user opens to read the price, so it gets the axes and
+            the full range set rather than the dashboard card's four. */}
+        <div className="space-y-4">
+          <PriceChart
+            ticker={xstock}
+            heightClass="h-72"
+            showLogo={false}
+            variant="detailed"
+          />
+          {/* Buy + Earn, Buy + Leverage and Buy + Buy more, under the chart.
+              Pressing one swaps the ticket beside it for that strategy's. */}
+          {strategies && <AssetStrategyStrip strategies={strategies} />}
+        </div>
 
         <div className="space-y-4">
           {/* Opening a market is a decision to trade it, so the amount field
@@ -1063,16 +1316,25 @@ function MarketsRowExpanded({
               view. The row mounts this fresh on expand, so the focus effect
               fires each time; AmountField focuses with preventScroll, so the
               page does not jump out from under the row that was just clicked. */}
-          <AssetTradePanel
-            xstock={xstock}
-            prices={prices}
-            balances={balances}
-            scan={scan}
-            walletAddress={walletAddress}
-            auth={auth}
-            onRefresh={onRefresh}
-            autoFocus
-          />
+          {strategies?.selected ? (
+            <AssetStrategyTicket
+              strategies={strategies}
+              balances={balances}
+              prices={prices}
+              onRefresh={onRefresh}
+            />
+          ) : (
+            <AssetTradePanel
+              xstock={xstock}
+              prices={prices}
+              balances={balances}
+              scan={scan}
+              walletAddress={walletAddress}
+              auth={auth}
+              onRefresh={onRefresh}
+              autoFocus
+            />
+          )}
         </div>
       </div>
     </div>
@@ -1101,6 +1363,7 @@ function HomeAssetDetail({
   onRefresh: () => void;
   onBack: () => void;
 }) {
+  const strategies = useAssetStrategies(xstock, walletAddress);
   const entry = prices?.[xstock.mint];
   const change = entry?.priceChange24h;
   const positive = change == null ? null : change >= 0;
@@ -1149,18 +1412,40 @@ function HomeAssetDetail({
           losing the panel, so the full chart lives here as it does on the
           Markets tab. Unboxed and headingless: the row above already names the
           asset and prices it, and the card around this panel is border enough. */}
-      <PriceChart ticker={xstock} heightClass="h-40" showHeading={false} />
-
-      <AssetTradePanel
-        xstock={xstock}
-        prices={prices}
-        balances={balances}
-        scan={scan}
-        walletAddress={walletAddress ?? null}
-        auth={auth}
-        onRefresh={onRefresh}
-        autoFocus
+      {/* h-48 rather than h-40: the detailed variant spends the bottom 26px of
+          the plot box on the x-axis labels, and the line should not pay for
+          them. Same reasoning as the Home chart column. */}
+      <PriceChart
+        ticker={xstock}
+        heightClass="h-48"
+        showHeading={false}
+        variant="detailed"
       />
+
+      {/* Buy + Earn, Buy + Leverage and Buy + Buy more, under the chart, for
+          an asset with a borrow market. Pressing one swaps the ticket below
+          for that strategy's; "Market order" on the ticket comes back. */}
+      {strategies && <AssetStrategyStrip strategies={strategies} />}
+
+      {strategies?.selected ? (
+        <AssetStrategyTicket
+          strategies={strategies}
+          balances={balances}
+          prices={prices}
+          onRefresh={onRefresh}
+        />
+      ) : (
+        <AssetTradePanel
+          xstock={xstock}
+          prices={prices}
+          balances={balances}
+          scan={scan}
+          walletAddress={walletAddress ?? null}
+          auth={auth}
+          onRefresh={onRefresh}
+          autoFocus
+        />
+      )}
     </div>
   );
 }
@@ -1209,8 +1494,7 @@ function RowSparkline({
 }
 
 function formatPrice(price: number): string {
-  if (price >= 1) return price.toFixed(2);
-  return price.toFixed(4);
+  return formatUsdPrice(price);
 }
 
 function BorrowSection({
@@ -1219,12 +1503,14 @@ function BorrowSection({
   prices,
   onRefresh,
   onAddFunds,
+  initialExpanded,
 }: {
   walletAddress: string;
   balances: AccountBalances | null;
   prices: JupiterPriceMap | null;
   onRefresh: () => Promise<void> | void;
   onAddFunds: () => void;
+  initialExpanded?: string;
 }) {
   return (
     <div className="space-y-6">
@@ -1243,6 +1529,7 @@ function BorrowSection({
         prices={prices}
         onRefresh={onRefresh}
         onAddFunds={onAddFunds}
+        initialExpanded={initialExpanded}
       />
     </div>
   );
@@ -1251,6 +1538,7 @@ function BorrowSection({
 
 type Section =
   | "portfolio"
+  | "terminal"
   | "markets"
   | "earn"
   | "borrow"

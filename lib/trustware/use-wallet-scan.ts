@@ -10,7 +10,7 @@
 // Never fatal: a failed scan reports empty holdings and an error alongside
 // them, because the Solana side of the wallet is unaffected by it.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import type { EquivalentBalances } from "./balances";
@@ -62,6 +62,9 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
     error: string | null;
   } | null>(null);
   const [generation, setGeneration] = useState(0);
+  // Survives the effect re-running, which state in the `data` object does not:
+  // that is replaced wholesale on every poll.
+  const pricesRef = useRef<Record<string, number>>({});
 
   const refresh = useCallback(() => setGeneration((n) => n + 1), []);
 
@@ -112,9 +115,19 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
         error = String(scanRes.reason);
       }
 
-      let prices: Record<string, number> = {};
+      // Carry the last good prices forward on a failure. Losing them does not
+      // merely blank a dollar figure: every total drops an unpriced native
+      // holding entirely, so a throttled minute at Coingecko took ETH and MON
+      // out of the wallet list and the net worth and then put them back. The
+      // route serves stale prices for the same reason; this covers the case
+      // where the request itself never lands.
+      let prices = pricesRef.current;
       if (priceRes.status === "fulfilled" && priceRes.value.ok) {
-        prices = await priceRes.value.json();
+        const body = (await priceRes.value.json()) as Record<string, number>;
+        if (Object.keys(body).length > 0) {
+          prices = body;
+          pricesRef.current = body;
+        }
       }
 
       if (!cancelled) setData({ key: addressKey, scan, prices, error });

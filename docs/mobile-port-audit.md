@@ -829,13 +829,15 @@ sign-then-self-broadcast. Base and Ethereum can use either path.
 
 The cost is not zero, and it is worth naming: on the self-broadcast path the app
 owns nonce management, gas estimation and fee fields, all of which
-`lib/trustware/execute.ts` currently gets from the provider for free. Note also
-that `CLAUDE.md` says there is no EVM RPC of our own and that Trustware's
-`/sdk/rpc/evm` proxy covers allowance reads only. `lib/morpho/gold-market.ts`
-already broke that rule once by adding `ETHEREUM_RPC_URL` beside `MONAD_RPC_URL`
-for general `eth_call`. A native port on the self-broadcast path would need
-those RPCs for `eth_sendRawTransaction`, `eth_getTransactionCount` and gas
-estimation too. Do that server-side, behind a route, not with an RPC URL
+`lib/trustware/execute.ts` currently gets from the provider for free. On the RPC
+side this is less of a stretch than it was when this was written: `CLAUDE.md`
+used to say there was no EVM RPC of our own, with Trustware's `/sdk/rpc/evm`
+proxy covering allowance reads only, and `lib/morpho/gold-market.ts` had already
+broken that rule by adding `ETHEREUM_RPC_URL` beside `MONAD_RPC_URL` for general
+`eth_call`. As of 2026-09-14 both are first-class and point at Alchemy. A native
+port on the self-broadcast path would use them for `eth_sendRawTransaction`,
+`eth_getTransactionCount` and gas estimation too. Both are server-only, and they
+should stay that way: do the broadcast behind a route, not with an RPC URL
 embedded in an app binary.
 
 ### (g) Login methods: email and Google yes, external wallets no

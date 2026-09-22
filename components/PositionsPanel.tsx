@@ -1,13 +1,20 @@
 "use client";
 
 // Positions surface. Single-screen dashboard for a tokenized RWA + lending user.
-// Composed of: allocation pie (current holdings), portfolio trendline
-// (current xStock holdings priced against 1M history), health-factor radial
+// Composed of: allocation pie (current holdings), portfolio trendline (current
+// holdings carried back along their own price curves), health-factor radial
 // gauge per open borrow position, holdings table, and on-chain activity feed.
 //
 // All numbers come from sources already in the codebase: balances from
 // useBalances, prices from Jupiter, position state from @jup-ag/lend, history
 // from the existing /api/jupiter/chart proxy. No new server routes.
+//
+// The wallet side of this panel is NOT computed here. `holdings` is the whole
+// account enumerated once by app/app/page.tsx, and the "In wallet" tile is its
+// sum, so this panel, the sidebar total and the wallet panel cannot disagree.
+// They did: this file priced the Solana side alone, so a user holding USDC on
+// Ethereum or margin on Lighter saw a smaller number here than in the sidebar,
+// and Net worth understated by the same amount.
 
 import { useEffect, useMemo, useState } from "react";
 import { GLASS_SURFACE, INSET_PANEL } from "@/lib/ui/surface";
@@ -30,8 +37,13 @@ import {
   YAxis,
 } from "recharts";
 
-import { fetchChartViaProxy, type OhlcCandle } from "@/lib/jupiter/charts";
-import { SOLSCAN_TX_BASE, SOL_MINT } from "@/lib/jupiter/constants";
+import { fetchChartViaProxy } from "@/lib/jupiter/charts";
+import {
+  combineTrendSeries,
+  type CandleSet,
+  type TrendPoint,
+} from "@/lib/jupiter/portfolio-trend";
+import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
 import {
   XSTOCK_BORROW_VAULTS,
   fetchLiveVaultStateViaProxy,
@@ -42,26 +54,29 @@ import {
   type UserPositionState,
   type XStockBorrowVault,
 } from "@/lib/jupiter/borrow";
-import type { JupiterPriceMap } from "@/lib/jupiter/prices";
-import { XSTOCKS } from "@/lib/jupiter/xstocks";
-import {
-  getConnection,
-  totalAccountUsd,
-  type AccountBalances,
-} from "@/lib/solana/balances";
+import type { PortfolioHolding } from "@/lib/solana/holdings";
+import { getConnection } from "@/lib/solana/balances";
 
 interface Props {
   walletAddress: string;
-  balances: AccountBalances | null;
-  prices: JupiterPriceMap | null;
+  // The whole account, enumerated once by the page, one entry per asset per
+  // chain. Passed in rather than recomputed here: this panel used to price the
+  // Solana side alone and label it "In wallet", which understated the tile by
+  // whatever the user held on Ethereum, Base, BNB Chain, Monad or Lighter while
+  // the sidebar and the wallet panel showed the full figure. Raw balances and
+  // prices are deliberately not props any more, so there is nothing here to
+  // recompute a second, disagreeing total from.
+  holdings: PortfolioHolding[];
+  // Sum of `holdings`, or null before the first balance read lands.
+  walletUsd: number | null;
 }
 
-export function PositionsPanel({ walletAddress, balances, prices }: Props) {
-  const totalUsd = totalAccountUsd(balances, prices);
-  const allocation = useMemo(
-    () => buildAllocation(balances, prices),
-    [balances, prices],
-  );
+export function PositionsPanel({
+  walletAddress,
+  holdings,
+  walletUsd,
+}: Props) {
+  const allocation = useMemo(() => buildAllocation(holdings), [holdings]);
   const positions = useBorrowPositions(walletAddress);
   // Which Strategies-page run opened a position, by collateral mint, so a
   // ladder's debt reads as "borrowed to buy more" rather than a plain borrow.
@@ -80,23 +95,24 @@ export function PositionsPanel({ walletAddress, balances, prices }: Props) {
   }, [runs.runs]);
   const debtUsd = positions.reduce((sum, p) => sum + p.debtUsd, 0);
   const collateralUsd = positions.reduce((sum, p) => sum + p.collateralUsd, 0);
-  const netWorthUsd = totalUsd != null ? totalUsd + collateralUsd - debtUsd : null;
+  const netWorthUsd =
+    walletUsd != null ? walletUsd + collateralUsd - debtUsd : null;
 
   return (
     <div className="space-y-6">
       <Header
         netWorthUsd={netWorthUsd}
-        walletUsd={totalUsd}
+        walletUsd={walletUsd}
         debtUsd={debtUsd}
         collateralUsd={collateralUsd}
       />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
         <Card className="lg:col-span-2">
-          <AllocationCard allocation={allocation} totalUsd={totalUsd} />
+          <AllocationCard allocation={allocation} totalUsd={walletUsd} />
         </Card>
         <Card className="lg:col-span-3">
-          <PortfolioTrend balances={balances} prices={prices} />
+          <PortfolioTrend holdings={holdings} />
         </Card>
       </div>
 
@@ -105,11 +121,7 @@ export function PositionsPanel({ walletAddress, balances, prices }: Props) {
           <HealthCard positions={positions} strategyByMint={strategyByMint} />
         </Card>
         <Card className="lg:col-span-3">
-          <HoldingsTable
-            balances={balances}
-            prices={prices}
-            allocation={allocation}
-          />
+          <HoldingsTable allocation={allocation} />
         </Card>
       </div>
 
@@ -213,18 +225,16 @@ function StatTile({
 
 // ── Allocation pie ─────────────────────────────────────────────────────────
 
-interface AllocationSlice {
-  name: string;
-  symbol: string;
-  usd: number;
-  amount: number;
+interface AllocationSlice extends PortfolioHolding {
   color: string;
-  kind: "stable" | "native" | "stock";
 }
 
-// Distinct palette per kind so stables/native/stocks group visually.
-const STABLE_COLOR = "#1a73e8";
-const NATIVE_COLOR = "#9c5cd6";
+// Distinct palette per kind so stables/native/stocks group visually. Each kind
+// carries a ramp rather than one colour, because the same asset is genuinely
+// held on several chains now: three USDC rows all drawn in one blue read as a
+// single slice cut into pieces by nothing.
+const STABLE_PALETTE = ["#1a73e8", "#4e8df2", "#8ab4f8"];
+const NATIVE_PALETTE = ["#9c5cd6", "#b784e3", "#d2adf0"];
 const STOCK_PALETTE = [
   "#119b62",
   "#e8a13a",
@@ -238,54 +248,28 @@ const STOCK_PALETTE = [
   "#a13a8b",
 ];
 
-function buildAllocation(
-  balances: AccountBalances | null,
-  prices: JupiterPriceMap | null,
-): AllocationSlice[] {
-  if (!balances) return [];
-  const slices: AllocationSlice[] = [];
+const PALETTES: Record<PortfolioHolding["kind"], string[]> = {
+  stable: STABLE_PALETTE,
+  native: NATIVE_PALETTE,
+  stock: STOCK_PALETTE,
+};
 
-  if (balances.usdc > 0) {
-    slices.push({
-      name: "US Dollar",
-      symbol: "USDC",
-      usd: balances.usdc,
-      amount: balances.usdc,
-      color: STABLE_COLOR,
-      kind: "stable",
+// Colour is assigned after sorting so the largest slice of each kind always
+// gets that kind's strongest stop.
+function buildAllocation(holdings: PortfolioHolding[]): AllocationSlice[] {
+  const seen: Record<PortfolioHolding["kind"], number> = {
+    stable: 0,
+    native: 0,
+    stock: 0,
+  };
+  return [...holdings]
+    .sort((a, b) => b.usd - a.usd)
+    .map((h) => {
+      const palette = PALETTES[h.kind];
+      const color = palette[seen[h.kind] % palette.length];
+      seen[h.kind] += 1;
+      return { ...h, color };
     });
-  }
-
-  const solPrice = prices?.[SOL_MINT]?.usdPrice;
-  if (solPrice && balances.sol > 0) {
-    slices.push({
-      name: "Solana",
-      symbol: "SOL",
-      usd: balances.sol * solPrice,
-      amount: balances.sol,
-      color: NATIVE_COLOR,
-      kind: "native",
-    });
-  }
-
-  let stockIdx = 0;
-  for (const x of XSTOCKS) {
-    const amt = balances.xstocks[x.mint] ?? 0;
-    const px = prices?.[x.mint]?.usdPrice;
-    if (amt > 0 && px) {
-      slices.push({
-        name: x.name,
-        symbol: x.symbol,
-        usd: amt * px,
-        amount: amt,
-        color: STOCK_PALETTE[stockIdx % STOCK_PALETTE.length],
-        kind: "stock",
-      });
-      stockIdx += 1;
-    }
-  }
-
-  return slices.sort((a, b) => b.usd - a.usd);
 }
 
 function AllocationCard({
@@ -304,7 +288,7 @@ function AllocationCard({
           Allocation
         </div>
         <div className="mt-1 text-sm font-medium tracking-tight text-white">
-          By asset
+          By asset and chain
         </div>
       </div>
 
@@ -328,7 +312,7 @@ function AllocationCard({
                   isAnimationActive={false}
                 >
                   {allocation.map((a) => (
-                    <Cell key={a.symbol} fill={a.color} />
+                    <Cell key={a.key} fill={a.color} />
                   ))}
                 </Pie>
                 <Tooltip content={<AllocationTooltip total={total} />} />
@@ -349,7 +333,7 @@ function AllocationCard({
               const pct = total > 0 ? (a.usd / total) * 100 : 0;
               return (
                 <li
-                  key={a.symbol}
+                  key={a.key}
                   className="flex items-center justify-between gap-3 text-xs"
                 >
                   <span className="flex items-center gap-2 min-w-0">
@@ -360,7 +344,10 @@ function AllocationCard({
                     <span className="font-medium text-white truncate">
                       {a.name}
                     </span>
-                    <span className="text-white/50 truncate">{a.symbol}</span>
+                    <span className="text-white/50 truncate">
+                      {a.symbol}
+                      {a.chainLabel !== "Solana" ? ` · ${a.chainLabel}` : ""}
+                    </span>
                   </span>
                   <span className="flex items-baseline gap-2 font-mono tabular-nums">
                     <span className="text-white">${a.usd.toFixed(2)}</span>
@@ -391,7 +378,10 @@ function AllocationTooltip({
   return (
     <div className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs shadow-sm">
       <div className="font-medium text-white">
-        {slice.name} <span className="text-white/50">· {slice.symbol}</span>
+        {slice.name}{" "}
+        <span className="text-white/50">
+          · {slice.symbol} · {slice.chainLabel}
+        </span>
       </div>
       <div className="font-mono tabular-nums text-white">
         ${slice.usd.toFixed(2)} · {pct.toFixed(1)}%
@@ -402,75 +392,115 @@ function AllocationTooltip({
 
 // ── Portfolio trendline ────────────────────────────────────────────────────
 
-interface TrendPoint {
-  t: number;
-  v: number;
-}
-
-const TREND_RANGES = ["1W", "1M", "3M"] as const;
+// Every range Coingecko's keyless tier can actually tell apart, plus MAX.
+//
+// MAX is here knowing it draws the 1Y line today. That tier refuses a window
+// past a year and lib/jupiter/charts.ts retries at the limit, so 1Y and MAX
+// come back as the same 364-day series. It is not dead code: the data exists
+// upstream, and MAX starts meaning what it says the day COINGECKO_API_KEY is
+// set. 5Y is left out because it would be a second copy of the same line with
+// no such payoff. 1D is left out at the other end: the trendline prices today's
+// holdings against a historical curve, and over one day that is a slower, more
+// caveated version of the live balance already shown above it.
+const TREND_RANGES = ["1W", "1M", "3M", "6M", "YTD", "1Y", "MAX"] as const;
 type TrendRange = (typeof TREND_RANGES)[number];
 
-function PortfolioTrend({
-  balances,
-  prices,
-}: {
-  balances: AccountBalances | null;
-  prices: JupiterPriceMap | null;
-}) {
+function PortfolioTrend({ holdings }: { holdings: PortfolioHolding[] }) {
   const [range, setRange] = useState<TrendRange>("1M");
-  const [series, setSeries] = useState<TrendPoint[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  // Stamped with the request it answers, so loading and staleness are derived
+  // rather than set. The effect then touches state only in its async callback,
+  // which is what keeps a range switch from cascading renders.
+  const [fetched, setFetched] = useState<{
+    key: string;
+    candles: CandleSet | null;
+    error: string | null;
+  } | null>(null);
 
-  const heldXStocks = useMemo(() => {
-    if (!balances) return [];
-    return XSTOCKS.filter((x) => (balances.xstocks[x.mint] ?? 0) > 0);
-  }, [balances]);
-
-  // Flat baseline from stables + SOL at current price. We don't fetch SOL
-  // history (out of curated chart proxy scope), so treat it as constant. Make
-  // the title state that this is an indicative line for current holdings.
-  const flatBaseline = useMemo(() => {
-    if (!balances) return 0;
-    const solUsd = (prices?.[SOL_MINT]?.usdPrice ?? 0) * balances.sol;
-    return balances.usdc + solUsd;
-  }, [balances, prices]);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setSeries(null);
-
-    if (heldXStocks.length === 0) {
-      setLoading(false);
-      return;
+  // Today's value per chartable mint, summed. Two holdings can share a curve:
+  // TSLAx on Solana and TSLAx on Ethereum are one Tesla position moving on one
+  // price, and TSLAon rides the same curve because it tracks it one for one.
+  const chartable = useMemo(() => {
+    const byMint = new Map<string, number>();
+    for (const h of holdings) {
+      if (!h.chartMint) continue;
+      byMint.set(h.chartMint, (byMint.get(h.chartMint) ?? 0) + h.usd);
     }
+    return byMint;
+  }, [holdings]);
 
-    Promise.all(
-      heldXStocks.map((x) =>
-        fetchChartViaProxy(x.mint, range).then(
-          (candles) =>
-            [x.mint, candles] as const,
+  // Everything with no price history, held at today's value. USDC and Lighter
+  // margin are dollar denominated so flat is exactly right. SOL, ETH, BNB and
+  // MON are not: /api/jupiter/chart serves the curated xStock catalog only, so
+  // there is no curve to put them on and the line understates their movement.
+  // The caption says so rather than letting the number imply otherwise.
+  const flatUsd = useMemo(
+    () =>
+      holdings.reduce((sum, h) => (h.chartMint ? sum : sum + h.usd), 0),
+    [holdings],
+  );
+
+  const mints = useMemo(() => [...chartable.keys()].sort(), [chartable]);
+  // Joined so the effect compares by value: a fresh array of the same mints
+  // every balance poll would otherwise refetch every chart every 60 seconds.
+  const mintKey = mints.join(",");
+  const requestKey = `${mintKey}|${range}`;
+
+  // History is fetched on the mint list and the range alone. The series is
+  // derived from it below, so a price tick or a balance poll re-levels the line
+  // without refetching a month of candles every sixty seconds.
+  useEffect(() => {
+    const wanted = mintKey ? mintKey.split(",") : [];
+    if (wanted.length === 0) return;
+    let cancelled = false;
+
+    // Settled, not all: one mint the proxy rate-limits used to blank the whole
+    // card. A failed curve now falls back to flat at today's value, so the line
+    // degrades by the share it could not chart instead of disappearing.
+    Promise.allSettled(
+      wanted.map((mint) =>
+        fetchChartViaProxy(mint, range).then(
+          (rows) => [mint, rows] as const,
         ),
       ),
-    )
-      .then((entries) => {
-        if (cancelled) return;
-        const combined = combineSeries(entries, balances, flatBaseline);
-        setSeries(combined);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setLoading(false);
+    ).then((results) => {
+      if (cancelled) return;
+      const loaded: CandleSet = {};
+      for (const r of results) {
+        if (r.status !== "fulfilled") continue;
+        const [mint, rows] = r.value;
+        if (rows.length > 0) loaded[mint] = rows;
+      }
+      const rejected = results.find((r) => r.status === "rejected");
+      setFetched({
+        key: requestKey,
+        candles: Object.keys(loaded).length > 0 ? loaded : null,
+        error:
+          Object.keys(loaded).length > 0
+            ? null
+            : rejected && rejected.status === "rejected"
+              ? String(rejected.reason)
+              : "No price history",
       });
+    });
 
     return () => {
       cancelled = true;
     };
-  }, [heldXStocks, range, balances, flatBaseline]);
+  }, [mintKey, range, requestKey]);
+
+  // Only the response to the request currently on screen counts. A stale one
+  // from the previous range reads as still loading rather than being drawn.
+  const current = fetched?.key === requestKey ? fetched : null;
+  const loading = mints.length > 0 && current == null;
+  const error = current?.error ?? null;
+
+  const series = useMemo(
+    () =>
+      current?.candles
+        ? combineTrendSeries(current.candles, chartable, flatUsd)
+        : null,
+    [current, chartable, flatUsd],
+  );
 
   const first = series?.[0]?.v;
   const last = series?.[series.length - 1]?.v;
@@ -504,8 +534,17 @@ function PortfolioTrend({
               </span>
             )}
           </div>
+          {/* Says which part of the number is real movement. Without it a
+              wallet that is mostly USDC reads as a portfolio that barely moved,
+              when what actually happened is that most of it cannot move. */}
           <div className="mt-1 text-[11px] text-white/50">
             Current holdings priced against the historical price curve.
+            {flatUsd > 0 && (
+              <>
+                {" "}
+                {fmtUsd(flatUsd)} in dollar balances and gas is held flat.
+              </>
+            )}
           </div>
         </div>
         <div className="flex gap-0.5 rounded-lg border border-white/10 p-0.5">
@@ -527,9 +566,10 @@ function PortfolioTrend({
       </div>
 
       <div className="h-48 w-full">
-        {heldXStocks.length === 0 ? (
+        {mints.length === 0 ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-xs text-white/50">
-            Buy a tokenized stock to see your portfolio trend.
+            Buy a tokenized asset to see your portfolio trend. Dollar balances
+            have no curve to draw.
           </div>
         ) : error ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-xs text-white/60">
@@ -570,55 +610,6 @@ function PortfolioTrend({
       </div>
     </div>
   );
-}
-
-function combineSeries(
-  entries: ReadonlyArray<readonly [string, OhlcCandle[]]>,
-  balances: AccountBalances | null,
-  flatBaseline: number,
-): TrendPoint[] {
-  if (entries.length === 0 || !balances) return [];
-
-  // Pick the longest candle series as the time axis. Snap every other series
-  // onto these timestamps via nearest-prior interpolation.
-  const longest = entries.reduce((acc, e) =>
-    e[1].length > acc[1].length ? e : acc,
-  );
-  const timestamps = longest[1].map((c) => c.t);
-
-  const prices: Record<string, number[]> = {};
-  for (const [mint, candles] of entries) {
-    prices[mint] = snapToTimestamps(timestamps, candles);
-  }
-
-  return timestamps.map((t, i) => {
-    let v = flatBaseline;
-    for (const [mint] of entries) {
-      const held = balances.xstocks[mint] ?? 0;
-      const px = prices[mint][i];
-      v += held * px;
-    }
-    return { t, v };
-  });
-}
-
-function snapToTimestamps(
-  timestamps: number[],
-  candles: OhlcCandle[],
-): number[] {
-  if (candles.length === 0) return timestamps.map(() => 0);
-  const out: number[] = new Array(timestamps.length);
-  let j = 0;
-  let last = candles[0].c;
-  for (let i = 0; i < timestamps.length; i++) {
-    const t = timestamps[i];
-    while (j < candles.length && candles[j].t <= t) {
-      last = candles[j].c;
-      j++;
-    }
-    out[i] = last;
-  }
-  return out;
 }
 
 function TrendTooltip({
@@ -935,17 +926,7 @@ function PositionHealthRow({
 
 // ── Holdings table ─────────────────────────────────────────────────────────
 
-function HoldingsTable({
-  balances,
-  prices,
-  allocation,
-}: {
-  balances: AccountBalances | null;
-  prices: JupiterPriceMap | null;
-  allocation: AllocationSlice[];
-}) {
-  void balances;
-  void prices;
+function HoldingsTable({ allocation }: { allocation: AllocationSlice[] }) {
   const total = allocation.reduce((s, a) => s + a.usd, 0);
 
   return (
@@ -981,7 +962,7 @@ function HoldingsTable({
             const decimals = a.kind === "stock" ? 4 : a.kind === "native" ? 4 : 2;
             return (
               <div
-                key={a.symbol}
+                key={a.key}
                 className="grid grid-cols-12 items-center gap-2 py-2.5 text-sm"
               >
                 <div className="col-span-4 min-w-0">
@@ -994,8 +975,14 @@ function HoldingsTable({
                       {a.symbol}
                     </span>
                   </div>
+                  {/* Chain, not just the asset name: the same symbol can occupy
+                      several rows, and without it two USDC lines read as a
+                      duplicate rather than as one holding in two places. Left
+                      off when the name already is the chain, so SOL does not
+                      read "Solana · Solana". */}
                   <div className="text-[11px] text-white/50 truncate">
                     {a.name}
+                    {a.name !== a.chainLabel ? ` · ${a.chainLabel}` : ""}
                   </div>
                 </div>
                 <div className="col-span-3 text-right font-mono tabular-nums text-white">
@@ -1071,7 +1058,7 @@ function ActivityFeed({ walletAddress }: { walletAddress: string }) {
             Activity
           </div>
           <div className="mt-1 text-sm font-medium tracking-tight text-white">
-            On-chain transactions
+            Onchain transactions
           </div>
         </div>
         <a

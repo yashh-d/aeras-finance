@@ -37,6 +37,23 @@ describe("parseCandles", () => {
     expect(bar.quoteVolume).toBe(5);
   });
 
+  const at = (t: number, c: number) => ({ t, o: c, h: c, l: c, c, v: 1, V: 1, i: 1 });
+
+  it("drops a repeated bar and keeps the series ascending", () => {
+    // Exactly what the endpoint returns when the window reaches past a
+    // market's first bar: the oldest bar twice, byte for byte.
+    const candles = parseCandles({
+      code: 200,
+      c: [at(1000, 10), at(1000, 10), at(2000, 11), at(3000, 12)],
+    });
+    expect(candles.map((candle) => candle.t)).toEqual([1000, 2000, 3000]);
+    expect(candles[0].c).toBe(10);
+  });
+
+  it("keeps distinct bars that merely share a price", () => {
+    expect(parseCandles({ code: 200, c: [at(1000, 10), at(2000, 10)] })).toHaveLength(2);
+  });
+
   it("throws on a non-200 code", () => {
     expect(() => parseCandles({ code: 20001, message: "invalid param" })).toThrow(
       "invalid param",

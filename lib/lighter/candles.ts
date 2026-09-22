@@ -15,9 +15,17 @@
 //
 // The server caps a response at 501 bars and **ignores `count_back` entirely**.
 // Asking for a window wider than 501 bars silently returns only the most recent
-// 501, so the range table below picks a resolution per range that keeps every
-// window under the cap. Getting this wrong does not error, it just quietly
-// truncates the left edge of the chart.
+// 501. Getting this wrong does not error, it just quietly truncates the left
+// edge of the chart. Two things follow. The range table below picks a resolution
+// per range so that every range up to 1Y fits in one response, and the ones that
+// cannot fit by construction (5Y, MAX) are walked backwards a page at a time by
+// `lighterCandles`, keyed off `exceedsResponseCap`.
+//
+// The cap does NOT bound how far back history goes, and the two are easy to
+// confuse. Paging past the cap is what proves where a market actually starts:
+// measured live 2026-09-10, nothing on the exchange predates 2025-01-18.
+
+import { LIGHTER_MAX_CANDLES } from "./constants";
 
 // Resolutions the endpoint accepts, per its spec enum. Probed live: 2h, 1w
 // and 1M are rejected with code 20001, as are TradingView-style aliases like
@@ -49,14 +57,50 @@ export function isCandleSource(value: string | null): value is CandleSource {
   return value != null && (CANDLE_SOURCES as readonly string[]).includes(value);
 }
 
-export type CandleRange = "1H" | "1D" | "1W" | "1M" | "3M";
+export type CandleRange =
+  | "1H"
+  | "1D"
+  | "1W"
+  | "1M"
+  | "3M"
+  | "6M"
+  | "YTD"
+  | "1Y"
+  | "5Y"
+  | "MAX";
 
+// What the hedge tab charts. A hedge is a short-horizon decision, and the panel
+// draws the chart at 224px, so it keeps the five short ranges.
 export const CANDLE_RANGES: readonly CandleRange[] = [
   "1H",
   "1D",
   "1W",
   "1M",
   "3M",
+];
+
+// What the perps tab charts, which sizes its own chart column and is where
+// someone actually reads a trend.
+//
+// 2Y and 5Y are deliberately absent. Lighter has no market that deep: measured
+// live 2026-09-10, the oldest series on the exchange are BTC and ETH at 601
+// days, SPX is 454, and the equity perps run 246 to 288. Offering a 2Y button
+// would draw a chart identical to MAX on every market, so the set stops at the
+// longest range that means something. Worth revisiting when BTC and ETH pass
+// two years, around mid-2027.
+export const PERPS_CANDLE_RANGES: readonly CandleRange[] = [
+  ...CANDLE_RANGES,
+  "6M",
+  "YTD",
+  "1Y",
+  "MAX",
+];
+
+// Everything the candles route accepts. A superset of both pickers: 5Y stays
+// accepted because the route is public and a stale client may still ask for it.
+export const ALL_CANDLE_RANGES: readonly CandleRange[] = [
+  ...PERPS_CANDLE_RANGES,
+  "5Y",
 ];
 
 const MINUTE_MS = 60_000;
@@ -68,15 +112,42 @@ interface RangeSpec {
   spanMs: number;
 }
 
-// Each range pairs a window with the finest resolution that still fits under the
-// 501-bar cap. Bar counts: 60, 288, 168, 180, 90.
-const RANGE_SPECS: Record<CandleRange, RangeSpec> = {
+// Each fixed range pairs a window with the finest resolution that fits it.
+// Bar counts: 60, 288, 168, 180, 90, 180, 365.
+//
+// Every range up to 1Y fits inside one response. YTD is not in the table because
+// its span moves every day; candleWindow computes it, and it outgrows the cap
+// only in a year that is itself longer than 501 days, which is to say never.
+//
+// 5Y and MAX are the same window and both ask for more bars than one response
+// can carry. That is deliberate now: lighterCandles pages backwards for any
+// window over the cap, so MAX really is the whole history. It used to ask for
+// exactly 501 daily bars, which quietly cut the left edge off the only two
+// markets with more than that, BTC and ETH, losing their first hundred days.
+// A market younger than the window returns its whole history either way.
+const RANGE_SPECS: Record<
+  Exclude<CandleRange, "YTD">,
+  RangeSpec
+> = {
   "1H": { resolution: "1m", spanMs: HOUR_MS },
   "1D": { resolution: "5m", spanMs: DAY_MS },
   "1W": { resolution: "1h", spanMs: 7 * DAY_MS },
   "1M": { resolution: "4h", spanMs: 30 * DAY_MS },
   "3M": { resolution: "1d", spanMs: 90 * DAY_MS },
+  "6M": { resolution: "1d", spanMs: 180 * DAY_MS },
+  "1Y": { resolution: "1d", spanMs: 365 * DAY_MS },
+  "5Y": { resolution: "1d", spanMs: 5 * 365 * DAY_MS },
+  MAX: { resolution: "1d", spanMs: 5 * 365 * DAY_MS },
 };
+
+function rangeSpec(range: CandleRange, nowMs: number): RangeSpec {
+  if (range === "YTD") {
+    const jan1 = Date.UTC(new Date(nowMs).getUTCFullYear(), 0, 1);
+    // At least one bar, so the first hours of January still draw something.
+    return { resolution: "1d", spanMs: Math.max(DAY_MS, nowMs - jan1) };
+  }
+  return RANGE_SPECS[range];
+}
 
 const RESOLUTION_MS: Record<CandleResolution, number> = {
   "1m": MINUTE_MS,
@@ -101,7 +172,7 @@ export interface CandleWindow {
 // Pure so the bar-count arithmetic can be asserted against the cap without a
 // network call.
 export function candleWindow(range: CandleRange, nowMs: number): CandleWindow {
-  const spec = RANGE_SPECS[range];
+  const spec = rangeSpec(range, nowMs);
   const startMs = nowMs - spec.spanMs;
   return {
     resolution: spec.resolution,
@@ -111,8 +182,17 @@ export function candleWindow(range: CandleRange, nowMs: number): CandleWindow {
   };
 }
 
+// True when a window asks for more bars than one response can carry, which is
+// the signal to walk it backwards a page at a time rather than accept a series
+// with its left edge cut off. See lighterCandles.
+export function exceedsResponseCap(window: CandleWindow): boolean {
+  return window.bars > LIGHTER_MAX_CANDLES;
+}
+
 export function isCandleRange(value: string | null): value is CandleRange {
-  return value != null && (CANDLE_RANGES as readonly string[]).includes(value);
+  return (
+    value != null && (ALL_CANDLE_RANGES as readonly string[]).includes(value)
+  );
 }
 
 // A market id from a query string, or null if it is not one.
@@ -186,8 +266,25 @@ function unwrap<C>(body: unknown, what: string): C[] {
 
 const zero = (value: number | undefined): number => value ?? 0;
 
+// Repeated timestamps are dropped, keeping the first.
+//
+// When a requested window reaches back past the market's first bar, the server
+// emits that first bar TWICE, byte for byte identical down to the trade count.
+// Measured live 2026-09-10 on ETH and on NVDA. It is not a paging artifact: a
+// single request for 1Y on NVDA, whose history is 288 days, comes back with 290
+// bars and one repeat. Lightweight Charts rejects a series that is not strictly
+// ascending, so the repeat has to go before the bars reach it.
+function dedupeByTime<C extends { t: number }>(raws: C[]): C[] {
+  const seen = new Set<number>();
+  return raws.filter((raw) => {
+    if (seen.has(raw.t)) return false;
+    seen.add(raw.t);
+    return true;
+  });
+}
+
 export function parseCandles(body: unknown): LighterCandle[] {
-  return unwrap<RawCandle>(body, "candles").map((raw) => {
+  return dedupeByTime(unwrap<RawCandle>(body, "candles")).map((raw) => {
     const v = zero(raw.v);
     return {
       t: raw.t,
@@ -206,7 +303,7 @@ export function parseCandles(body: unknown): LighterCandle[] {
 // fetch is shared. There is no volume to carry; `traded` records whether the
 // bar had any samples, which is the nearest thing to "this bar is real".
 export function parseMarkPriceCandles(body: unknown): LighterCandle[] {
-  return unwrap<RawMarkPriceCandle>(body, "markPriceCandles").map((raw) => ({
+  return dedupeByTime(unwrap<RawMarkPriceCandle>(body, "markPriceCandles")).map((raw) => ({
     t: raw.t,
     o: zero(raw.o),
     h: zero(raw.h),

@@ -24,7 +24,7 @@
 //
 // Looping (multiply / unwind) lives in LoopingPanel.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import BN from "bn.js";
 import {
   Area,
@@ -84,6 +84,12 @@ import {
 } from "@/components/AaveVaultsCard";
 import { aaveVaultsForAsset, type AaveVault } from "@/lib/aave/vaults";
 import {
+  blendAcceptsAsset,
+  useBlendEarn,
+  type BlendEarn,
+} from "@/components/BlendVaultsCard";
+import { BLEND_VENUE_NAME, blendChainName } from "@/lib/blend/constants";
+import {
   atomicToUiString,
   getConnection,
   type AccountBalances,
@@ -126,23 +132,31 @@ export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props)
   return (
     <div className="space-y-6">
       <PageHeader />
-      <VaultsCard
-        vaults={vaults}
-        kaminoVaults={kaminoVaults}
-        kaminoPositions={kaminoPositions}
-        vaultsError={vaultsError}
-        balances={earnBalances}
-        solanaBalances={balances}
-        walletAddress={walletAddress}
-        onSettled={handleSettled}
-        onRefresh={onRefresh}
-      />
-      <LoopingCard
-        walletAddress={walletAddress}
-        balances={balances}
-        prices={prices}
-        onRefresh={handleSettled}
-      />
+      {/* Vaults | Looping side by side on desktop, the same five-column split
+          the home tab gives its Chart | Borrow row. The vault table is the
+          wide element here, six columns across, so it takes the three fifths
+          and the looping form, a single column of controls, takes two. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+        <VaultsCard
+          className="lg:col-span-3"
+          vaults={vaults}
+          kaminoVaults={kaminoVaults}
+          kaminoPositions={kaminoPositions}
+          vaultsError={vaultsError}
+          balances={earnBalances}
+          solanaBalances={balances}
+          walletAddress={walletAddress}
+          onSettled={handleSettled}
+          onRefresh={onRefresh}
+        />
+        <LoopingCard
+          className="lg:col-span-2"
+          walletAddress={walletAddress}
+          balances={balances}
+          prices={prices}
+          onRefresh={handleSettled}
+        />
+      </div>
       <RyskOptionsCard />
     </div>
   );
@@ -332,7 +346,11 @@ function VaultsCard({
   walletAddress,
   onSettled,
   onRefresh,
+  className,
 }: {
+  // Grid placement from the Earn panel, the same way the home tab's Card
+  // takes a column span.
+  className?: string;
   vaults: Map<string, EarnVaultState>;
   kaminoVaults: Map<string, KaminoVaultState>;
   kaminoPositions: Map<string, KaminoPosition>;
@@ -350,6 +368,8 @@ function VaultsCard({
   // draw a rate on every row whether or not anything is expanded.
   const morpho = useMorphoEarn(walletAddress);
   const aave = useAaveEarn(walletAddress);
+  // Same reason: the Blend column needs its rate on every row.
+  const blend = useBlendEarn();
 
   const handleMorphoSettled = useCallback(async () => {
     await morpho.refresh();
@@ -362,7 +382,7 @@ function VaultsCard({
   }, [aave, onRefresh]);
 
   return (
-    <div className={`${GLASS_SURFACE} p-5 lg:p-6`}>
+    <div className={`${GLASS_SURFACE} p-5 lg:p-6 ${className ?? ""}`}>
       <div>
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Vaults
@@ -399,6 +419,10 @@ function VaultsCard({
             <VenueMark src={VENUE_LOGOS.aave} />
             Aave
           </div>
+          <div className="flex items-center justify-end gap-1.5">
+            <VenueMark src={VENUE_LOGOS.aeras} />
+            {BLEND_VENUE_NAME}
+          </div>
           <div className="text-right">Your deposit</div>
           <div />
         </div>
@@ -421,6 +445,7 @@ function VaultsCard({
               aaveVaults={aaveVaultsForAsset(meta.symbol)}
               aave={aave}
               onAaveSettled={handleAaveSettled}
+              blend={blend}
               solanaUsdcAtomic={solanaBalances?.usdcAtomic ?? "0"}
               onMorphoSettled={handleMorphoSettled}
               balances={balances}
@@ -440,21 +465,23 @@ function VaultsCard({
   );
 }
 
-type Venue = "jupiter" | "kamino" | "morpho" | "aave";
+type Venue = "jupiter" | "kamino" | "morpho" | "aave" | "blend";
 
 const VENUE_NAMES: Record<Venue, string> = {
   jupiter: "Jupiter",
   kamino: "Kamino",
   morpho: "Morpho",
   aave: "Aave",
+  blend: BLEND_VENUE_NAME,
 };
 
 // One track per column, shared by the header and every row so they cannot
 // drift. Was a 12-column grid with col-spans; a fifth venue did not divide
 // into 12, so the tracks are named instead. The asset column is the widest,
-// the chevron is fixed at the icon's width.
+// the chevron is fixed at the icon's width. Six repeated tracks: five venues
+// (Jupiter, Kamino, Morpho, Aave, Blend) and the deposit column.
 const EARN_GRID =
-  "grid grid-cols-[minmax(0,2.4fr)_repeat(5,minmax(0,1.6fr))_1.25rem] items-center gap-2";
+  "grid grid-cols-[minmax(0,2.4fr)_repeat(6,minmax(0,1.6fr))_1.25rem] items-center gap-2";
 
 function VaultRow({
   meta,
@@ -467,6 +494,7 @@ function VaultRow({
   aaveVaults,
   aave,
   onAaveSettled,
+  blend,
   solanaUsdcAtomic,
   onMorphoSettled,
   balances,
@@ -489,6 +517,7 @@ function VaultRow({
   aaveVaults: readonly AaveVault[];
   aave: AaveEarn;
   onAaveSettled: () => Promise<void>;
+  blend: BlendEarn;
   solanaUsdcAtomic: string;
   onMorphoSettled: () => Promise<void>;
   balances: EarnWalletBalances | null;
@@ -529,6 +558,11 @@ function VaultRow({
   const aavePositionUi = Number(
     atomicToUiString(aaveTotalPositionAtomic(aaveVaults, aave.positions).toString(), 6),
   );
+  // Blend is one strategy across several vaults, so the column carries the
+  // strategy's rate (BlendVaultsCard). The position read is not built yet.
+  const blendUsable = blendAcceptsAsset(meta.symbol) && blend.vaults.length > 0;
+  const blendApy = blendUsable ? blend.apy : null;
+  const blendPositionUi = 0;
 
   // Whichever venue pays more gets the green rate. This falls out of the data
   // rather than being asserted anywhere, so the USDT row correctly shows
@@ -540,18 +574,24 @@ function VaultRow({
     ["kamino", kaminoApy],
     ["morpho", morphoApy],
     ["aave", aaveApy],
+    ["blend", blendApy],
   ];
   const bestApy = Math.max(...apyByVenue.map(([, a]) => a ?? -Infinity));
   const leader =
     apyByVenue.find(([, a]) => a !== null && a === bestApy)?.[0] ?? null;
 
   const totalPositionUi =
-    positionUi + kaminoPositionUi + morphoPositionUi + aavePositionUi;
+    positionUi +
+    kaminoPositionUi +
+    morphoPositionUi +
+    aavePositionUi +
+    blendPositionUi;
   const positionByVenue: Array<[Venue, number]> = [
     ["jupiter", positionUi],
     ["kamino", kaminoPositionUi],
     ["morpho", morphoPositionUi],
     ["aave", aavePositionUi],
+    ["blend", blendPositionUi],
   ];
   const heldVenues = positionByVenue.filter(([, p]) => p > 0);
   const decimalsShown = meta.decimals === 9 ? 4 : 2;
@@ -564,6 +604,8 @@ function VaultRow({
     kamino: kaminoUsable,
     morpho: morphoUsable,
     aave: aaveUsable,
+    // Rate shown, form not built yet: Blend cannot be the expanded venue.
+    blend: false,
   };
 
   // Default the expanded form to the venue the user already has money in, then
@@ -573,9 +615,14 @@ function VaultRow({
   const suggested: Venue =
     heldVenues.length === 1 ? heldVenues[0][0] : (leader ?? "jupiter");
   // A venue that went unusable under the user (no vault, rates unread) falls
-  // back rather than leaving an empty panel on screen.
+  // back rather than leaving an empty panel on screen. The suggestion gets
+  // the same check: a venue can lead on rate without having a form to open.
   const venue: Venue =
-    picked && usableByVenue[picked] ? picked : suggested;
+    picked && usableByVenue[picked]
+      ? picked
+      : usableByVenue[suggested]
+        ? suggested
+        : "jupiter";
 
   // Which Morpho vault the panel is on. Defaults to the one already holding a
   // deposit, then to the best rate, and only sticks once the user picks.
@@ -623,7 +670,9 @@ function VaultRow({
         ? kaminoPositionUi
         : venue === "morpho"
           ? morphoVaultPositionUi
-          : aaveVaultPositionUi;
+          : venue === "aave"
+            ? aaveVaultPositionUi
+            : blendPositionUi;
   const mode: EarnMode =
     pickedMode === "withdraw" && venuePositionUi <= 0 ? "deposit" : pickedMode;
   const venueApy =
@@ -633,7 +682,9 @@ function VaultRow({
         ? kaminoApy
         : venue === "morpho"
           ? morphoVaultApy
-          : aaveVaultApyValue;
+          : venue === "aave"
+            ? aaveVaultApyValue
+            : blendApy;
   const venueLabel =
     venue === "jupiter"
       ? "Jupiter Lend"
@@ -641,7 +692,9 @@ function VaultRow({
         ? (kaminoMeta?.name ?? "Kamino")
         : venue === "morpho"
           ? (morphoVault?.name ?? "Morpho")
-          : (aaveVault?.name ?? "Aave");
+          : venue === "aave"
+            ? (aaveVault?.name ?? "Aave")
+            : BLEND_VENUE_NAME;
 
   return (
     <div>
@@ -718,6 +771,17 @@ function VaultRow({
           note={aaveBest ? aaveBest.vault.name : "No vault"}
         />
 
+        <VenueCell
+          apy={blendApy}
+          leads={leader === "blend"}
+          subtitle={blendUsable ? `${blend.vaults.length} vaults` : null}
+          note={
+            blendUsable
+              ? blend.chainIds.map(blendChainName).join(" · ")
+              : "No vault"
+          }
+        />
+
         <div className="text-right font-mono text-xs tabular-nums text-white">
           {totalPositionUi > 0 ? (
             <>
@@ -763,11 +827,13 @@ function VaultRow({
             kaminoApy={kaminoApy}
             morphoApy={morphoVaultApy}
             aaveApy={aaveVaultApyValue}
+            blendApy={blendApy}
             kaminoName={kaminoMeta?.name}
             kaminoUsable={kaminoUsable}
             jupiterUsable={Boolean(vault)}
             morphoUsable={morphoUsable}
             aaveUsable={aaveUsable}
+            blendUsable={usableByVenue.blend}
           />
 
           {venue === "jupiter" && vault && (
@@ -975,11 +1041,13 @@ function VenueTabs({
   kaminoApy,
   morphoApy,
   aaveApy,
+  blendApy,
   kaminoName,
   kaminoUsable,
   jupiterUsable,
   morphoUsable,
   aaveUsable,
+  blendUsable,
 }: {
   venue: Venue;
   onPick: (v: Venue) => void;
@@ -989,11 +1057,13 @@ function VenueTabs({
   // with the panel it opens. Same for Aave.
   morphoApy: number | null;
   aaveApy: number | null;
+  blendApy: number | null;
   kaminoName: string | undefined;
   kaminoUsable: boolean;
   jupiterUsable: boolean;
   morphoUsable: boolean;
   aaveUsable: boolean;
+  blendUsable: boolean;
 }) {
   const options: Array<{
     id: Venue;
@@ -1025,10 +1095,16 @@ function VenueTabs({
       apy: aaveApy,
       enabled: aaveUsable,
     },
+    {
+      id: "blend",
+      label: BLEND_VENUE_NAME,
+      apy: blendApy,
+      enabled: blendUsable,
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+    <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
       {options.map((o) => (
         <button
           key={o.id}
@@ -1222,7 +1298,22 @@ function VaultForm({
                 setRedeemAll(atMax && !positionAtomic.gt(vaultLiquidityAtomic));
                 reset();
               }}
-              className="w-full accent-aeras-blue"
+              // Unitless 0-1 for .aeras-range, which uses it to keep the fill
+              // edge under the thumb's centre. Guarded on a zero maximum: the
+              // ceiling is capped by vault liquidity, which can be empty while
+              // a position still exists.
+              style={
+                {
+                  "--range-progress":
+                    maxWithdrawUi > 0
+                      ? Math.min(
+                          1,
+                          Math.max(0, (Number(input) || 0) / maxWithdrawUi),
+                        )
+                      : 0,
+                } as CSSProperties
+              }
+              className="aeras-range"
             />
           </div>
         ) : (
@@ -1488,7 +1579,21 @@ function KaminoVaultForm({
                   setWithdrawAll(atMax);
                   reset();
                 }}
-                className="w-full accent-aeras-blue"
+                // Unitless 0-1 for .aeras-range, which uses it to keep the fill
+                // edge under the thumb's centre. Guarded on a zero maximum: a
+                // dust position can round to 0 at display precision.
+                style={
+                  {
+                    "--range-progress":
+                      maxWithdrawUi > 0
+                        ? Math.min(
+                            1,
+                            Math.max(0, (Number(input) || 0) / maxWithdrawUi),
+                          )
+                        : 0,
+                  } as CSSProperties
+                }
+                className="aeras-range"
               />
             </div>
           ) : (

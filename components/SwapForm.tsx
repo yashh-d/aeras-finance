@@ -28,6 +28,7 @@ import {
 } from "@/lib/jupiter/pay-assets";
 import { bridgeUsdcToSolana } from "@/lib/jupiter/pay-bridge";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { tokenLogoBySymbol } from "@/lib/tokens/logos";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
 import {
   atomicToUiString,
@@ -74,6 +75,7 @@ export function SwapForm({
   onBalanceChange,
   modeToggle,
   autoFocus = false,
+  variant = "inline",
 }: {
   ticker: XStock;
   walletAddress: string;
@@ -88,6 +90,12 @@ export function SwapForm({
   // own. Owned by AssetTradePanel, which is what the switch actually controls.
   modeToggle?: ReactNode;
   autoFocus?: boolean;
+  // "inline" is the ticket Home and Markets draw under an asset row: the
+  // figure on the left with its unit beside it, direction on the right.
+  // "hero" is the Terminal's: a full-width buy/sell control, the figure large
+  // and centred with the unit above, and fraction chips under it. Same state
+  // and same money path; only the layout differs.
+  variant?: "inline" | "hero";
 }) {
   const [direction, setDirection] = useState<Direction>("buy");
   const [quoteAsset, setQuoteAsset] = useState<QuoteAsset>("USDC");
@@ -319,6 +327,28 @@ export function SwapForm({
     setStatus({ kind: "idle" });
   }
 
+  const canFill = inputBalanceExact != null && Number(inputBalanceExact) > 0;
+
+  // Fill the field with a fraction of what the wallet holds, in whichever
+  // unit the field is denominated in. In dollars the figure is FLOORED to a
+  // cent: dividing an unrounded dollar figure back by the price can land a
+  // hair above the balance and fail its own check with "Need 0.1188, have
+  // 0.1188". The whole balance is the exact string, so Max is always strictly
+  // inside what the wallet holds.
+  function fillFraction(fraction: number) {
+    if (!inputBalanceExact) return;
+    const whole = fraction >= 1;
+    const tokens = whole ? Number(inputBalanceExact) : Number(inputBalanceExact) * fraction;
+    setAmountInput(
+      usdMode && inputPriceUsd
+        ? String(Math.floor(tokens * inputPriceUsd * 100) / 100)
+        : whole
+          ? inputBalanceExact
+          : trimTo(tokens, inputDecimals),
+    );
+    reset();
+  }
+
   const inputAmountFmtDigits = inputSymbol === "USDC" ? 2 : inputSymbol === "SOL" ? 4 : 4;
 
   // Nothing under the amount unless the amount is actually a problem. The
@@ -385,10 +415,275 @@ export function SwapForm({
   })();
 
   const payMenu = (
-    <div className="w-32">
-      <FundMenu label={payAsset?.symbol ?? "USDC"} groups={payGroups} />
+    // Content-sized in the hero ticket so the balance fits beside it on one
+    // line in a rail; the inline ticket keeps the fixed width its row is
+    // laid out around.
+    <div className={variant === "hero" ? "shrink-0" : "w-32"}>
+      <FundMenu
+        label={payAsset?.symbol ?? "USDC"}
+        logo={payAsset?.logo ?? tokenLogoBySymbol("USDC")}
+        groups={payGroups}
+      />
     </div>
   );
+
+  // The primary action's colour. Blue in the inline ticket, as everywhere
+  // else on Home; in the hero ticket it follows direction, the way the perps
+  // ticket colours long and short, so the two Terminal tickets agree.
+  const primaryClass =
+    variant === "hero"
+      ? isBuy
+        ? "bg-aeras-positive hover:bg-aeras-positive/90"
+        : "bg-aeras-negative hover:bg-aeras-negative/90"
+      : "bg-aeras-blue hover:bg-aeras-blue-medium";
+
+  const statusBlock = (
+    <>
+      {status.kind === "quoted" && (
+        <QuoteCard
+          quote={status.quote}
+          inputSymbol={inputSymbol}
+          inputDecimals={inputDecimals}
+          outputSymbol={outputSymbol}
+          outputDecimals={outputDecimals}
+          marketPrice={isBuy ? marketPrice : undefined}
+          solPrice={solPrice}
+        />
+      )}
+      {status.kind === "done" && <SuccessCard signature={status.signature} />}
+      {status.kind === "error" && (
+        <p className="rounded-lg bg-white/5 px-3 py-2 text-sm text-aeras-negative">
+          {status.message}
+        </p>
+      )}
+    </>
+  );
+
+  const actions = (
+    <>
+      {(status.kind === "idle" ||
+        status.kind === "quoting" ||
+        status.kind === "error") && (
+        <button
+          type="button"
+          onClick={handlePreview}
+          disabled={
+            belowMin || insufficient || status.kind === "quoting"
+          }
+          className={`aeras-press w-full rounded-lg px-4 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 ${primaryClass}`}
+        >
+          {status.kind === "quoting"
+            ? "Fetching quote..."
+            : variant === "hero"
+              ? `Preview ${isBuy ? "buy" : "sell"}`
+              : "Preview"}
+        </button>
+      )}
+
+      {status.kind === "quoted" && (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={reset}
+            className="aeras-press flex-1 rounded-lg border border-white/10 px-4 py-3 text-sm font-medium text-white/60 hover:bg-white/5"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleBuy}
+            className={`aeras-press flex-1 rounded-lg px-4 py-3 text-sm font-medium text-white ${primaryClass}`}
+          >
+            {/* A bridged buy is two signatures on two chains, so the button
+                says so rather than presenting it as one click. */}
+            {!isBuy
+              ? "Confirm sell"
+              : bridged
+                ? `Bring to Solana and buy`
+                : "Confirm buy"}
+          </button>
+        </div>
+      )}
+
+      {status.kind === "buying" && (
+        <p className="text-center text-sm text-white/50">
+          Signing and submitting...
+        </p>
+      )}
+
+      {status.kind === "bridging" && (
+        <p className="text-center text-sm text-white/50">{status.message}</p>
+      )}
+
+      {status.kind === "done" && (
+        <button
+          type="button"
+          onClick={reset}
+          className="aeras-press w-full rounded-lg border border-white/10 px-4 py-3 text-sm font-medium text-white/60 hover:bg-white/5"
+        >
+          New order
+        </button>
+      )}
+    </>
+  );
+
+  // Dollars or tokens, for the figure being typed. Shared by both layouts.
+  const denomToggle = canPriceInUsd && (
+    <span
+      className={`inline-flex shrink-0 rounded-md border border-white/10 p-0.5 align-middle ${
+        variant === "hero" ? "" : "ml-2"
+      }`}
+    >
+      {(["usd", "token"] as const).map((d) => (
+        <button
+          key={d}
+          type="button"
+          onClick={() => {
+            if (d === denom) return;
+            // Carry the figure across rather than clearing it. Someone who
+            // typed $50 and switches to tokens meant the same trade, and an
+            // emptied field reads as a reset.
+            if (amountInput !== "" && Number.isFinite(typedNumber)) {
+              setAmountInput(
+                d === "usd"
+                  ? String(
+                      Math.floor(inputAmount * (inputPriceUsd ?? 0) * 100) / 100,
+                    )
+                  : trimTo(inputAmount, inputDecimals),
+              );
+            }
+            setDenom(d);
+            reset();
+          }}
+          className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
+            denom === d
+              ? "bg-white/10 text-white"
+              : "text-white/40 hover:text-white"
+          }`}
+        >
+          {d === "usd" ? "$" : inputSymbol}
+        </button>
+      ))}
+    </span>
+  );
+
+  const conversionLine =
+    typedAmount && canPriceInUsd && inputPriceUsd
+      ? usdMode
+        ? `≈ ${trimTo(inputAmount, inputDecimals)} ${inputSymbol}`
+        : `≈ $${(inputAmount * inputPriceUsd).toFixed(2)}`
+      : null;
+
+  const bridgeNote = bridged && payAsset && (
+    <p className="mt-2 text-xs text-white/45">
+      Paying from {payAsset.chainLabel}: this bridges to Solana first, so it
+      takes two signatures and costs {NATIVE_SYMBOL[payAsset.chain ?? ""] ?? "ETH"}{" "}
+      for gas there. If you stop after the bridge, the USDC is in your Solana
+      wallet.
+    </p>
+  );
+
+  if (variant === "hero") {
+    return (
+      <div className="space-y-4">
+        {/* Direction is the first decision, so it is the first control and
+            the widest: a full-width segmented pair, green for buy and red for
+            sell, with the market/limit switch beside it when the caller has
+            one. */}
+        <div className="flex items-center gap-2">
+          <div className="flex flex-1 rounded-xl border border-white/10 bg-black/30 p-1">
+            {(["buy", "sell"] as Direction[]).map((d) => (
+              <button
+                key={d}
+                type="button"
+                onClick={() => setDirection(d)}
+                aria-pressed={direction === d}
+                className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+                  direction === d
+                    ? d === "buy"
+                      ? "bg-aeras-positive/15 text-aeras-positive"
+                      : "bg-aeras-negative/15 text-aeras-negative"
+                    : "text-white/45 hover:text-white/75"
+                }`}
+              >
+                {d === "buy" ? "Buy" : "Sell"}
+              </button>
+            ))}
+          </div>
+          {modeToggle}
+        </div>
+
+        {/* The figure. Its unit is named above it rather than beside it, so a
+            five-digit dollar amount stays centred instead of pushing a label
+            off to the right. When the input has a price the unit line IS the
+            dollars-or-tokens switch, since that is the one control that
+            changes what the figure means. */}
+        <div className="py-2 text-center">
+          <div className="flex justify-center text-sm font-medium text-white/50">
+            {denomToggle || (usdMode ? "USD" : inputSymbol)}
+          </div>
+          <div className="mt-1">
+            <AmountField
+              id="amount"
+              hero
+              ariaLabel={`Amount to ${direction} in ${inputSymbol}`}
+              autoFocus={autoFocus}
+              value={amountInput}
+              prefix={usdMode ? "$" : undefined}
+              onChange={(v) => {
+                setAmountInput(v);
+                reset();
+              }}
+              unit={null}
+            />
+          </div>
+          <p className="mt-2 min-h-4 text-xs text-white/35">{conversionLine}</p>
+        </div>
+
+        {/* Fractions of the balance being spent: the pay asset on a buy, the
+            holding on a sell. Disabled rather than hidden with nothing to
+            spend, so the ticket keeps its shape while balances load. */}
+        <div className="grid grid-cols-4 gap-2">
+          {[0.25, 0.5, 0.75, 1].map((f) => (
+            <button
+              key={f}
+              type="button"
+              disabled={!canFill}
+              onClick={() => fillFraction(f)}
+              className="rounded-full bg-white/[0.06] py-2 text-sm font-medium text-white/80 transition-colors hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {f === 1 ? "Max" : `${f * 100}%`}
+            </button>
+          ))}
+        </div>
+
+        {/* One line, never wrapped: the source control, then the balance right
+            beside it, so the row reads "pay with X, of which you have N" as
+            one phrase. The unit is not repeated in the balance because the
+            control beside it already names it. */}
+        <div className="flex flex-nowrap items-center gap-x-3 text-xs text-white/40">
+          {isBuy ? (
+            <span className="flex shrink-0 items-center gap-1.5">Pay with {payMenu}</span>
+          ) : (
+            <span className="flex shrink-0 items-center gap-1.5">
+              Receive in
+              {quoteToggle}
+            </span>
+          )}
+          <span className="min-w-0 truncate">
+            {inputBalance == null
+              ? "..."
+              : `${inputBalance.toFixed(inputAmountFmtDigits)} available`}
+          </span>
+        </div>
+
+        {amountNote && <p className="text-xs text-aeras-negative">{amountNote}</p>}
+        {bridgeNote}
+        {statusBlock}
+        {actions}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
@@ -448,23 +743,7 @@ export function SwapForm({
             {inputBalanceExact != null && Number(inputBalanceExact) > 0 && (
               <button
                 type="button"
-                onClick={() => {
-                  // In dollars, Max is the balance's value FLOORED to a cent.
-                  // Flooring matters: dividing an unrounded dollar figure back
-                  // by the price can land a hair above the balance and fail
-                  // its own check with "Need 0.1188, have 0.1188". Floored, the
-                  // conversion is always strictly inside what the wallet holds.
-                  setAmountInput(
-                    usdMode && inputPriceUsd
-                      ? String(
-                          Math.floor(
-                            Number(inputBalanceExact) * inputPriceUsd * 100,
-                          ) / 100,
-                        )
-                      : inputBalanceExact,
-                  );
-                  reset();
-                }}
+                onClick={() => fillFraction(1)}
                 className="ml-1.5 text-white/60 underline-offset-2 hover:text-white hover:underline"
               >
                 Max
@@ -472,41 +751,7 @@ export function SwapForm({
             )}
             {/* Dollars or tokens. Only offered when the input has a price;
                 without one there is nothing to convert with. */}
-            {canPriceInUsd && (
-              <span className="ml-2 inline-flex rounded-md border border-white/10 p-0.5 align-middle">
-                {(["usd", "token"] as const).map((d) => (
-                  <button
-                    key={d}
-                    type="button"
-                    onClick={() => {
-                      if (d === denom) return;
-                      // Carry the figure across rather than clearing it.
-                      // Someone who typed $50 and switches to tokens meant the
-                      // same trade, and an emptied field reads as a reset.
-                      if (amountInput !== "" && Number.isFinite(typedNumber)) {
-                        setAmountInput(
-                          d === "usd"
-                            ? String(
-                                Math.floor(inputAmount * (inputPriceUsd ?? 0) * 100) /
-                                  100,
-                              )
-                            : trimTo(inputAmount, inputDecimals),
-                        );
-                      }
-                      setDenom(d);
-                      reset();
-                    }}
-                    className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors ${
-                      denom === d
-                        ? "bg-white/10 text-white"
-                        : "text-white/40 hover:text-white"
-                    }`}
-                  >
-                    {d === "usd" ? "$" : inputSymbol}
-                  </button>
-                ))}
-              </span>
-            )}
+            {denomToggle}
           </span>
           {!isBuy && (
             <span className="flex items-center gap-1.5">
@@ -520,12 +765,8 @@ export function SwapForm({
             the only thing on screen. A dollar amount of a $347 stock is a
             fraction of a token, and that fraction is worth seeing before the
             preview rather than after it. */}
-        {typedAmount && canPriceInUsd && inputPriceUsd && (
-          <p className="mt-1 text-xs text-white/35">
-            {usdMode
-              ? `≈ ${trimTo(inputAmount, inputDecimals)} ${inputSymbol}`
-              : `≈ $${(inputAmount * inputPriceUsd).toFixed(2)}`}
-          </p>
+        {conversionLine && (
+          <p className="mt-1 text-xs text-white/35">{conversionLine}</p>
         )}
 
         {amountNote && (
@@ -536,93 +777,11 @@ export function SwapForm({
             bridged buy costs gas on the source chain and cannot be atomic; if
             it is abandoned after leg one the money is Solana USDC in the
             user's own wallet, which is worth knowing up front. */}
-        {bridged && payAsset && (
-          <p className="mt-2 text-xs text-white/45">
-            Paying from {payAsset.chainLabel}: this bridges to Solana first, so
-            it takes two signatures and costs{" "}
-            {NATIVE_SYMBOL[payAsset.chain ?? ""] ?? "ETH"} for gas there. If you
-            stop after the bridge, the USDC is in your Solana wallet.
-          </p>
-        )}
+        {bridgeNote}
       </div>
 
-      {status.kind === "quoted" && (
-        <QuoteCard
-          quote={status.quote}
-          inputSymbol={inputSymbol}
-          inputDecimals={inputDecimals}
-          outputSymbol={outputSymbol}
-          outputDecimals={outputDecimals}
-          marketPrice={isBuy ? marketPrice : undefined}
-          solPrice={solPrice}
-        />
-      )}
-      {status.kind === "done" && <SuccessCard signature={status.signature} />}
-      {status.kind === "error" && (
-        <p className="rounded-lg bg-white/5 px-3 py-2 text-sm text-aeras-negative">
-          {status.message}
-        </p>
-      )}
-
-      {(status.kind === "idle" ||
-        status.kind === "quoting" ||
-        status.kind === "error") && (
-        <button
-          type="button"
-          onClick={handlePreview}
-          disabled={
-            belowMin || insufficient || status.kind === "quoting"
-          }
-          className="aeras-press w-full rounded-lg bg-aeras-blue px-4 py-3 text-sm font-medium text-white hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {status.kind === "quoting" ? "Fetching quote..." : "Preview"}
-        </button>
-      )}
-
-      {status.kind === "quoted" && (
-        <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={reset}
-            className="aeras-press flex-1 rounded-lg border border-white/10 px-4 py-3 text-sm font-medium text-white/60 hover:bg-white/5"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleBuy}
-            className="aeras-press flex-1 rounded-lg bg-aeras-blue px-4 py-3 text-sm font-medium text-white hover:bg-aeras-blue-medium"
-          >
-            {/* A bridged buy is two signatures on two chains, so the button
-                says so rather than presenting it as one click. */}
-            {!isBuy
-              ? "Confirm sell"
-              : bridged
-                ? `Bring to Solana and buy`
-                : "Confirm buy"}
-          </button>
-        </div>
-      )}
-
-      {status.kind === "buying" && (
-        <p className="text-center text-sm text-white/50">
-          Signing and submitting...
-        </p>
-      )}
-
-      {status.kind === "bridging" && (
-        <p className="text-center text-sm text-white/50">{status.message}</p>
-      )}
-
-      {status.kind === "done" && (
-        <button
-          type="button"
-          onClick={reset}
-          className="aeras-press w-full rounded-lg border border-white/10 px-4 py-3 text-sm font-medium text-white/60 hover:bg-white/5"
-        >
-          New order
-        </button>
-      )}
+      {statusBlock}
+      {actions}
     </div>
   );
 }

@@ -24,6 +24,8 @@
 import type { EIP1193Provider } from "@privy-io/react-auth";
 import { encodeFunctionData, erc20Abi } from "viem";
 
+import { privyAuthHeaders } from "@/lib/privy/access-token";
+
 import {
   executeSolanaConversion,
   quoteSolanaConversion,
@@ -119,11 +121,25 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+// `authenticated` is opt-in rather than the default because these two callers
+// want opposite things. /api/trustware/route needs the token: it resolves the
+// payout address from the identity and 401s without one. The receipt call must
+// NOT need it, because it runs after the source transaction is already
+// broadcast and retries hard, so a session that expired while a bridge settled
+// has to be able to keep reporting the hash rather than throwing on a missing
+// token and leaving a paid-for route untracked.
+async function postJson<T>(
+  path: string,
+  body: unknown,
+  authenticated = false,
+): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
     cache: "no-store",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(authenticated ? await privyAuthHeaders() : {}),
+    },
     body: JSON.stringify(body),
   });
   const parsed = (await res.json()) as T & { error?: string };
@@ -181,6 +197,7 @@ export async function executeConversion(
   const routeRes = await postJson<TrustwareQuoteResponse>(
     "/api/trustware/route",
     routeRequest(plan, fromAddress, solana.address),
+    true,
   );
 
   const intentId = extractIntentId(routeRes);
@@ -348,6 +365,7 @@ export async function executeEvmRoute(args: {
   const routeRes = await postJson<TrustwareQuoteResponse>(
     "/api/trustware/route",
     request,
+    true,
   );
   const intentId = extractIntentId(routeRes);
   const execution = extractExecution(routeRes);

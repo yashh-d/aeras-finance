@@ -10,6 +10,7 @@ import BN from "bn.js";
 
 import { usePrivy } from "@privy-io/react-auth";
 
+import { AmountField } from "@/components/AmountField";
 import { AssetLogo } from "@/components/AssetLogo";
 import { PriceChart } from "@/components/PriceChart";
 import {
@@ -46,11 +47,7 @@ import {
   type SwapQuote,
 } from "@/lib/jupiter/multiply";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
-import {
-  atomicToUiString,
-  getConnection,
-  type AccountBalances,
-} from "@/lib/solana/balances";
+import { getConnection, type AccountBalances } from "@/lib/solana/balances";
 import { SolanaSendError, sendAndConfirm } from "@/lib/solana/send-confirm";
 
 // Floor of the leverage slider. 1.0x is not a loop, and the step below it would
@@ -66,6 +63,10 @@ interface Props {
   balances: AccountBalances | null;
   prices: JupiterPriceMap | null;
   onRefresh: () => Promise<void> | void;
+  // Grid placement from the Earn panel, the same way the home tab's Card
+  // takes a column span. On the card itself rather than a wrapper so the
+  // grid stretches it to the row's height.
+  className?: string;
 }
 
 import { GLASS_SURFACE } from "@/lib/ui/surface";
@@ -75,6 +76,7 @@ export function LoopingCard({
   balances,
   prices,
   onRefresh,
+  className,
 }: Props) {
   const [selectedVaultId, setSelectedVaultId] = useState<number | null>(null);
   const [vaultsWithPosition, setVaultsWithPosition] = useState<Set<number>>(
@@ -111,16 +113,41 @@ export function LoopingCard({
     XSTOCK_BORROW_VAULTS.find((v) => v.vaultId === activeVaultId) ?? null;
 
   return (
-    <div className={`space-y-4 ${GLASS_SURFACE} p-5 lg:p-6`}>
-      {/* Section label only. "Leveraged exposure" was the title here and is now
-          the hero's label further down, where it sits on the number it names. */}
-      <div className="flex items-baseline justify-between">
+    <div className={`space-y-5 ${GLASS_SURFACE} p-5 lg:p-6 ${className ?? ""}`}>
+      {/* Section label with the vault picker beside it. One row rather than
+          two: the pills are a small control, and stacking them under the
+          label pushed the header the card actually opens on a row lower. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Leveraged Looping
         </div>
-        <span className="rounded-md bg-white/5 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-aeras-warning">
-          Medium risk
-        </span>
+        {/* Only when there is a choice to make. The header below names the
+            chosen asset at full size, so a lone pill would say it twice. */}
+        {eligible.length > 1 && (
+          <div className="flex flex-wrap gap-1.5">
+            {/* Company name and logo rather than the ticker: "Tesla" beside
+                its mark is what the asset lists on Home and Markets show, and
+                "TSLAx" on its own read as a code to pick from. */}
+            {eligible.map((v) => {
+              const identity = assetIdentity(v.collateralMint, v.collateralSymbol);
+              return (
+                <button
+                  key={v.vaultId}
+                  type="button"
+                  onClick={() => setSelectedVaultId(v.vaultId)}
+                  className={`flex items-center gap-2 rounded-lg py-1.5 pl-2 pr-3 text-xs font-medium transition-colors ${
+                    v.vaultId === activeVaultId
+                      ? "bg-white/15 text-white"
+                      : "bg-white/5 text-white/50 hover:text-white"
+                  }`}
+                >
+                  <AssetLogo xstock={identity} size={18} />
+                  {identity.name}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {eligible.length === 0 ? (
@@ -137,42 +164,22 @@ export function LoopingCard({
           to open a leveraged position.
         </p>
       ) : (
-        <>
-          {eligible.length > 1 && (
-            <div className="flex flex-wrap gap-1.5">
-              {eligible.map((v) => (
-                <button
-                  key={v.vaultId}
-                  type="button"
-                  onClick={() => setSelectedVaultId(v.vaultId)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                    v.vaultId === activeVaultId
-                      ? "bg-white/15 text-white"
-                      : "bg-white/5 text-white/50 hover:text-white"
-                  }`}
-                >
-                  {v.collateralSymbol}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {activeVault && walletAddress && (
-            <LoopController
-              key={activeVault.vaultId}
-              vault={activeVault}
-              walletAddress={walletAddress}
-              collateralBalance={
-                balances?.xstocks[activeVault.collateralMint] ?? 0
-              }
-              collateralBalanceAtomic={
-                balances?.xstocksAtomic[activeVault.collateralMint] ?? "0"
-              }
-              prices={prices}
-              onRefresh={onRefresh}
-            />
-          )}
-        </>
+        activeVault &&
+        walletAddress && (
+          <LoopController
+            key={activeVault.vaultId}
+            vault={activeVault}
+            walletAddress={walletAddress}
+            collateralBalance={
+              balances?.xstocks[activeVault.collateralMint] ?? 0
+            }
+            collateralBalanceAtomic={
+              balances?.xstocksAtomic[activeVault.collateralMint] ?? "0"
+            }
+            prices={prices}
+            onRefresh={onRefresh}
+          />
+        )
       )}
     </div>
   );
@@ -226,9 +233,12 @@ function LoopController({
     Math.floor(maxLeverage * 10) / 10,
   );
   const [leverage, setLeverage] = useState(() => Math.min(2, maxLeverage));
-  const [baseInput, setBaseInput] = useState<string>(() =>
-    collateralBalance > 0 ? collateralBalance.toFixed(4) : "0",
-  );
+  // Collateral is entered in dollars, not tokens: "0.0065 SPYx" says nothing
+  // about how much is being put up, and "$4.20" does. Null until the user
+  // types, which means the whole balance, so the field follows the live price
+  // and Max deposits the exact atomic balance rather than a dollar figure
+  // round-tripped through it.
+  const [baseUsdInput, setBaseUsdInput] = useState<string | null>(null);
   const [preview, setPreview] = useState<SwapQuote | null>(null);
   const [previewErr, setPreviewErr] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
@@ -385,8 +395,31 @@ function LoopController({
   const borrowRatePct = live ? live.borrowRateAnnual * 100 : null;
   const ltPct = vault.liquidationThreshold / 10;
 
-  const baseUi = Number(baseInput);
-  const baseUsd = oraclePrice != null ? baseUi * oraclePrice : null;
+  // What the whole balance is worth, floored to the cent so the prefilled
+  // figure is never larger than the balance it came from. The epsilon keeps a
+  // float like 28.999999999999996 from flooring a cent low.
+  const maxUsd =
+    oraclePrice != null && oraclePrice > 0
+      ? Math.floor(collateralBalance * oraclePrice * 100 + 1e-6) / 100
+      : null;
+  const baseUsdShown =
+    baseUsdInput ?? (maxUsd != null ? maxUsd.toFixed(2) : "");
+  const baseUsd =
+    maxUsd != null &&
+    baseUsdShown !== "" &&
+    Number.isFinite(Number(baseUsdShown))
+      ? Number(baseUsdShown)
+      : null;
+  // At or above the displayed maximum the whole balance goes in. Below it the
+  // token quantity is priced at the oracle, the same price the exposure and
+  // liquidation figures use.
+  const atMax = baseUsd != null && maxUsd != null && baseUsd >= maxUsd;
+  const baseUi =
+    baseUsd == null || oraclePrice == null || oraclePrice <= 0
+      ? NaN
+      : atMax
+        ? collateralBalance
+        : baseUsd / oraclePrice;
   const borrowUsd =
     baseUsd != null ? borrowUsdForLeverage(baseUsd, leverage) : null;
 
@@ -430,6 +463,10 @@ function LoopController({
     ? fromAtomicBN(new BN(preview.otherAmountThreshold), vault.collateralDecimals)
     : null;
   const exposureUi = swappedUi != null ? baseUi + swappedUi : null;
+  // What the header shows before the route has answered. Never used for
+  // anything that is signed.
+  const estimatedExposureUsd =
+    baseUsd != null && baseUsd > 0 ? baseUsd * leverage : null;
   const exposureUsd =
     exposureUi != null && oraclePrice != null ? exposureUi * oraclePrice : null;
   const projectedLtv =
@@ -448,7 +485,8 @@ function LoopController({
   const carryPct = borrowRatePct != null ? borrowRatePct * (leverage - 1) : null;
 
   const ticker = xstockByMint(vault.collateralMint);
-  const baseValid = Number.isFinite(baseUi) && baseUi > 0 && baseUi <= collateralBalance;
+  const baseValid =
+    baseUsd != null && maxUsd != null && baseUsd > 0 && baseUsd <= maxUsd;
   const submitting = openState.kind === "submitting";
   const canOpen =
     baseValid &&
@@ -467,10 +505,17 @@ function LoopController({
       const { base64Tx, nftId: newNft } = await buildMultiplyTx({
         vault,
         positionId: nftId ?? 0,
-        initialCollateralAtomic: clampToBalance(
-          toAtomicBN(baseUi, vault.collateralDecimals),
-          collateralBalanceAtomic,
-        ),
+        // Max deposits the exact atomic balance. Anything less is floored to
+        // a whole base unit and clamped, so a dollar figure converted through
+        // the price can never ask for more than the wallet holds.
+        initialCollateralAtomic: atMax
+          ? new BN(collateralBalanceAtomic)
+          : clampToBalance(
+              new BN(
+                String(Math.floor(baseUi * 10 ** vault.collateralDecimals)),
+              ),
+              collateralBalanceAtomic,
+            ),
         borrowUsdcAtomic: toAtomicBN(borrowUsd, vault.borrowDecimals),
         signerAddress: walletAddress,
         connection: conn,
@@ -531,120 +576,95 @@ function LoopController({
     position != null &&
     (position.collateralAtomic.gtn(0) || position.debtAtomic.gtn(0));
 
+  const identity = assetIdentity(vault.collateralMint, vault.collateralSymbol);
+
   return (
     <div className="space-y-4">
-      {/* Hero, matching the borrow market header in components/BorrowMarketDetail.
-          Exposure is the figure the leverage slider exists to move, and it used
-          to be the first of six small preview rows that appeared only once an
-          amount had been typed. Borrow leads with its headline number; this now
-          does the same. */}
-      <div className="flex flex-col items-center gap-3 text-center">
-        <AssetLogo
-          xstock={assetIdentity(vault.collateralMint, vault.collateralSymbol)}
-          size={44}
-        />
-        <div className="font-light text-xl tracking-tight text-white">
-          {vault.collateralSymbol}
+      {/* Identity left, the headline right: the header row the open position
+          card and the Home asset panel use. The logo and name are full size
+          because this is the card's subject, and the exposure sits beside
+          them because it is the figure the whole card exists to move.
+
+          The quote's figure, not base × leverage: exposure is sized from the
+          swap's guaranteed minimum out, so it is what the position will
+          actually be worth rather than what was asked for. That is why it
+          waits for the route instead of showing an idealised number and
+          correcting it a beat later. */}
+      <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <div className="flex items-center gap-3">
+          <AssetLogo xstock={identity} size={44} />
+          <div>
+            <div className="font-light text-xl tracking-tight text-white">
+              {identity.name}
+            </div>
+            <div className="text-xs text-white/50">{vault.collateralSymbol}</div>
+          </div>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+            Leveraged exposure
+          </div>
+          {/* Muted while it is only base × leverage, white once the route has
+              sized it. A figure that waits on the quote was blank whenever
+              the quote was slow or failed, which is worse than an estimate
+              that is visibly provisional. */}
+          <div
+            className={`mt-0.5 font-mono text-[2rem] font-light leading-none tracking-tight tabular-nums ${
+              exposureUsd != null ? "text-white" : "text-white/50"
+            }`}
+          >
+            {exposureUsd != null
+              ? `$${exposureUsd.toFixed(2)}`
+              : estimatedExposureUsd != null
+                ? `$${estimatedExposureUsd.toFixed(2)}`
+                : "—"}
+          </div>
         </div>
       </div>
 
-      <div className="space-y-1 text-center">
-        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-          Leveraged exposure
-        </div>
-        <div className="font-mono text-[2.25rem] font-light leading-none tracking-tight tabular-nums text-white">
-          {/* The quote's figure, not base × leverage. Exposure is sized from the
-              swap's guaranteed minimum out, so the headline is what the position
-              will actually be worth rather than what was asked for. That is why
-              it waits for the route instead of showing an idealised number and
-              correcting it a beat later. */}
-          {exposureUsd != null
-            ? `$${exposureUsd.toFixed(2)}`
-            : previewing
-              ? "…"
-              : "—"}
-        </div>
-        <div className="text-xs text-white/50">
-          {baseValid ? (
-            <>
-              <span className="font-mono tabular-nums text-white">
-                {baseUi.toFixed(4)}
-              </span>{" "}
-              {vault.collateralSymbol} at{" "}
-              <span className="font-mono tabular-nums text-white">
-                {leverage.toFixed(1)}×
-              </span>
-            </>
-          ) : (
-            <>Set an amount and leverage below</>
-          )}
-        </div>
-      </div>
+      {/* Header above, inputs below. */}
+      <div className="border-t border-white/10" />
 
-      <div className="grid grid-cols-2 gap-3 text-xs">
-        <Stat
-          label="Oracle price"
-          value={oraclePrice != null ? `$${oraclePrice.toFixed(2)}` : "…"}
-        />
-        <Stat
-          label="Borrow APY"
-          value={borrowRatePct != null ? `${borrowRatePct.toFixed(2)}%` : "…"}
-        />
-      </div>
-
-      {hasPosition && position && (
-        <OpenPositionCard
-          vault={vault}
-          position={position}
-          oraclePrice={oraclePrice}
-          basisUsd={loopRecord.basisUsd}
-          state={closeState}
-          onClose={handleClose}
-          onReset={() => setCloseState({ kind: "idle" })}
-        />
-      )}
-
-      {/* Base collateral to seed the loop. */}
+      {/* The amount first, the way the Markets ticket opens on its figure.
+          Same borderless field, same dollar sign, same quiet line beneath it
+          saying what is available. It is prefilled with the whole balance,
+          so the card opens on a number that can be signed rather than on a
+          zero that has to be replaced. */}
       <div>
-        <div className="mb-1 flex items-baseline justify-between">
-          <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-            Collateral to loop
-          </label>
-          <span className="font-mono text-[11px] text-white/50">
-            {collateralBalance.toFixed(4)} {vault.collateralSymbol}
-            <button
-              type="button"
-              onClick={() => {
-                setBaseInput(
-                  atomicToUiString(
-                    collateralBalanceAtomic,
-                    vault.collateralDecimals,
-                  ),
-                );
-                setOpenState({ kind: "idle" });
-              }}
-              className="ml-1 text-white/70 underline-offset-2 hover:text-white hover:underline"
-            >
-              Max
-            </button>
+        <AmountField
+          ariaLabel="Collateral to loop in US dollars"
+          value={baseUsdShown}
+          prefix="$"
+          placeholder="0"
+          onChange={(v) => {
+            setBaseUsdInput(v);
+            if (openState.kind !== "idle") setOpenState({ kind: "idle" });
+          }}
+          unit={<span className="text-sm text-white/40">USD</span>}
+        />
+        <div className="mt-2 flex items-center justify-between gap-3 text-xs text-white/40">
+          <span>
+            {maxUsd != null ? `$${maxUsd.toFixed(2)} available` : "…"}
+            {maxUsd != null && maxUsd > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setBaseUsdInput(null);
+                  setOpenState({ kind: "idle" });
+                }}
+                className="ml-1.5 text-white/60 underline-offset-2 hover:text-white hover:underline"
+              >
+                Max
+              </button>
+            )}
           </span>
-        </div>
-        <div className="relative">
-          <input
-            type="number"
-            inputMode="decimal"
-            step="any"
-            min={0}
-            value={baseInput}
-            onChange={(e) => {
-              setBaseInput(e.target.value);
-              if (openState.kind !== "idle") setOpenState({ kind: "idle" });
-            }}
-            className="block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 pr-16 font-mono text-sm tabular-nums text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none focus:ring-2 focus:ring-aeras-blue-soft"
-          />
-          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-medium text-white/50">
-            {vault.collateralSymbol}
-          </span>
+          {/* The same figure in tokens, so the dollar amount being typed is
+              never the only thing on screen. */}
+          {Number.isFinite(baseUi) && baseUi > 0 && (
+            <span className="font-mono tabular-nums">
+              ≈ {baseUi.toFixed(4)} {vault.collateralSymbol}
+            </span>
+          )}
         </div>
       </div>
 
@@ -689,6 +709,18 @@ function LoopController({
         </div>
       </div>
 
+      {hasPosition && position && (
+        <OpenPositionCard
+          vault={vault}
+          position={position}
+          oraclePrice={oraclePrice}
+          basisUsd={loopRecord.basisUsd}
+          state={closeState}
+          onClose={handleClose}
+          onReset={() => setCloseState({ kind: "idle" })}
+        />
+      )}
+
       {/* Preview before entering. */}
       {baseValid && borrowUsd != null && borrowUsd >= 1 && (
         <div className="space-y-3 rounded-lg border border-white/10 bg-white/5 px-3 py-3 text-xs">
@@ -701,6 +733,17 @@ function LoopController({
             </div>
           )}
 
+          {/* Market terms first. These were two stat boxes above the amount,
+              which put the venue's numbers ahead of the user's; here they sit
+              with the rest of the figures the route produced. */}
+          <PreviewRow
+            label="Oracle price"
+            value={oraclePrice != null ? `$${oraclePrice.toFixed(2)}` : "…"}
+          />
+          <PreviewRow
+            label="Borrow APY"
+            value={borrowRatePct != null ? `${borrowRatePct.toFixed(2)}%` : "…"}
+          />
           {/* Quantity only. The dollar value of the same exposure is the
               headline above, and printing it twice invites the two to drift. */}
           <PreviewRow
@@ -768,13 +811,20 @@ function LoopController({
         onClick={handleOpen}
         className="w-full rounded-xl bg-aeras-blue px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-50"
       >
+        {/* Verb first, then the figure it acts on in the format the leverage
+            row above states it. Three things this wording is avoiding. "Open
+            looped position" described the mechanism rather than the action,
+            the same reason the borrow pill stopped saying "Borrow $14.12
+            against TSLAx". "Loop" names how the position is built, not what
+            the user is choosing. And a bare "Leverage 2.0×" reads as a second
+            copy of the row above it, which is labelled "Leverage" with the
+            same figure on its right. Adding to an open position is the same
+            transaction as opening one, so only the verb changes. */}
         {recovering
-          ? "Checking for an existing position…"
+          ? "Checking…"
           : submitting
-            ? "Signing and submitting…"
-            : hasPosition
-              ? "Add leverage"
-              : "Open looped position"}
+            ? "Submitting…"
+            : `${hasPosition ? "Add" : "Open"} at ${leverage.toFixed(1)}×`}
       </button>
     </div>
   );

@@ -80,15 +80,19 @@ function statFor(route: BorrowRoute, stats: Map<string, MarketStat>) {
   return undefined;
 }
 
-export function useStrategyRates(): StrategyRatesState {
-  const { stats, loading: statsLoading } = useBorrowMarketStats();
+// `enabled` false skips every read and leaves the rates empty. The asset
+// surfaces pass it for an asset with no borrow route, which has nothing to
+// show and should not cost a read of every market.
+export function useStrategyRates(enabled = true): StrategyRatesState {
+  const { stats, loading: statsLoading } = useBorrowMarketStats(enabled);
   const [earnOptions, setEarnOptions] = useState<UsdcEarnOption[]>([]);
   const [supplyApyByReserve, setSupplyApyByReserve] = useState<
     Map<string, number>
   >(new Map());
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(enabled);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
     (async () => {
       const options: UsdcEarnOption[] = [];
@@ -158,7 +162,7 @@ export function useStrategyRates(): StrategyRatesState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   const rows = useMemo<StrategyRates[]>(() => {
     const out: StrategyRates[] = [];

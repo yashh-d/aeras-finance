@@ -121,11 +121,80 @@ const ETHEREUM_CHAIN = "1";
 // negative through to the upstream.
 const ATOMIC_AMOUNT = /^\d+$/;
 
-// Validate an incoming quote/route request. Returns an error string for the
-// caller to surface as a 400, or null when valid.
+// The shapes a request can legitimately be. Returned by the validator so the
+// route handler can decide where the money is allowed to land.
+export type TrustwareShape =
+  | "deposit"
+  | "funding"
+  | "return"
+  | "gold"
+  | "unwind"
+  | "swap"
+  | "ondo-margin"
+  | "lighter-margin";
+
+export type TrustwareValidation =
+  | { ok: true; shape: TrustwareShape }
+  | { ok: false; error: string };
+
+// Which embedded wallet a shape delivers to.
+//
+// `null` means the destination is NOT the user's own wallet and the caller's
+// toAddress stands. That is true of exactly two shapes, both of which send to
+// an address a third party provisioned, and both of which the caller has to
+// ask for by name through `intent`.
+//
+// This is the table that decides whether a payout address is caller-supplied,
+// so read it as the security boundary it is rather than as a lookup.
+const SHAPE_DESTINATION: Record<TrustwareShape, "solana" | "evm" | null> = {
+  deposit: "solana",
+  funding: "evm",
+  return: "solana",
+  gold: "evm",
+  unwind: "solana",
+  swap: null, // resolved per request: the destination chain decides. See below.
+  "ondo-margin": null,
+  "lighter-margin": null,
+};
+
+// The address a validated request is allowed to deliver to, or null to keep
+// the caller's own toAddress.
+//
+// Called by app/api/trustware/route with the wallets read off a verified Privy
+// access token. A shape that resolves to a wallet the user does not have yet
+// is an error rather than a fallback to the request body: silently honouring
+// the caller's address is the exact failure this exists to prevent.
+export function destinationForShape(
+  shape: TrustwareShape,
+  toChain: string,
+  embedded: { solana: string | null; evm: string | null },
+): { address: string } | { passthrough: true } | { error: string } {
+  const kind =
+    shape === "swap"
+      ? toChain === TRUSTWARE_SOLANA_CHAIN
+        ? "solana"
+        : "evm"
+      : SHAPE_DESTINATION[shape];
+
+  if (kind === null) return { passthrough: true };
+
+  const address = kind === "solana" ? embedded.solana : embedded.evm;
+  if (!address) {
+    return {
+      error:
+        kind === "solana"
+          ? "No Solana wallet has been provisioned on this account yet."
+          : "No EVM wallet has been provisioned on this account yet.",
+    };
+  }
+  return { address };
+}
+
+// Validate an incoming quote/route request. Returns the shape it matched, or an
+// error string for the caller to surface as a 400.
 //
 // This is the control that keeps the key-bearing proxy from being used as an
-// open cross-chain swap for arbitrary tokens. There are exactly seven shapes it
+// open cross-chain swap for arbitrary tokens. There are exactly eight shapes it
 // accepts, and all are allowlists resolved server-side from hardcoded
 // registries. None takes the caller's word for what is permissible:
 //
@@ -161,7 +230,7 @@ const ATOMIC_AMOUNT = /^\d+$/;
 //            scripts/ondo-collateral-check.mts. Unlike every other shape the
 //            recipient is not the user's own wallet, so the caller-supplied
 //            address is checked against Ondo before the route is built, in
-//            lib/ondo/fund.ts, not here.
+//            lib/ondo/fund.ts, not here. Requires `intent: "ondo-margin"`.
 //
 //   unwind   an Ondo collateral token on Ethereum -> a curated Solana xStock,
 //            delivered to a Solana address. The reverse of margin, and the last
@@ -176,9 +245,23 @@ const ATOMIC_AMOUNT = /^\d+$/;
 //
 // Adding a token to lib/trustware/swap-tokens.ts widens this boundary, so that
 // file is the thing to review, not this function.
+//
+// **Where the money lands is no longer part of the request.** Six of the eight
+// shapes deliver to the user's own embedded wallet, and app/api/trustware/route
+// overwrites toAddress with the address on the verified Privy identity rather
+// than validating what was sent. The two that cannot (an Ondo deposit address,
+// a Lighter intent address) have to name themselves through `intent`, and are
+// the only shapes where a caller-supplied destination survives. See
+// destinationForShape above and the `intent` branches below.
 export function validateTrustwareRequest(
   req: Partial<TrustwareQuoteRequest>,
-): string | null {
+): TrustwareValidation {
+  const fail = (error: string): TrustwareValidation => ({ ok: false, error });
+  const match = (shape: TrustwareShape): TrustwareValidation => ({
+    ok: true,
+    shape,
+  });
+
   const required: (keyof TrustwareQuoteRequest)[] = [
     "fromChain",
     "fromToken",
@@ -187,49 +270,77 @@ export function validateTrustwareRequest(
     "toAddress",
   ];
   for (const field of required) {
-    if (!req[field]) return `${field} is required`;
+    if (!req[field]) return fail(`${field} is required`);
   }
   if (!ATOMIC_AMOUNT.test(req.fromAmount!)) {
-    return "fromAmount must be an atomic decimal string";
+    return fail("fromAmount must be an atomic decimal string");
   }
-  // Both addresses are echoed to the upstream and one of them is a payout
-  // destination, so neither is taken on trust.
+  // Both addresses are echoed to the upstream, so neither is taken on trust
+  // even though only one of them can still be a caller-chosen payout
+  // destination once the route handler has resolved the identity.
   if (!isSupportedAddress(req.fromAddress!)) {
-    return "fromAddress is not a supported address";
+    return fail("fromAddress is not a supported address");
   }
   if (!isSupportedAddress(req.toAddress!)) {
-    return "toAddress is not a supported address";
+    return fail("toAddress is not a supported address");
   }
-  if (!req.toChain) return "toChain is required";
-  if (!req.toToken) return "toToken is required";
+  if (!req.toChain) return fail("toChain is required");
+  if (!req.toToken) return fail("toToken is required");
 
+  // The two shapes that keep the caller's toAddress have to be asked for by
+  // name, and are the only shapes considered when they are.
+  //
+  // This exists because inferring them is genuinely ambiguous. Ethereum USDC
+  // is BOTH an Ondo margin destination (ONDO_MARGIN_TOKENS.USDC) and a curated
+  // swap token, so `to Ethereum USDC` alone cannot say whether the money is
+  // going to an Ondo deposit address or back to the user's own wallet. While
+  // the margin shapes were tried first and every shape kept the caller's
+  // address, that ambiguity cost nothing. It decides everything now: reading a
+  // swap as a margin deposit would hand the caller back control of where the
+  // funds land, which is the whole thing this is closing.
+  //
+  // Declaring an intent the request does not fit is an error rather than a
+  // fall-through to another shape, for the same reason: a fall-through is how
+  // a passthrough destination gets attached to a request that never earned it.
+  if (req.intent === "ondo-margin") {
+    return req.toChain === ETHEREUM_CHAIN &&
+      ONDO_MARGIN_TOKEN_ADDRESSES.has(req.toToken.toLowerCase()) &&
+      EVM_ADDRESS.test(req.toAddress!)
+      ? match("ondo-margin")
+      : fail("that is not a valid Ondo margin deposit");
+  }
+  if (req.intent === "lighter-margin") {
+    const fromIsMarginUsdc =
+      (req.fromChain === TRUSTWARE_SOLANA_CHAIN && req.fromToken === USDC_MINT) ||
+      LIGHTER_MARGIN_SOURCES[req.fromChain!] === req.fromToken!.toLowerCase();
+    return fromIsMarginUsdc &&
+      LIGHTER_MARGIN_DESTINATIONS[req.toChain] === req.toToken.toLowerCase() &&
+      EVM_ADDRESS.test(req.toAddress!)
+      ? match("lighter-margin")
+      : fail("that is not a valid Lighter margin deposit");
+  }
+
+  // Everything below delivers to the user's own embedded wallet, so none of
+  // these branches inspects toAddress: the route handler overwrites it with
+  // the address on the verified identity. The chain still decides which of the
+  // two embedded wallets that is, in destinationForShape above.
   const isDeposit =
     req.toChain === TRUSTWARE_SOLANA_CHAIN && ALLOWED_DEST_MINTS.has(req.toToken);
-  if (isDeposit) return null;
+  if (isDeposit) return match("deposit");
 
   const isMorphoFunding =
     req.toChain === MONAD_CHAIN &&
-    MONAD_FUNDING_TOKENS.has(req.toToken.toLowerCase()) &&
-    EVM_ADDRESS.test(req.toAddress!);
-  if (isMorphoFunding) return null;
+    MONAD_FUNDING_TOKENS.has(req.toToken.toLowerCase());
+  if (isMorphoFunding) return match("funding");
 
   const isFundingReturn =
-    req.toChain === TRUSTWARE_SOLANA_CHAIN &&
-    req.toToken === USDC_MINT &&
-    SOLANA_ADDRESS.test(req.toAddress!);
-  if (isFundingReturn) return null;
-
-  const isOndoMargin =
-    req.toChain === ETHEREUM_CHAIN &&
-    ONDO_MARGIN_TOKEN_ADDRESSES.has(req.toToken.toLowerCase()) &&
-    EVM_ADDRESS.test(req.toAddress!);
-  if (isOndoMargin) return null;
+    req.toChain === TRUSTWARE_SOLANA_CHAIN && req.toToken === USDC_MINT;
+  if (isFundingReturn) return match("return");
 
   const isGoldCollateral =
     req.toChain === ETHEREUM_CHAIN &&
-    MORPHO_GOLD_COLLATERAL_TOKENS.has(req.toToken.toLowerCase()) &&
-    EVM_ADDRESS.test(req.toAddress!);
-  if (isGoldCollateral) return null;
+    MORPHO_GOLD_COLLATERAL_TOKENS.has(req.toToken.toLowerCase());
+  if (isGoldCollateral) return match("gold");
 
   // unwind  an Ondo collateral token on Ethereum -> the canonical Solana
   //         xStock, delivered to a Solana address. The reverse of `margin`,
@@ -251,56 +362,24 @@ export function validateTrustwareRequest(
   // This widens the boundary, so it is worth being precise about by how much:
   // the source is still the eight Ondo tokens and nothing else, the
   // destination is still the curated xStock list and nothing else, and the
-  // recipient must be a Solana address. It does not become a general bridge.
+  // recipient is the user's own Solana wallet. It does not become a general
+  // bridge.
   const isOndoUnwind =
     req.fromChain === ETHEREUM_CHAIN &&
     ONDO_MARGIN_TOKEN_ADDRESSES.has(req.fromToken!.toLowerCase()) &&
     req.toChain === TRUSTWARE_SOLANA_CHAIN &&
-    XSTOCK_MINTS.has(req.toToken) &&
-    SOLANA_ADDRESS.test(req.toAddress!);
-  if (isOndoUnwind) return null;
-
-  // lighter margin  canonical USDC the user holds -> canonical USDC on a chain
-  //                 Lighter accepts deposits from, delivered to the intent
-  //                 address Lighter provisioned for the user.
-  //
-  // The source was Solana USDC and nothing else while this leg only carried the
-  // proceeds of a borrow. The Add-margin card now funds from any wallet the
-  // user actually holds USDC in, so the source is an allowlist of canonical
-  // USDC contracts (LIGHTER_MARGIN_SOURCES) rather than a single mint. Both
-  // sides stay pinned: a caller cannot use this to move an arbitrary token, in
-  // either direction.
-  //
-  // The recipient is NOT the user's own wallet, which it shares with the Ondo
-  // margin shape above and for the same reason: Lighter's intent address is
-  // derived from the user's L1 address and credits any USDC sent to it, so
-  // routing the bridge straight at one removes the gas problem entirely. The
-  // user never holds ETH on Arbitrum, never switches chains, and signs once on
-  // Solana. Routing to their own wallet instead would strand the funds behind an
-  // EVM transfer they cannot pay for.
-  //
-  // The address itself is not validated here beyond its shape, because this
-  // route handler cannot tell a real Lighter intent address from any other. That
-  // guarantee comes from the caller fetching it over /api/lighter/account, which
-  // gets it from Lighter and never from the browser.
-  const fromIsMarginUsdc =
-    (req.fromChain === TRUSTWARE_SOLANA_CHAIN && req.fromToken === USDC_MINT) ||
-    LIGHTER_MARGIN_SOURCES[req.fromChain!] === req.fromToken!.toLowerCase();
-  const isLighterMargin =
-    fromIsMarginUsdc &&
-    LIGHTER_MARGIN_DESTINATIONS[req.toChain] === req.toToken.toLowerCase() &&
-    EVM_ADDRESS.test(req.toAddress!);
-  if (isLighterMargin) return null;
+    XSTOCK_MINTS.has(req.toToken);
+  if (isOndoUnwind) return match("unwind");
 
   const from = findSwapToken(req.fromChain!, req.fromToken!);
   const to = findSwapToken(req.toChain, req.toToken);
   if (!from || !to) {
-    return "that pair is not available to swap";
+    return fail("that pair is not available to swap");
   }
   if (isSamePair(from, to)) {
-    return "the source and destination are the same token";
+    return fail("the source and destination are the same token");
   }
-  return null;
+  return match("swap");
 }
 
 const UPSTREAM_TIMEOUT_MS = 12_000;

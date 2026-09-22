@@ -28,84 +28,39 @@ import {
   type OpenBorrowPosition,
 } from "@/lib/borrow/use-borrow-summary";
 import {
-  EARN_ASSETS,
-  fetchEarnVaultsViaProxy,
-  fetchEarnWalletBalances,
-  positionAssetsAtomic,
-  sharesAtomic,
   type EarnVaultState,
 } from "@/lib/jupiter/earn";
 import { fetchLiveVaultStateViaProxy } from "@/lib/jupiter/borrow";
+import { earnRows, readEarnVenues } from "@/lib/positions/earn";
+import type {
+  PositionGroup,
+  PositionKind,
+  PositionRow,
+  PositionsView,
+  PositionTone,
+} from "@/lib/positions/types";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { assetIdentity, XSTOCKS, type XStock } from "@/lib/jupiter/xstocks";
 import { KAMINO_USDC_BORROW } from "@/lib/kamino/reserves";
 import type { KaminoReserveMetric } from "@/app/api/kamino/reserves/metrics/route";
 import {
-  KAMINO_EARN_VAULTS,
-  atomicToDecimalString,
-  fetchKaminoPositionsViaProxy,
-  fetchKaminoVaultsViaProxy,
-  sharesToTokensAtomic,
   type KaminoVaultState,
 } from "@/lib/kamino/kvaults";
 import { fetchLighterAccountState } from "@/lib/lighter/client";
 import { hedgeRouteFor as lighterHedgeRouteFor } from "@/lib/lighter/hedge";
 import type { LighterPosition } from "@/lib/lighter/types";
+import {
+  fetchAaveGoldPositions,
+  type AaveGoldPosition,
+} from "@/lib/aave/gold-client";
 import { fetchGoldPositions, type GoldPosition } from "@/lib/morpho/gold-client";
-import { fetchMorphoMetrics, fetchMorphoPositions } from "@/lib/morpho/client";
 import type { MorphoPosition, MorphoVaultMetric } from "@/lib/morpho/client";
-import { MONAD_USDC_VAULTS } from "@/lib/morpho/vaults";
 import { fetchOndoAccount } from "@/lib/ondo/client";
 import { hedgeRouteFor as ondoHedgeRouteFor } from "@/lib/ondo/hedge";
 import type { OndoPosition } from "@/lib/ondo/types";
-import { getConnection, type AccountBalances } from "@/lib/solana/balances";
+import { type AccountBalances } from "@/lib/solana/balances";
 import { VENUE_LOGOS, tokenLogoBySymbol } from "@/lib/tokens/logos";
 
-export type PositionKind = "borrow" | "earn" | "hedge" | "perps";
-
-export type PositionTone = "neutral" | "positive" | "negative" | "warning";
-
-export interface PositionRow {
-  key: string;
-  kind: PositionKind;
-  // The asset or market the position is in. Drawn as the row's title.
-  symbol: string;
-  // Where it is held, and on what chain when that is not Solana.
-  venue: string;
-  venueLogo?: string;
-  // Token identity for the row's logo. Absent for a perp on something we do not
-  // list as a token, which falls back to a monogram.
-  asset?: Pick<XStock, "symbol" | "name" | "logo">;
-  // The position in dollars. Debt owed for a borrow, deposited value for earn,
-  // notional for a perp. Groups total this, which is why each group states what
-  // its own total means.
-  usd: number;
-  // Size and direction, under the title.
-  detail: string;
-  // The one figure worth reading next to the value: a rate, a health factor,
-  // coverage, unrealized PnL. Null when the venue gives us none.
-  note: string | null;
-  tone: PositionTone;
-}
-
-export interface PositionGroup {
-  kind: PositionKind;
-  label: string;
-  rows: PositionRow[];
-  totalUsd: number;
-  // Totals mean different things per group, so each one says so rather than
-  // stacking four unlabelled dollar figures that do not add up to anything.
-  totalLabel: string;
-}
-
-export interface PositionsView {
-  groups: PositionGroup[];
-  count: number;
-  // True only until the first read of every venue lands. A refresh must not
-  // blank rows out from under someone reading them.
-  loading: boolean;
-  refresh: () => Promise<void>;
-}
 
 // Nothing here reads borrow capacity, so the convertible-holdings scan the
 // borrow panel feeds in is not needed. A module constant rather than a literal,
@@ -124,6 +79,7 @@ interface VenueSnapshot {
   morphoPositions: Map<string, MorphoPosition>;
   morphoMetrics: Map<string, MorphoVaultMetric>;
   gold: GoldPosition[];
+  aaveGold: AaveGoldPosition[];
   lighter: LighterPosition[];
   ondo: OndoPosition[];
 }
@@ -136,6 +92,7 @@ const EMPTY_SNAPSHOT: VenueSnapshot = {
   morphoPositions: new Map(),
   morphoMetrics: new Map(),
   gold: [],
+  aaveGold: [],
   lighter: [],
   ondo: [],
 };
@@ -156,63 +113,11 @@ async function readVenues(
   walletAddress: string | undefined,
   evmAddress: string | undefined,
 ): Promise<VenueSnapshot> {
-  const [earn, kamino, morpho, gold, lighter, ondo] = await Promise.all([
-    // Jupiter Lend earn. The vault list is public; the shares are a Solana read.
-    settled(
-      (async () => {
-        if (!walletAddress) return { vaults: [], shares: {} };
-        const connection = getConnection();
-        const [vaults, balances] = await Promise.all([
-          fetchEarnVaultsViaProxy(),
-          fetchEarnWalletBalances(walletAddress, connection),
-        ]);
-        return { vaults, shares: balances.byMint };
-      })(),
-      "jupiter earn",
-      { vaults: [] as EarnVaultState[], shares: {} as Record<string, string> },
-    ),
-    settled(
-      (async () => {
-        if (!walletAddress) {
-          return { vaults: [] as KaminoVaultState[], shares: new Map<string, string>() };
-        }
-        const [vaults, positions] = await Promise.all([
-          fetchKaminoVaultsViaProxy(),
-          fetchKaminoPositionsViaProxy(walletAddress),
-        ]);
-        return {
-          vaults,
-          shares: new Map(
-            [...positions.values()].map((p) => [
-              p.vaultAddress,
-              p.totalSharesAtomic,
-            ]),
-          ),
-        };
-      })(),
-      "kamino kvaults",
-      { vaults: [] as KaminoVaultState[], shares: new Map<string, string>() },
-    ),
-    settled(
-      (async () => {
-        if (!evmAddress) {
-          return {
-            positions: new Map<string, MorphoPosition>(),
-            metrics: new Map<string, MorphoVaultMetric>(),
-          };
-        }
-        const [{ positions }, metrics] = await Promise.all([
-          fetchMorphoPositions(evmAddress),
-          fetchMorphoMetrics(),
-        ]);
-        return { positions, metrics };
-      })(),
-      "morpho monad",
-      {
-        positions: new Map<string, MorphoPosition>(),
-        metrics: new Map<string, MorphoVaultMetric>(),
-      },
-    ),
+  // The three vault venues come from lib/positions/earn.ts, which the wallet
+  // card also reads. One implementation, so a deposit cannot be worth one thing
+  // on Home and another here.
+  const [earn, gold, aaveGold, lighter, ondo] = await Promise.all([
+    readEarnVenues(walletAddress, evmAddress),
     settled(
       (async () => {
         if (!evmAddress) return [] as GoldPosition[];
@@ -221,6 +126,15 @@ async function readVenues(
       })(),
       "morpho gold",
       [] as GoldPosition[],
+    ),
+    settled(
+      (async () => {
+        if (!evmAddress) return [] as AaveGoldPosition[];
+        const { positions } = await fetchAaveGoldPositions(evmAddress);
+        return [...positions.values()];
+      })(),
+      "aave gold",
+      [] as AaveGoldPosition[],
     ),
     settled(
       (async () => {
@@ -244,13 +158,9 @@ async function readVenues(
   ]);
 
   return {
-    earnVaults: earn.vaults,
-    earnShares: earn.shares,
-    kaminoVaults: new Map(kamino.vaults.map((v) => [v.address, v])),
-    kaminoShares: kamino.shares,
-    morphoPositions: morpho.positions,
-    morphoMetrics: morpho.metrics,
+    ...earn,
     gold,
+    aaveGold,
     lighter,
     ondo,
   };
@@ -321,9 +231,6 @@ async function readBorrowDetail(
 
 // ── Row construction ───────────────────────────────────────────────────────
 
-function pct(rate: number): string {
-  return `${(rate * 100).toFixed(2)}%`;
-}
 
 function healthTone(health: number | null): PositionTone {
   if (health == null) return "neutral";
@@ -345,6 +252,7 @@ function borrowRows(
   open: OpenBorrowPosition[],
   detail: BorrowDetail,
   gold: GoldPosition[],
+  aaveGold: AaveGoldPosition[],
   prices: JupiterPriceMap | null,
 ): PositionRow[] {
   const rows: PositionRow[] = open.map((p) => {
@@ -419,98 +327,26 @@ function borrowRows(
     });
   }
 
-  return rows.sort((a, b) => b.usd - a.usd);
-}
-
-function earnRows(snapshot: VenueSnapshot): PositionRow[] {
-  const rows: PositionRow[] = [];
-
-  // Jupiter Lend earn. Shares are held in the wallet, so the position is the
-  // share balance converted at the vault's current assets-per-share.
-  const vaultByMint = new Map(
-    snapshot.earnVaults.map((v) => [v.assetMint, v]),
-  );
-  for (const meta of EARN_ASSETS) {
-    const vault = vaultByMint.get(meta.assetMint);
-    const shares = sharesAtomic(meta, {
-      byMint: snapshot.earnShares,
-      solLamports: "0",
-    });
-    if (shares === "0") continue;
-    const assets = positionAssetsAtomic(shares, vault, meta.decimals);
-    const amount = Number(atomicToDecimalString(assets.toString(), meta.decimals));
-    if (!(amount > 0)) continue;
+  // Aave V4 on Ethereum. XAUt collateral against USDC, the second gold venue
+  // off Solana. The chain is named in the venue line for the same reason.
+  for (const g of aaveGold) {
+    const debt = Number(g.debtAtomic) / 10 ** USDC_DECIMALS;
+    if (debt <= 0) continue;
+    const collateral = Number(g.collateralAtomic) / 10 ** USDC_DECIMALS;
     rows.push({
-      key: `earn:jupiter:${meta.vaultId}`,
-      kind: "earn",
-      symbol: meta.symbol,
-      venue: "Jupiter Lend",
-      venueLogo: VENUE_LOGOS.jupiter,
-      asset: assetIdentity(meta.assetMint, meta.symbol),
-      usd: amount * (vault?.assetPriceUsd ?? 0),
-      detail: `${amount.toLocaleString(undefined, {
+      key: `borrow:aave-gold:${g.id}`,
+      kind: "borrow",
+      symbol: "XAUt",
+      venue: "Aave · Ethereum",
+      venueLogo: VENUE_LOGOS.aave,
+      asset: { symbol: "XAUt", name: "Tether Gold", logo: "/logos/xaut.png" },
+      usd: debt,
+      detail: `${collateral.toLocaleString(undefined, {
         maximumFractionDigits: 4,
-      })} ${meta.symbol}`,
-      note: vault ? `${pct(vault.apy)} APY` : null,
-      tone: "positive",
-    });
-  }
-
-  // Kamino K-Vaults. Deposits auto-stake, so the position comes from Kamino's
-  // own positions endpoint rather than from a share-token balance.
-  for (const meta of KAMINO_EARN_VAULTS) {
-    const shares = snapshot.kaminoShares.get(meta.address);
-    if (!shares || shares === "0") continue;
-    const state = snapshot.kaminoVaults.get(meta.address);
-    const tokens = sharesToTokensAtomic(shares, state, meta);
-    const amount = Number(atomicToDecimalString(tokens, meta.tokenDecimals));
-    if (!(amount > 0)) continue;
-    // Share price, not token price: a SOL vault's share is worth about 77 USD
-    // because it holds about 1.04 SOL.
-    const sharesUi = Number(
-      atomicToDecimalString(shares, meta.sharesDecimals),
-    );
-    rows.push({
-      key: `earn:kamino:${meta.address}`,
-      kind: "earn",
-      symbol: meta.name,
-      venue: "Kamino",
-      venueLogo: VENUE_LOGOS.kamino,
-      asset: assetIdentity(meta.tokenMint, meta.name),
-      usd: sharesUi * (state?.sharePriceUsd ?? 0),
-      detail: `${amount.toLocaleString(undefined, {
-        maximumFractionDigits: 4,
-      })} deposited`,
-      note: state ? `${pct(state.apy)} APY` : null,
-      tone: "positive",
-    });
-  }
-
-  // Morpho on Monad. The one earn position that settles off Solana: the shares
-  // sit in the embedded EVM wallet, so the chain is named.
-  for (const vault of MONAD_USDC_VAULTS) {
-    const position = snapshot.morphoPositions.get(vault.address.toLowerCase());
-    if (!position) continue;
-    const amount = Number(position.assetsAtomic) / 10 ** USDC_DECIMALS;
-    if (!(amount > 0)) continue;
-    const apy = snapshot.morphoMetrics.get(vault.address.toLowerCase())?.netApy;
-    rows.push({
-      key: `earn:morpho:${vault.address}`,
-      kind: "earn",
-      symbol: vault.name,
-      venue: "Morpho · Monad",
-      venueLogo: VENUE_LOGOS.morpho,
-      asset: {
-        symbol: "USDC",
-        name: "USD Coin",
-        logo: tokenLogoBySymbol("USDC"),
-      },
-      usd: amount,
-      detail: `${amount.toLocaleString(undefined, {
-        maximumFractionDigits: 2,
-      })} USDC`,
-      note: apy != null ? `${pct(apy)} APY` : null,
-      tone: "positive",
+      })} oz posted`,
+      note:
+        g.healthFactor != null ? `${g.healthFactor.toFixed(2)}× health` : null,
+      tone: healthTone(g.healthFactor),
     });
   }
 
@@ -757,6 +593,7 @@ export function usePositions({
       borrowPositions,
       borrowDetail,
       snapshot.gold,
+      snapshot.aaveGold,
       prices,
     );
     const earn = earnRows(snapshot);
@@ -808,3 +645,11 @@ export function usePositions({
     refresh,
   };
 }
+
+export type {
+  PositionGroup,
+  PositionKind,
+  PositionRow,
+  PositionsView,
+  PositionTone,
+};

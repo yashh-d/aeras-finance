@@ -1,9 +1,33 @@
 "use client";
 
-import { PrivyProvider } from "@privy-io/react-auth";
+import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import { base, bsc, mainnet, monad } from "viem/chains";
-import { useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
+
+import {
+  clearAccessTokenGetter,
+  registerAccessTokenGetter,
+} from "@/lib/privy/access-token";
+
+// Publishes usePrivy's getAccessToken to the non-React modules that need it.
+//
+// Renders nothing and exists only for the effect. It has to sit INSIDE
+// PrivyProvider, since usePrivy throws outside it, which is why this is a
+// component rather than a call in PrivyAuthProvider's own body.
+//
+// See lib/privy/access-token.ts for why the Trustware modules cannot simply
+// take a token as an argument.
+function RegisterAccessToken() {
+  const { getAccessToken } = usePrivy();
+
+  useEffect(() => {
+    registerAccessTokenGetter(getAccessToken);
+    return clearAccessTokenGetter;
+  }, [getAccessToken]);
+
+  return null;
+}
 
 export function PrivyAuthProvider({ children }: { children: ReactNode }) {
   const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
@@ -12,8 +36,6 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
       "NEXT_PUBLIC_PRIVY_APP_ID is not set. Add it to .env.local.",
     );
   }
-  // Set by next.config.ts from lib/solana/rpc-url.ts, so a Helius credential
-  // in the environment wins over the .env.local value of this name.
   const rpcUrl = process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
   if (!rpcUrl) {
     throw new Error(
@@ -21,17 +43,32 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  // Subscriptions run on their own endpoint, because the primary RPC does not
+  // serve any. Alchemy accepts the socket and then answers slotSubscribe,
+  // accountSubscribe, signatureSubscribe and programSubscribe alike with
+  // -32601 "Method not found" (verified 2026-09-14). That is load-bearing here:
+  // components/SendComposer.tsx and components/WithdrawPanel.tsx sign through
+  // Privy's own useSignAndSendTransaction, which confirms over this socket, so
+  // a dead subscription endpoint strands a send that already landed. Our own
+  // broadcast path is unaffected -- lib/solana/send-confirm.ts polls
+  // getSignatureStatuses and holds no socket at all.
+  //
+  // Falls back to the primary when no separate endpoint is configured, which is
+  // the old behaviour and correct for any RPC that serves both.
+  const subscriptionsUrl =
+    process.env.NEXT_PUBLIC_SOLANA_RPC_FALLBACK_URL || rpcUrl;
+
   const solanaRpcs = useMemo(
     () => ({
       "solana:mainnet": {
         rpc: createSolanaRpc(rpcUrl),
         rpcSubscriptions: createSolanaRpcSubscriptions(
-          rpcUrl.replace(/^http/, "ws"),
+          subscriptionsUrl.replace(/^http/, "ws"),
         ),
         blockExplorerUrl: "https://explorer.solana.com",
       },
     }),
-    [rpcUrl],
+    [rpcUrl, subscriptionsUrl],
   );
 
   return (
@@ -116,6 +153,7 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
         solana: { rpcs: solanaRpcs },
       }}
     >
+      <RegisterAccessToken />
       {children}
     </PrivyProvider>
   );

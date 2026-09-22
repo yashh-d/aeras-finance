@@ -161,6 +161,44 @@
     @apply font-sans;
   }
 }
+
+/* No white on the app surface, ever, however hard someone scrolls.
+   ------------------------------------------------------------------
+   White is the default PAGE CANVAS: `body` above is painted bg-background, and
+   with no background on `html` that white propagates to the canvas. The canvas
+   is what shows wherever the page itself is not painted, and there are three
+   such places, all of them reachable by scrolling:
+
+   1. Tiles Chrome has not rasterized yet. Scroll faster than it can raster and
+      it composites the tiles it has and leaves the rest as bare canvas. This is
+      the big blank card-shaped blocks, and it is worst right after a tab change
+      when a whole subtree is painting for the first time. Reproduced directly:
+      the same scroll flashed a full white screen on a white canvas and nothing
+      at all on this one.
+   2. The rubber-band overscroll region past either end of the document.
+   3. Any gap under a document that just got shorter, for the frame between the
+      shrink and the scroll offset being clamped. Switching to a shorter tab
+      does exactly this.
+
+   So the fix is to make the canvas itself dark rather than to chase the gaps.
+   It is set on `html` as well as `body` deliberately: the canvas takes html's
+   background when it has one, and only falls back to body's, so setting html is
+   what actually colours regions 1 and 2. body is set too, for any area that
+   body paints but the app's own wrapper does not cover.
+
+   `color-scheme: dark` is part of the same guarantee, not a nicety. It is what
+   stops the browser painting its own surfaces light: the scrollbar and its
+   gutter, the overscroll glow, and form-control chrome.
+
+   Scoped with :has() on the marker the /app layout renders, because the landing
+   page shares this html and body and is white by design. Unlayered on purpose:
+   `body` in @layer base above sets bg-background, and a rule inside that layer
+   cannot reliably outrank it however specific it is. */
+html:has([data-app-canvas]),
+body:has([data-app-canvas]) {
+  background-color: #08090a;
+  color-scheme: dark;
+}
 /* Capsule range input: a thick rounded track, blue up to the thumb, and a white
    pill thumb. Replaces the native `accent-color` slider, which colours the thumb
    and the filled track together and gives no control over the shape of either.
@@ -402,5 +440,54 @@
   .aeras-press:hover:not(:disabled),
   .aeras-press:active:not(:disabled) {
     transform: none;
+  }
+}
+
+/* The Terminal's ticker tape (components/TickerTape.tsx).
+
+   The strip holds its quotes twice, side by side, and slides left by half its
+   own width, which is exactly one copy, before starting over: the second copy
+   is in the place the first was, so the loop has no seam. The duration is set
+   per render from the number of quotes, so the tape moves at one speed however
+   many it carries.
+
+   Hover pauses it, since a figure in motion cannot be read or clicked. Under a
+   reduced-motion preference the tape does not move at all and the viewport
+   scrolls sideways by hand instead, with the scrollbar hidden because the
+   strip is one line tall and a bar under it reads as a broken layout. */
+@keyframes aeras-tape {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+.aeras-tape-viewport {
+  overflow: hidden;
+}
+
+.aeras-tape {
+  display: flex;
+  width: max-content;
+  animation: aeras-tape var(--aeras-tape-duration, 60s) linear infinite;
+  will-change: transform;
+}
+
+.aeras-tape:hover {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aeras-tape-viewport {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .aeras-tape-viewport::-webkit-scrollbar {
+    display: none;
+  }
+  .aeras-tape {
+    animation: none;
   }
 }

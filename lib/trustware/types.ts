@@ -14,7 +14,18 @@ export interface TrustwareQuoteRequest {
   // Atomic units of fromToken, as a decimal string.
   fromAmount: string;
   fromAddress: string;
+  // Where the converted asset is delivered.
+  //
+  // **Advisory for every shape except the two named by `intent` below.** The
+  // proxy resolves this from the caller's verified Privy identity and ignores
+  // what was sent, because for every other shape the destination is the user's
+  // own embedded wallet. See validateTrustwareRequest in ./server.ts.
   toAddress: string;
+  // Names the two shapes whose destination is NOT the user's own wallet, and
+  // which therefore keep the caller's toAddress: an Ondo-provisioned deposit
+  // address, or a Lighter intent address. Omitting it is the safe default,
+  // since the destination then resolves to the user's own wallet.
+  intent?: "ondo-margin" | "lighter-margin";
   // Percent (1 = 1%). Optional; defaults applied server-side.
   slippage?: number;
 }

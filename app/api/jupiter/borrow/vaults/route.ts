@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { XSTOCK_BORROW_VAULTS } from "@/lib/jupiter/borrow";
+import {
+  LendUpstreamError,
+  fetchLendJson,
+  lendCooldownMs,
+} from "@/lib/jupiter/lend-server";
 
 export const dynamic = "force-dynamic";
 
@@ -15,60 +20,29 @@ interface RawVault {
 
 let cache: { fetchedAt: number; vaults: RawVault[] } | null = null;
 const CACHE_TTL_MS = 15_000;
-// Upstream Jupiter goes through transient blips (network, rate-limit, CF). When
-// we already have a cached payload, keep serving it for up to STALE_GRACE_MS
-// past the TTL while we keep trying to refresh.
-const STALE_GRACE_MS = 5 * 60 * 1000;
-const UPSTREAM_TIMEOUT_MS = 6000;
-const UPSTREAM_RETRIES = 2;
+// Stale-while-error: a cached payload keeps being served for this long past
+// the TTL while upstream is failing. Thirty minutes, because Jupiter's Lend
+// backend has been unreachable for longer than five (2026-09-09), and a rate
+// that was right half an hour ago beats a blank card. The response says when
+// it is stale (see GET) so a client can tell.
+const STALE_GRACE_MS = 30 * 60 * 1000;
 
-async function fetchUpstream(): Promise<RawVault[]> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= UPSTREAM_RETRIES; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(),
-      UPSTREAM_TIMEOUT_MS,
-    );
-    try {
-      const res = await fetch("https://api.jup.ag/lend/v1/borrow/vaults", {
-        cache: "no-store",
-        signal: controller.signal,
-        headers: { "user-agent": "aeras-finance/0.1" },
-      });
-      clearTimeout(timeout);
-      if (!res.ok) {
-        throw new Error(`upstream ${res.status}`);
-      }
-      return (await res.json()) as RawVault[];
-    } catch (err) {
-      clearTimeout(timeout);
-      lastErr = err;
-      // 100, 250 ms backoff before retrying.
-      if (attempt < UPSTREAM_RETRIES) {
-        await new Promise((r) => setTimeout(r, 100 * (attempt + 1) ** 2));
-      }
-    }
-  }
-  throw lastErr instanceof Error
-    ? lastErr
-    : new Error(`Jupiter borrow vaults: ${String(lastErr)}`);
-}
-
-async function loadVaults(): Promise<RawVault[]> {
+async function loadVaults(): Promise<{ vaults: RawVault[]; stale: boolean }> {
   if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
-    return cache.vaults;
+    return { vaults: cache.vaults, stale: false };
   }
   try {
-    const vaults = await fetchUpstream();
+    // One attempt with the API key, a circuit while the origin is down, and
+    // no retry on a timeout. See lib/jupiter/lend-server.ts.
+    const vaults = await fetchLendJson<RawVault[]>("/borrow/vaults");
     cache = { fetchedAt: Date.now(), vaults };
-    return vaults;
+    return { vaults, stale: false };
   } catch (err) {
-    // Stale-while-error: serve previously-cached vaults rather than 502ing
-    // the UI for transient upstream blips.
     if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS + STALE_GRACE_MS) {
-      console.warn("[borrow vaults proxy] upstream failed, serving stale:", err);
-      return cache.vaults;
+      if (!(err instanceof LendUpstreamError && err.circuitOpen)) {
+        console.warn("[borrow vaults proxy] upstream failed, serving stale:", err);
+      }
+      return { vaults: cache.vaults, stale: true };
     }
     throw err;
   }
@@ -92,7 +66,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const vaults = await loadVaults();
+    const { vaults, stale } = await loadVaults();
     const match = vaults.find((v) => v.id === vaultId);
     if (!match) {
       return NextResponse.json(
@@ -100,9 +74,17 @@ export async function GET(request: Request) {
         { status: 404 },
       );
     }
-    return NextResponse.json(match);
+    return NextResponse.json(match, {
+      headers: stale ? { "x-aeras-stale": "1" } : undefined,
+    });
   } catch (err) {
+    // Nothing cached and upstream is down. 503 with a Retry-After matching
+    // the circuit, so a client that reads it can wait rather than hammer.
     const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 502 });
+    const retry = Math.max(1, Math.ceil(lendCooldownMs("/borrow/vaults") / 1000));
+    return NextResponse.json(
+      { error: msg },
+      { status: 503, headers: { "retry-after": String(retry) } },
+    );
   }
 }

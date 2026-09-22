@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
 import { EARN_ASSETS } from "@/lib/jupiter/earn";
+import {
+  LendUpstreamError,
+  fetchLendJson,
+  lendCooldownMs,
+} from "@/lib/jupiter/lend-server";
 
 export const dynamic = "force-dynamic";
 
@@ -23,54 +28,31 @@ interface RawEarnToken {
 
 let cache: { fetchedAt: number; tokens: RawEarnToken[] } | null = null;
 const CACHE_TTL_MS = 15_000;
-// Same stale-while-error policy as the borrow vaults proxy: a transient upstream
-// blip should not blank out APYs that were correct 20 seconds ago.
-const STALE_GRACE_MS = 5 * 60 * 1000;
-const UPSTREAM_TIMEOUT_MS = 6000;
-const UPSTREAM_RETRIES = 2;
+// Stale-while-error: a cached payload keeps being served for this long past
+// the TTL while upstream is failing. Thirty minutes, because Jupiter's Lend
+// backend has been unreachable for longer than five (2026-09-09), and a rate
+// that was right half an hour ago beats a blank card. The response says when
+// it is stale (see GET) so a client can tell.
+const STALE_GRACE_MS = 30 * 60 * 1000;
 
-async function fetchUpstream(): Promise<RawEarnToken[]> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= UPSTREAM_RETRIES; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
-    try {
-      const res = await fetch("https://api.jup.ag/lend/v1/earn/tokens", {
-        cache: "no-store",
-        signal: controller.signal,
-        headers: { "user-agent": "aeras-finance/0.1" },
-      });
-      clearTimeout(timeout);
-      if (!res.ok) {
-        throw new Error(`upstream ${res.status}`);
-      }
-      return (await res.json()) as RawEarnToken[];
-    } catch (err) {
-      clearTimeout(timeout);
-      lastErr = err;
-      // 100, 250 ms backoff before retrying.
-      if (attempt < UPSTREAM_RETRIES) {
-        await new Promise((r) => setTimeout(r, 100 * (attempt + 1) ** 2));
-      }
-    }
-  }
-  throw lastErr instanceof Error
-    ? lastErr
-    : new Error(`Jupiter earn tokens: ${String(lastErr)}`);
-}
-
-async function loadTokens(): Promise<RawEarnToken[]> {
+async function loadTokens(): Promise<{ tokens: RawEarnToken[]; stale: boolean }> {
   if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
-    return cache.tokens;
+    return { tokens: cache.tokens, stale: false };
   }
   try {
-    const tokens = await fetchUpstream();
+    // One attempt with the API key, a circuit while the origin is down, and
+    // no retry on a timeout. See lib/jupiter/lend-server.ts.
+    const tokens = await fetchLendJson<RawEarnToken[]>("/earn/tokens");
     cache = { fetchedAt: Date.now(), tokens };
-    return tokens;
+    return { tokens, stale: false };
   } catch (err) {
     if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS + STALE_GRACE_MS) {
-      console.warn("[earn tokens proxy] upstream failed, serving stale:", err);
-      return cache.tokens;
+      // Only say so once per failure, not once per poll while the circuit is
+      // open.
+      if (!(err instanceof LendUpstreamError && err.circuitOpen)) {
+        console.warn("[earn tokens proxy] upstream failed, serving stale:", err);
+      }
+      return { tokens: cache.tokens, stale: true };
     }
     throw err;
   }
@@ -78,14 +60,21 @@ async function loadTokens(): Promise<RawEarnToken[]> {
 
 export async function GET() {
   try {
-    const tokens = await loadTokens();
+    const { tokens, stale } = await loadTokens();
     // Filter to the curated set so the client can never be handed a vault we
     // have not verified.
     return NextResponse.json(
       tokens.filter((t) => ALLOWED_ASSET_MINTS.has(t.assetAddress)),
+      { headers: stale ? { "x-aeras-stale": "1" } : undefined },
     );
   } catch (err) {
+    // Nothing cached and upstream is down. 503 with a Retry-After matching
+    // the circuit, so a client that reads it can wait rather than hammer.
     const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json({ error: msg }, { status: 502 });
+    const retry = Math.max(1, Math.ceil(lendCooldownMs("/earn/tokens") / 1000));
+    return NextResponse.json(
+      { error: msg },
+      { status: 503, headers: { "retry-after": String(retry) } },
+    );
   }
 }

@@ -1,3 +1,4 @@
+import { numberToAtomicString } from "@/lib/decimal";
 import {
   KAMINO_USDC_BORROW,
   kaminoCollateralByMint,
@@ -8,10 +9,7 @@ import {
 // takes amounts as integer strings. Kept string-based to avoid float rounding on
 // large values. Mirrors lib/jupiter/borrow.toAtomicBN but returns a string.
 export function toAtomicString(amount: number, decimals: number): string {
-  const [whole, frac = ""] = amount.toString().split(".");
-  const fracPadded = (frac + "0".repeat(decimals)).slice(0, decimals);
-  const combined = `${whole}${fracPadded}`.replace(/^0+/, "") || "0";
-  return combined;
+  return numberToAtomicString(amount, decimals);
 }
 
 type KtxAction = "deposit" | "borrow" | "repay" | "withdraw";

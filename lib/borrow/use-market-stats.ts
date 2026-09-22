@@ -41,17 +41,21 @@ export function kaminoMarketKey(reserve: string): string {
 
 // Fetches live rate/size for every borrow market once on mount. Jupiter vaults
 // are read per-vault; Kamino comes from one reserves-metrics call. Both fail
-// soft — a market with no stat simply renders a dash.
-export function useBorrowMarketStats(): {
+// soft — a market with no stat simply renders a dash. `enabled` false skips
+// the reads entirely (see useStrategyRates).
+export function useBorrowMarketStats(enabled = true): {
   stats: Map<string, MarketStat>;
   loading: boolean;
 } {
   const [stats, setStats] = useState<Map<string, MarketStat>>(new Map());
-  const [loading, setLoading] = useState(true);
+  // Starts true when enabled so the first render is a loading one; the effect
+  // does not set it again, so a mount that flips from disabled to enabled
+  // reads as loaded while it fetches. No caller flips it.
+  const [loading, setLoading] = useState(enabled);
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
-    setLoading(true);
     (async () => {
       const next = new Map<string, MarketStat>();
 
@@ -125,7 +129,7 @@ export function useBorrowMarketStats(): {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [enabled]);
 
   return { stats, loading };
 }

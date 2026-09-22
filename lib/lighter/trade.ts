@@ -22,9 +22,14 @@
 import type { EIP1193Provider } from "@privy-io/react-auth";
 
 import { fetchLighterAccountState, submitLighterTx } from "./client";
-import { LIGHTER_TX_TYPE_CREATE_ORDER } from "./constants";
+import {
+  LIGHTER_MARGIN_MODE_ISOLATED,
+  LIGHTER_TX_TYPE_CREATE_ORDER,
+  LIGHTER_TX_TYPE_UPDATE_LEVERAGE,
+} from "./constants";
 import { ensureTradingKey } from "./onboarding";
-import { signMarketOrder } from "./signer";
+import { wireInitialMarginFraction } from "./risk";
+import { signMarketOrder, signUpdateLeverage } from "./signer";
 import {
   computeOrderSize,
   slippageBoundPrice,
@@ -59,6 +64,50 @@ export type LighterTradeOutcome =
   // The order would be rejected by the exchange, with the reason from sizing.
   | { kind: "too-small"; size: OrderSize };
 
+// Set the account's leverage on one market, isolated, immediately before an
+// order. Shared by the hedge path and the perps ticket so the two cannot
+// send the transaction differently; the argument order it relies on is pinned
+// by scripts/lighter-leverage-check.mts.
+//
+// Sent under `nonce`; the caller signs its order under `nonce + 1`, because
+// the submit here is awaited and the sequencer has accepted this transaction
+// before the next is signed. Reading the nonce again would not work:
+// fetchLighterAccountState caches for four seconds.
+//
+// Fatal on failure rather than falling through to the order. An order placed
+// anyway would open at the market default while the ticket showed figures for
+// the leverage the user chose, which is the divergence the hedge path once
+// shipped with.
+export async function setMarketLeverage(params: {
+  accountIndex: number;
+  market: LighterMarket;
+  leverage: number;
+  nonce: number;
+  // Named in the error, e.g. "the hedge" or "the order".
+  what: string;
+}): Promise<{ leverage: number }> {
+  const wire = wireInitialMarginFraction(params.leverage, params.market);
+  const tx = await signUpdateLeverage({
+    accountIndex: params.accountIndex,
+    marketIndex: params.market.marketId,
+    initialMarginFraction: wire.fraction,
+    marginMode: LIGHTER_MARGIN_MODE_ISOLATED,
+    nonce: params.nonce,
+  });
+  try {
+    await submitLighterTx(LIGHTER_TX_TYPE_UPDATE_LEVERAGE, tx.txInfo);
+  } catch (error) {
+    // OPEN QUESTION, needs a live test: most venues refuse a margin-mode
+    // change while a position is open in that market. Callers therefore skip
+    // this step when the account already holds a position there.
+    throw new Error(
+      `Could not set ${wire.leverage}x isolated margin on ${params.market.symbol}, ` +
+        `so ${params.what} was not placed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return { leverage: wire.leverage };
+}
+
 export async function placeLighterTrade(params: {
   provider: EIP1193Provider;
   l1Address: string;
@@ -66,6 +115,11 @@ export async function placeLighterTrade(params: {
   side: TradeSide;
   // What the user asked for, in dollars. Exact decimal string.
   notionalUsd: string;
+  // Leverage to open at, isolated. Omitted, the order lands under whatever
+  // the account's setting for this market already is: the market default for
+  // a market never touched, or the setting a previous order left. Omitted on
+  // purpose when adding to an open position, see setMarketLeverage.
+  leverage?: number;
 }): Promise<LighterTradeOutcome> {
   const { onboarding, txHash } = await ensureTradingKey({
     provider: params.provider,
@@ -106,7 +160,19 @@ export async function placeLighterTrade(params: {
     params.market.priceDecimals,
   );
 
+  // One nonce read for both transactions. See setMarketLeverage.
   const nonce = await currentNonce(params.l1Address);
+  let orderNonce = nonce;
+  if (params.leverage != null) {
+    await setMarketLeverage({
+      accountIndex: onboarding.accountIndex,
+      market: params.market,
+      leverage: params.leverage,
+      nonce,
+      what: "the order",
+    });
+    orderNonce = nonce + 1;
+  }
 
   const tx = await signMarketOrder({
     accountIndex: onboarding.accountIndex,
@@ -115,7 +181,7 @@ export async function placeLighterTrade(params: {
     baseAmount: size.baseAmount,
     slippageBoundPrice: bound.wirePrice,
     isAsk: isAsk ? IS_ASK : IS_BID,
-    nonce,
+    nonce: orderNonce,
   });
 
   const orderTxHash = await submitLighterTx(

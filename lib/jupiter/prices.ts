@@ -14,24 +14,27 @@ export interface JupiterPriceEntry {
 
 export type JupiterPriceMap = Record<string, JupiterPriceEntry>;
 
-const PRICE_V3_BASE = "https://lite-api.jup.ag/price/v3";
+// This module stays free of any server-only import: twenty-odd client
+// components type-import JupiterPriceMap from here. The upstream call lives in
+// ./price-server.ts, which reads JUPITER_API_KEY and is imported only by the
+// route handler.
 
-export async function fetchJupiterPricesDirect(
-  mints: readonly string[],
-): Promise<JupiterPriceMap> {
-  if (mints.length === 0) return {};
-  const url = `${PRICE_V3_BASE}?ids=${mints.join(",")}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error(`Jupiter prices failed: ${res.status}`);
-  }
-  return (await res.json()) as JupiterPriceMap;
+export interface JupiterPricesResult {
+  prices: JupiterPriceMap;
+  // True when the server served a cached payload because Jupiter was failing.
+  // Surfaced so a panel can mark a figure as stale instead of showing it as
+  // live, which matters most for the ticket: a price that stopped updating
+  // three minutes ago should not look like one that updated a second ago.
+  stale: boolean;
 }
 
-export async function fetchJupiterPricesViaProxy(): Promise<JupiterPriceMap> {
+export async function fetchJupiterPricesViaProxy(): Promise<JupiterPricesResult> {
   const res = await fetch("/api/jupiter/prices", { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`Price proxy failed: ${res.status}`);
   }
-  return (await res.json()) as JupiterPriceMap;
+  return {
+    prices: (await res.json()) as JupiterPriceMap,
+    stale: res.headers.get("x-aeras-stale") === "1",
+  };
 }

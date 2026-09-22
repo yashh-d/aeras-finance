@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import {
+  ALL_CANDLE_RANGES,
   isCandleRange,
   isCandleSource,
   parseMarketId,
@@ -45,7 +46,7 @@ export async function GET(request: Request) {
   }
   if (!isCandleRange(range)) {
     return NextResponse.json(
-      { error: "range must be one of 1H, 1D, 1W, 1M, 3M" },
+      { error: `range must be one of ${ALL_CANDLE_RANGES.join(", ")}` },
       { status: 400 },
     );
   }

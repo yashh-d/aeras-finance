@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 
-import { ChevronDown } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronDown } from "lucide-react";
+import { usePrivy } from "@privy-io/react-auth";
 import { PublicKey } from "@solana/web3.js";
 import {
   TOKEN_2022_PROGRAM_ID,
@@ -11,7 +12,34 @@ import {
 
 import { PriceChart } from "@/components/PriceChart";
 import { KaminoBorrowCard } from "@/components/KaminoBorrowCard";
-import { GoldBorrowSection } from "@/components/GoldBorrowCard";
+import { FirstPositionSheet } from "@/components/FirstPositionSheet";
+import {
+  pendingRecordFor,
+  recordPositionSetup,
+  type PendingSetupRecord,
+} from "@/lib/position-setup-client";
+import { estimateJupiterSetupCost } from "@/lib/jupiter/first-position";
+import {
+  describeInsufficientLamports,
+  isBlocked,
+  needsSetup,
+  type SetupCost,
+} from "@/lib/borrow/setup-cost";
+import { useAaveGoldRows } from "@/components/AaveGoldBorrowCard";
+import {
+  COL_APY,
+  COL_BALANCE,
+  COL_LIQUIDITY,
+  COL_SIZE,
+  type BorrowTableRow,
+} from "@/components/borrow-table";
+import {
+  defaultDirection,
+  heldValueUsd,
+  sortBorrowRows,
+  type BorrowSort,
+  type BorrowSortKey,
+} from "@/lib/borrow/sort";
 import { SOLSCAN_TX_BASE, SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { assetIdentity, xstockByMint } from "@/lib/jupiter/xstocks";
@@ -100,6 +128,10 @@ interface Props {
   // the page canvas and draws its own. Type is always light-on-dark either way:
   // both surfaces are the night canvas.
   unboxed?: boolean;
+  // The market row to open on, by its table key ("jup-<vaultId>" or
+  // "kamino-<reserve>"). The Terminal's borrow mode passes it so a click there
+  // lands on the form rather than on the closed list.
+  initialExpanded?: string;
 }
 
 export function BorrowPanel({
@@ -109,6 +141,7 @@ export function BorrowPanel({
   onRefresh,
   onAddFunds,
   unboxed,
+  initialExpanded,
 }: Props) {
   // Same-underlying holdings on other chains (and Ondo's native Solana mints),
   // scanned once for the whole section rather than per card.
@@ -147,11 +180,126 @@ export function BorrowPanel({
   // Which market row is expanded to reveal its full borrow card. Only one at a
   // time. The heavy card (live vault state, position, NFT recovery) mounts
   // lazily on expand rather than once per market up front.
-  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(
+    initialExpanded ?? null,
+  );
 
   // Repay opens under the headline rather than inside a market card, since the
   // position it targets is chosen in the panel itself.
   const [repayOpen, setRepayOpen] = useState(false);
+
+  // Null is the catalog order, grouped by venue, which is what the list opens
+  // on. A header click sorts by that column; clicking the active one reverses.
+  const [sort, setSort] = useState<BorrowSort | null>(null);
+  const toggleSort = useCallback((key: BorrowSortKey) => {
+    setSort((prev) =>
+      prev?.key === key
+        ? { key, direction: prev.direction === "asc" ? "desc" : "asc" }
+        : { key, direction: defaultDirection(key) },
+    );
+  }, []);
+
+  // The Aave gold market, in the same row model as the Solana markets. Read
+  // here rather than inside its own section so it sorts with the rest: a sort
+  // is over the whole table, so every row's figures have to be in hand before
+  // any of them is placed.
+  const goldRows = useAaveGoldRows({
+    walletAddress,
+    goldHoldings: equivalents.gold,
+    solanaUsdcAtomic: balances?.usdcAtomic ?? "0",
+    onRefresh: refreshAll,
+  });
+
+  // Every market, in one list. Not memoised: it is fourteen rows of arithmetic
+  // over props that change together anyway, and each row closes over the
+  // balances and callbacks its card needs.
+  const rows: BorrowTableRow[] = [
+    ...XSTOCK_BORROW_VAULTS.map((vault) => {
+      const key = jupiterMarketKey(vault.vaultId);
+      const stat = stats.get(key);
+      const identity = assetIdentity(vault.collateralMint, vault.collateralSymbol);
+      const held = balances?.xstocks[vault.collateralMint] ?? 0;
+      const price = prices?.[vault.collateralMint]?.usdPrice ?? null;
+      return {
+        key,
+        identity,
+        name: identity.name,
+        venue: "Jupiter Lend",
+        subtitle: `${vault.collateralSymbol} · Jupiter Lend`,
+        sizeUsd: stat?.sizeUsd ?? null,
+        liquidityUsd: stat?.liquidityUsd ?? null,
+        heldQty: held,
+        heldUsd: heldValueUsd(held, price),
+        aprPct: stat?.borrowAprPct ?? null,
+        statsLoading,
+        renderBody: () => (
+          <VaultCard
+            vault={vault}
+            walletAddress={walletAddress}
+            walletUsdc={balances?.usdc ?? 0}
+            solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+            solBalance={balances?.sol ?? 0}
+            solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
+            collateralBalance={held}
+            collateralBalanceAtomic={
+              balances?.xstocksAtomic[vault.collateralMint] ?? "0"
+            }
+            heldEquivalents={equivalentsByVault.get(vault.vaultId) ?? []}
+            evmAddress={equivalents.evmAddress}
+            onEquivalentsChanged={equivalents.refresh}
+            prices={prices}
+            stat={stat}
+            onRefresh={refreshAll}
+          />
+        ),
+      };
+    }),
+    ...KAMINO_XSTOCK_COLLATERALS.map((collateral) => {
+      const key = kaminoMarketKey(collateral.reserve);
+      const stat = stats.get(key);
+      const identity = assetIdentity(
+        collateral.collateralMint,
+        collateral.symbol,
+      );
+      const held = balances?.xstocks[collateral.collateralMint] ?? 0;
+      const price = prices?.[collateral.collateralMint]?.usdPrice ?? null;
+      return {
+        key,
+        identity,
+        name: identity.name,
+        venue: "Kamino",
+        subtitle: `${collateral.symbol} · Kamino`,
+        sizeUsd: stat?.sizeUsd ?? null,
+        liquidityUsd: stat?.liquidityUsd ?? null,
+        heldQty: held,
+        heldUsd: heldValueUsd(held, price),
+        aprPct: stat?.borrowAprPct ?? null,
+        statsLoading,
+        renderBody: () => (
+          <KaminoBorrowCard
+            collateral={collateral}
+            walletAddress={walletAddress}
+            walletUsdc={balances?.usdc ?? 0}
+            collateralBalance={held}
+            collateralBalanceAtomic={
+              balances?.xstocksAtomic[collateral.collateralMint] ?? "0"
+            }
+            prices={prices}
+            stat={stat}
+            initialPosition={summary.kaminoPosition}
+            onRefresh={refreshAll}
+            onPositionChange={summaryRefresh}
+          />
+        ),
+      };
+    }),
+    // Gold, as one more row of the same table. It is a different collateral, a
+    // different chain and a different loan asset, and the venue line says so;
+    // the columns mean the same things they mean above.
+    ...goldRows,
+  ];
+
+  const sortedRows = sortBorrowRows(rows, sort);
 
   // Inside Home's card the panel drops its own chrome rather than nesting one
   // card inside another; on the Borrow tab it is the card.
@@ -194,102 +342,20 @@ export function BorrowPanel({
         </div>
 
         <div className="@container mt-5 divide-y divide-white/10 border-t border-white/10">
-          <MarketRowHeader />
-          {XSTOCK_BORROW_VAULTS.map((vault) => {
-            const key = jupiterMarketKey(vault.vaultId);
-            const expanded = expandedKey === key;
+          <MarketRowHeader sort={sort} onSort={toggleSort} />
+          {sortedRows.map((row) => {
+            const expanded = expandedKey === row.key;
             return (
-              <div key={key}>
+              <div key={row.key}>
                 <BorrowMarketRow
-                  symbol={vault.collateralSymbol}
-                  mint={vault.collateralMint}
-                  venue="Jupiter Lend"
-                  stat={stats.get(key)}
-                  statsLoading={statsLoading}
-                  held={balances?.xstocks[vault.collateralMint] ?? 0}
-                  price={prices?.[vault.collateralMint]?.usdPrice ?? null}
+                  row={row}
                   expanded={expanded}
-                  onToggle={() => setExpandedKey(expanded ? null : key)}
+                  onToggle={() => setExpandedKey(expanded ? null : row.key)}
                 />
-                {expanded && (
-                  <div className="pb-4">
-                    <VaultCard
-                      vault={vault}
-                      walletAddress={walletAddress}
-                      walletUsdc={balances?.usdc ?? 0}
-                      solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
-                      solBalance={balances?.sol ?? 0}
-                      solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
-                      collateralBalance={
-                        balances?.xstocks[vault.collateralMint] ?? 0
-                      }
-                      collateralBalanceAtomic={
-                        balances?.xstocksAtomic[vault.collateralMint] ?? "0"
-                      }
-                      heldEquivalents={
-                        equivalentsByVault.get(vault.vaultId) ?? []
-                      }
-                      evmAddress={equivalents.evmAddress}
-                      onEquivalentsChanged={equivalents.refresh}
-                      prices={prices}
-                      stat={stats.get(key)}
-                      onRefresh={refreshAll}
-                    />
-                  </div>
-                )}
+                {expanded && <div className="pb-4">{row.renderBody()}</div>}
               </div>
             );
           })}
-          {KAMINO_XSTOCK_COLLATERALS.map((collateral) => {
-            const key = kaminoMarketKey(collateral.reserve);
-            const expanded = expandedKey === key;
-            return (
-              <div key={key}>
-                <BorrowMarketRow
-                  symbol={collateral.symbol}
-                  mint={collateral.collateralMint}
-                  venue="Kamino"
-                  stat={stats.get(key)}
-                  statsLoading={statsLoading}
-                  held={balances?.xstocks[collateral.collateralMint] ?? 0}
-                  price={prices?.[collateral.collateralMint]?.usdPrice ?? null}
-                  expanded={expanded}
-                  onToggle={() => setExpandedKey(expanded ? null : key)}
-                />
-                {expanded && (
-                  <div className="pb-4">
-                    <KaminoBorrowCard
-                      collateral={collateral}
-                      walletAddress={walletAddress}
-                      collateralBalance={
-                        balances?.xstocks[collateral.collateralMint] ?? 0
-                      }
-                      collateralBalanceAtomic={
-                        balances?.xstocksAtomic[collateral.collateralMint] ?? "0"
-                      }
-                      prices={prices}
-                      stat={stats.get(key)}
-                      initialPosition={summary.kaminoPosition}
-                      onRefresh={refreshAll}
-                      onPositionChange={summaryRefresh}
-                    />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Gold sits below the equity markets rather than beside them. It is
-              a different collateral, a different chain and a different loan
-              asset, and the row shape above (one xStock, USDC borrowed on
-              Solana) does not describe it. Its own section says so plainly
-              instead of hiding an Ethereum position inside a Solana list. */}
-          <GoldBorrowSection
-            walletAddress={walletAddress}
-            goldHoldings={equivalents.gold}
-            solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
-            onRefresh={refreshAll}
-          />
         </div>
       </div>
     </div>
@@ -386,32 +452,102 @@ function BorrowSummaryHero({
   );
 }
 
-// Column geometry for the catalog, shared by the header and every row so the
-// figures line up. Each numeric column is a fixed width and is always rendered,
-// including the balance column: sizing it to its content would let the two rows
-// the user holds shift every column left and break the alignment down the list.
-// Dropped on container width, not viewport width. This table renders both full
-// bleed on the Borrow tab and inside a two-fifths card on Home, so a viewport
-// breakpoint showed every column at desktop sizes and pushed the APY figure off
-// the right edge of the narrow placement.
-const COL_SIZE = "hidden w-24 shrink-0 text-right @md:block";
-const COL_LIQUIDITY = "hidden w-24 shrink-0 text-right @xl:block";
-const COL_BALANCE = "hidden w-24 shrink-0 text-right @3xl:block";
-const COL_APY = "w-20 shrink-0 text-right";
+// Column geometry lives in components/borrow-table.ts, shared with the Aave
+// gold row so every figure in the list lines up.
 
 // Labels the rows would otherwise repeat under every figure. One header keeps
-// the list scannable as a table instead of fourteen stacked label/value pairs.
-function MarketRowHeader() {
+// the list scannable as a table instead of fourteen stacked label/value pairs,
+// and every label sorts the list by its own column.
+function MarketRowHeader({
+  sort,
+  onSort,
+}: {
+  sort: BorrowSort | null;
+  onSort: (key: BorrowSortKey) => void;
+}) {
   return (
     <div className="flex items-center gap-3 py-2 text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
       {/* Gutters matching the row's logo and chevron. */}
       <div className="size-8 shrink-0" />
-      <div className="min-w-0 flex-1">Market</div>
-      <div className={COL_SIZE}>Market size</div>
-      <div className={COL_LIQUIDITY}>Liquidity</div>
-      <div className={COL_BALANCE}>Balance</div>
-      <div className={COL_APY}>APY</div>
+      <SortHeader
+        column="market"
+        label="Market"
+        sort={sort}
+        onSort={onSort}
+        className="min-w-0 flex-1"
+        align="left"
+      />
+      <SortHeader
+        column="size"
+        label="Market size"
+        sort={sort}
+        onSort={onSort}
+        className={COL_SIZE}
+      />
+      <SortHeader
+        column="liquidity"
+        label="Liquidity"
+        sort={sort}
+        onSort={onSort}
+        className={COL_LIQUIDITY}
+      />
+      <SortHeader
+        column="balance"
+        label="Balance"
+        sort={sort}
+        onSort={onSort}
+        className={COL_BALANCE}
+      />
+      <SortHeader
+        column="apy"
+        label="APY"
+        sort={sort}
+        onSort={onSort}
+        className={COL_APY}
+      />
       <div className="size-4 shrink-0" />
+    </div>
+  );
+}
+
+// One column label, which is also the control that sorts by it. The arrow is
+// drawn only on the active column: an indicator on every header at rest reads
+// as five controls rather than one state.
+function SortHeader({
+  column,
+  label,
+  sort,
+  onSort,
+  className,
+  align = "right",
+}: {
+  column: BorrowSortKey;
+  label: string;
+  sort: BorrowSort | null;
+  onSort: (key: BorrowSortKey) => void;
+  // The column's geometry from borrow-table.ts, which also decides at what
+  // container width the column exists at all.
+  className: string;
+  align?: "left" | "right";
+}) {
+  const active = sort?.key === column;
+  const direction = active ? sort.direction : null;
+  const Arrow = direction === "asc" ? ArrowUp : ArrowDown;
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        onClick={() => onSort(column)}
+        // Says what the click will do, not what the column currently is: the
+        // arrow already carries the state for anyone who can see it.
+        aria-label={`Sort by ${label.toLowerCase()}`}
+        className={`flex w-full items-center gap-1 uppercase tracking-[0.12em] transition-colors hover:text-white ${
+          align === "right" ? "justify-end" : "justify-start"
+        } ${active ? "text-white" : ""}`}
+      >
+        <span className="truncate">{label}</span>
+        {direction && <Arrow className="size-3 shrink-0" />}
+      </button>
     </div>
   );
 }
@@ -422,38 +558,22 @@ function MarketRowHeader() {
 // rate against liquidity — the two things that decide where a loan should go.
 // Clicking anywhere expands the full card below.
 function BorrowMarketRow({
-  symbol,
-  mint,
-  venue,
-  stat,
-  statsLoading,
-  held,
-  price,
+  row,
   expanded,
   onToggle,
 }: {
-  symbol: string;
-  // Collateral mint, used only to resolve the asset logo.
-  mint: string;
-  // Which protocol settles this market. Shown as a subtitle so a stock listed on
-  // both venues reads as two distinct, comparable rows.
-  venue: "Jupiter Lend" | "Kamino";
-  stat: MarketStat | undefined;
-  statsLoading: boolean;
-  held: number;
-  price: number | null;
+  row: BorrowTableRow;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const heldUsd = price != null ? held * price : null;
   // A market with no data yet reads "…" rather than "—", so a slow venue is not
   // mistaken for an empty one.
   const show = (n: number | null | undefined) =>
-    n != null ? formatUsdCompact(n) : statsLoading ? "…" : "—";
+    n != null ? formatUsdCompact(n) : row.statsLoading ? "…" : "—";
   const apr =
-    stat?.borrowAprPct != null
-      ? `${stat.borrowAprPct.toFixed(2)}%`
-      : statsLoading
+    row.aprPct != null
+      ? `${row.aprPct.toFixed(2)}%`
+      : row.statsLoading
         ? "…"
         : "—";
   return (
@@ -463,36 +583,36 @@ function BorrowMarketRow({
       aria-expanded={expanded}
       className="flex w-full items-center gap-3 py-4 text-left transition-colors hover:bg-white/5"
     >
-      <AssetLogo xstock={assetIdentity(mint, symbol)} size={32} />
+      <AssetLogo xstock={row.identity} size={32} />
       {/* Name leads, token symbol and venue share the line under it. The venue
           has to stay visible here: the same asset is listed by both. */}
       <div className="min-w-0 flex-1">
         <div className="truncate text-sm font-medium tracking-tight text-white">
-          {assetIdentity(mint, symbol).name}
+          {row.name}
         </div>
         <div className="mt-0.5 truncate text-[11px] text-white/50">
-          {symbol} · {venue}
+          {row.subtitle}
         </div>
       </div>
       {/* Depth of the collateral side, then what is actually drawable. Dropped
           first on narrow screens, where the rate has to win the space. */}
       <div className={`${COL_SIZE} font-mono text-sm tabular-nums text-white/90`}>
-        {show(stat?.sizeUsd)}
+        {show(row.sizeUsd)}
       </div>
       <div
         className={`${COL_LIQUIDITY} font-mono text-sm tabular-nums text-white/90`}
       >
-        {show(stat?.liquidityUsd)}
+        {show(row.liquidityUsd)}
       </div>
       <div className={COL_BALANCE}>
-        {held > 0 ? (
+        {row.heldQty > 0 ? (
           <>
             <div className="font-mono text-sm tabular-nums text-white">
-              {held.toFixed(4)}
+              {row.heldQty.toFixed(4)}
             </div>
-            {heldUsd != null && (
+            {row.heldUsd != null && (
               <div className="font-mono text-[11px] tabular-nums text-white/50">
-                ${heldUsd.toFixed(2)}
+                ${row.heldUsd.toFixed(2)}
               </div>
             )}
           </>
@@ -500,6 +620,7 @@ function BorrowMarketRow({
           <span className="font-mono text-sm tabular-nums text-white/30">—</span>
         )}
       </div>
+      {/* Not coloured positive: this is a cost, not a yield. */}
       <div className={`${COL_APY} font-mono text-sm tabular-nums text-white`}>
         {apr}
       </div>
@@ -542,6 +663,10 @@ interface VaultCardProps {
   // waiting on this card's own vault read.
   stat: MarketStat | undefined;
   onRefresh: () => Promise<void> | void;
+  // Drop the two typed fields and leave the slider as the control, posting
+  // everything the wallet holds. The Terminal's ticket uses this; the Borrow
+  // tab keeps the fields.
+  sliderOnly?: boolean;
 }
 
 type FormState =
@@ -553,7 +678,10 @@ type FormState =
   | { kind: "error"; message: string }
   | { kind: "done"; signature: string };
 
-function VaultCard({
+// Exported for the Terminal's ticket, which mounts this card in its borrow
+// mode. It is the one copy of the Jupiter Lend borrow path; the Terminal
+// wires the same props this table does rather than carrying a second form.
+export function VaultCard({
   vault,
   walletAddress,
   walletUsdc,
@@ -568,6 +696,7 @@ function VaultCard({
   prices,
   stat,
   onRefresh,
+  sliderOnly = false,
 }: VaultCardProps) {
   const [live, setLive] = useState<LiveVaultState | null>(null);
   const [position, setPosition] = useState<UserPositionState | null>(null);
@@ -591,6 +720,21 @@ function VaultCard({
       solPriceUsd,
       monadUsdcAtomic: monad.balances?.usdcAtomic ?? "0",
     }).total;
+
+  // A first position in this vault mints an NFT and allocates its accounts,
+  // which the user pays rent for. Holds the priced shortfall and the submit it
+  // interrupted, so the borrow resumes with the same amounts afterwards.
+  const [setupGate, setSetupGate] = useState<{
+    cost: SetupCost;
+    args: { collateralUi: number; borrowUi: number };
+  } | null>(null);
+
+  // Held from acceptance until the position settles, then written once, so an
+  // abandoned or failed open records no rent. See lib/position-setup-client.ts.
+  const [pendingSetup, setPendingSetup] = useState<PendingSetupRecord | null>(
+    null,
+  );
+  const { getAccessToken } = usePrivy();
 
   // Tracked nftId — mirrors localStorage but mutable via state so React re-renders
   // when auto-recovery rebinds an existing on-chain position NFT.
@@ -859,7 +1003,35 @@ function VaultCard({
     return onSolana;
   }
 
+  // Price the position NFT's rent before asking for a signature. Costs nothing
+  // when the wallet already holds an NFT for this vault, which is the common
+  // case and why storedNftId is passed straight through rather than rescanned.
+  //
+  // Advisory: a preflight that cannot read the chain steps aside rather than
+  // blocking a borrow that would have worked.
   async function handleSubmit(args: {
+    collateralUi: number;
+    borrowUi: number;
+  }) {
+    try {
+      setFormState({ kind: "submitting" });
+      const cost = await estimateJupiterSetupCost({
+        connection: getConnection(),
+        walletAddress,
+        existingNftId: storedNftId,
+      });
+      if (needsSetup(cost)) {
+        setSetupGate({ cost, args });
+        setFormState({ kind: "idle" });
+        return;
+      }
+    } catch (err) {
+      console.error("[jupiter setup cost]", err);
+    }
+    await runSubmit(args);
+  }
+
+  async function runSubmit(args: {
     collateralUi: number;
     borrowUi: number;
   }) {
@@ -898,11 +1070,40 @@ function VaultCard({
           );
         }
       }
+      // Cap the draw at what the posted collateral can actually carry.
+      //
+      // Same reasoning as the Kamino card: paying for the setup by selling
+      // collateral shrinks the deposit, and a borrow sized against the pre-sale
+      // figure can land above max LTV and be refused on chain. Caps rather than
+      // scales, so a borrow the smaller deposit still carries is left at what
+      // the user asked for. Can only reduce, never raise.
+      let cappedDebt = debtAtomic;
+      if (oraclePrice != null && !debtAtomic.isZero()) {
+        const existingColUi = position
+          ? fromAtomicBN(position.collateralAtomic, vault.collateralDecimals)
+          : 0;
+        const postedUi =
+          existingColUi + fromAtomicBN(colAtomic, vault.collateralDecimals);
+        const existingDebtUi = position
+          ? fromAtomicBN(position.debtAtomic, vault.borrowDecimals)
+          : 0;
+        const capUsd =
+          postedUi * oraclePrice * ((vault.collateralFactor / 10 - 1) / 100) -
+          existingDebtUi;
+        if (capUsd <= 0) {
+          throw new Error(
+            `The deposited ${vault.collateralSymbol} does not support a loan this size. Deposit more, or borrow less.`,
+          );
+        }
+        const capAtomic = toAtomicBN(capUsd, vault.borrowDecimals);
+        if (capAtomic.lt(cappedDebt)) cappedDebt = capAtomic;
+      }
+
       const { base64Tx, nftId } = await buildOperateTx({
         vaultId: vault.vaultId,
         positionId: storedNftId ?? 0,
         collateralDeltaAtomic: colAtomic,
-        debtDeltaAtomic: debtAtomic,
+        debtDeltaAtomic: cappedDebt,
         signerAddress: walletAddress,
         connection: conn,
       });
@@ -913,13 +1114,24 @@ function VaultCard({
       const finalNftId = nftId ?? storedNftId;
       if (finalNftId) persistNftId(finalNftId);
       setFormState({ kind: "done", signature: sig });
+      // Best effort, and after the confirmation is on screen: a failed write
+      // here must not read as a failed borrow.
+      if (pendingSetup) {
+        void recordPositionSetup(getAccessToken, pendingSetup);
+        setPendingSetup(null);
+      }
       await onRefresh();
       await refreshPosition();
     } catch (err) {
       console.error("[borrow submit]", err);
       setFormState({
         kind: "error",
-        message: err instanceof Error ? err.message : String(err),
+        // The preflight normally catches this, but a balance can move between
+        // the check and the signature. CLAUDE.md forbids showing the raw
+        // simulation dump this would otherwise be.
+        message:
+          describeInsufficientLamports(err) ??
+          (err instanceof Error ? err.message : String(err)),
       });
     }
   }
@@ -1081,8 +1293,54 @@ function VaultCard({
           resetForm={() => setFormState({ kind: "idle" })}
           recovering={recovering}
           actionSlot={borrowSlot}
+          sliderOnly={sliderOnly}
         />
       ) : null}
+
+      {setupGate && (
+        <FirstPositionSheet
+          cost={setupGate.cost}
+          walletAddress={walletAddress}
+          walletUsdc={walletUsdc}
+          collateral={{
+            symbol: vault.collateralSymbol,
+            mint: vault.collateralMint,
+            decimals: vault.collateralDecimals,
+            balanceUi: collateralBalance,
+            priceUsd: oraclePrice,
+          }}
+          solPriceUsd={solPriceUsd}
+          signTxBase64={signTxBase64}
+          onCancel={() => setSetupGate(null)}
+          onProceed={() => {
+            const { args, cost } = setupGate;
+            setPendingSetup(pendingRecordFor("jupiter", cost));
+            setSetupGate(null);
+            void runSubmit(args);
+          }}
+          onFunded={async (funding) => {
+            // Re-price rather than trusting the swap's estimate: the borrow that
+            // follows reads the same balance this does.
+            const fresh = await estimateJupiterSetupCost({
+              connection: getConnection(),
+              walletAddress,
+              existingNftId: storedNftId,
+            });
+            if (isBlocked(fresh)) {
+              setSetupGate({ cost: fresh, args: setupGate.args });
+              return;
+            }
+            const { args } = setupGate;
+            // Logged against the cost the user was shown and agreed to, not the
+            // re-price above, which by now reads as covered.
+            setPendingSetup(
+              pendingRecordFor("jupiter", setupGate.cost, funding),
+            );
+            setSetupGate(null);
+            await runSubmit(args);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1204,6 +1462,7 @@ function OperateForm({
   resetForm,
   recovering,
   actionSlot,
+  sliderOnly = false,
 }: {
   vault: XStockBorrowVault;
   existingPosition: UserPositionState | null;
@@ -1227,6 +1486,7 @@ function OperateForm({
   // which case the button falls back to its old place at the foot of the form
   // rather than disappearing.
   actionSlot: HTMLElement | null;
+  sliderOnly?: boolean;
 }) {
   // Everything the user can deposit: what is already on Solana plus what a
   // conversion would actually deliver from the rest.
@@ -1376,14 +1636,17 @@ function OperateForm({
           ? "Converting…"
           : submitting
             ? "Signing and submitting…"
-            : borrowUi > 0
-              ? `Borrow $${borrowUi.toFixed(2)} against ${vault.collateralSymbol}`
-              : "Borrow"}
+            : sliderOnly
+              ? `Borrow $${(borrowUi || 0).toFixed(2)}`
+              : borrowUi > 0
+                ? `Borrow $${borrowUi.toFixed(2)} against ${vault.collateralSymbol}`
+                : "Borrow"}
     </button>
   );
 
   return (
     <div className="space-y-3">
+      {!sliderOnly && (
       <div className="grid grid-cols-2 gap-3">
         <NumberField
           value={colInput}
@@ -1429,6 +1692,13 @@ function OperateForm({
           }
         />
       </div>
+      )}
+
+      {sliderOnly && collateralUi > 0 && (
+        <p className="text-xs text-white/50">
+          Posting {ceilingInput} {vault.collateralSymbol}, everything in the wallet.
+        </p>
+      )}
 
       {maxNewBorrow > 0 && (
         <div>
@@ -1483,6 +1753,7 @@ function OperateForm({
               <PriceChart
                 ticker={ticker}
                 marker={{ price: liquidationPrice, label: "Safety floor" }}
+                showRanges={!sliderOnly}
               />
             </div>
           )}

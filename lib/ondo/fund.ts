@@ -257,7 +257,12 @@ export async function planOndoFunding(args: {
     toToken: collateral.contractAddress,
     fromAmount: source.amountAtomic,
     fromAddress: source.ownerAddress,
+    // Ondo's provisioned deposit address, checked against Ondo just above.
+    // This is one of the two shapes the proxy does not overwrite, so it names
+    // itself. Without the intent the proxy reads this as a swap, which fails
+    // outright for the collateral that is not in the swap registry.
     toAddress: provisioned.address,
+    intent: "ondo-margin",
     // Crosses a bridge, so it keeps Trustware's default tolerance rather than
     // the tight Solana-swap setting.
     slippage: TRUSTWARE_DEFAULT_SLIPPAGE,
@@ -410,6 +415,7 @@ export async function executeOndoFunding(args: {
     fromAmount: plan.source.amountAtomic,
     fromAddress: plan.source.ownerAddress,
     toAddress: plan.depositAddress,
+    intent: "ondo-margin",
     slippage: TRUSTWARE_DEFAULT_SLIPPAGE,
   });
 
@@ -476,6 +482,7 @@ async function executeEvmOndoFunding(args: {
       fromAmount: plan.source.amountAtomic,
       fromAddress: plan.source.ownerAddress,
       toAddress: plan.depositAddress,
+      intent: "ondo-margin",
       slippage: TRUSTWARE_DEFAULT_SLIPPAGE,
     },
     evm,

@@ -9,10 +9,22 @@ import {
   type XStock,
 } from "@/lib/jupiter/xstocks";
 import { AssetLogo, LendingBadge } from "@/components/AssetLogo";
+import {
+  AssetTile,
+  Sparkline,
+  ViewToggle,
+  formatAssetPrice,
+  priceDisplay,
+} from "@/components/AssetTile";
 import { hasLendingMarket } from "@/lib/borrow/availability";
+import { useViewMode } from "@/lib/ui/use-view-mode";
 import { ChevronRight } from "lucide-react";
 
 const SPARKLINE_REFRESH_MS = 60_000;
+
+// Home's own remembered list-or-grid choice. Markets keeps a separate key: the
+// two surfaces show different things, so the preference is per surface.
+const HOME_VIEW_STORAGE_KEY = "aeras.home.assets.view";
 
 // Rows shown per asset class on Home. The card sits beside the wallet in a
 // fixed-height row, so this is a display budget rather than a view of the
@@ -36,6 +48,8 @@ export function AssetGrid({
   onSeeAll: () => void;
 }) {
   const [sparks, setSparks] = useState<SparklinesResponse | null>(null);
+
+  const [view, setView] = useViewMode(HOME_VIEW_STORAGE_KEY);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,21 +83,24 @@ export function AssetGrid({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-baseline justify-between">
+      <div className="flex items-center justify-between gap-3">
         <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
           Assets
         </div>
-        {error ? (
-          <span className="inline-flex items-center gap-1 text-xs text-aeras-warning">
-            <span className="inline-block size-1.5 rounded-full bg-aeras-warning" />
-            Price feed offline
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-xs text-white/50">
-            <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
-            Live · 10s
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {error ? (
+            <span className="inline-flex items-center gap-1 text-xs text-aeras-warning">
+              <span className="inline-block size-1.5 rounded-full bg-aeras-warning" />
+              Price feed offline
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs text-white/50">
+              <span className="inline-block size-1.5 rounded-full bg-aeras-positive" />
+              Live
+            </span>
+          )}
+          <ViewToggle view={view} onChange={setView} />
+        </div>
       </div>
       {/* Grouped by asset class, using the same categories the Markets tab
           groups by. No filter pills here: a label between runs is enough to
@@ -102,18 +119,35 @@ export function AssetGrid({
               </span>
             )}
           </div>
-          <div className="divide-y divide-white/[0.07]">
-            {g.assets.map((x) => (
-              <AssetRow
-                key={x.mint}
-                xstock={x}
-                entry={prices?.[x.mint]}
-                sparkline={sparks?.[x.mint]}
-                selected={selectedMint === x.mint}
-                onClick={() => onSelect(x)}
-              />
-            ))}
-          </div>
+          {view === "grid" ? (
+            // Two up on a phone, three in the two-thirds card on desktop. Four
+            // would take the tile under the width its price row needs.
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {g.assets.map((x) => (
+                <AssetTile
+                  key={x.mint}
+                  xstock={x}
+                  entry={prices?.[x.mint]}
+                  sparkline={sparks?.[x.mint]}
+                  selected={selectedMint === x.mint}
+                  onClick={() => onSelect(x)}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="divide-y divide-white/[0.07]">
+              {g.assets.map((x) => (
+                <AssetRow
+                  key={x.mint}
+                  xstock={x}
+                  entry={prices?.[x.mint]}
+                  sparkline={sparks?.[x.mint]}
+                  selected={selectedMint === x.mint}
+                  onClick={() => onSelect(x)}
+                />
+              ))}
+            </div>
+          )}
         </div>
       ))}
 
@@ -131,9 +165,11 @@ export function AssetGrid({
   );
 }
 
-// One asset as a row rather than a tile. Same grammar as the Borrow and Markets
-// rows: full-width control, hover wash, chevron. A grid of bubbles made every
-// asset the same visual weight and left nowhere for price or change to sit.
+// One asset as a row, and the default view. Same grammar as the Borrow and
+// Markets rows: full-width control, hover wash, chevron. The first attempt at a
+// grid here was bubbles, which made every asset the same visual weight and left
+// nowhere for price or change to sit; that is why the row is still the default
+// and why AssetTile below gives both their own line.
 //
 // Clicking opens the drilled-in view (chart + ticket) in place of this list, so
 // the chevron points right: it navigates, it does not disclose.
@@ -150,21 +186,8 @@ function AssetRow({
   selected: boolean;
   onClick: () => void;
 }) {
-  const price = entry?.usdPrice;
-  const change = entry?.priceChange24h;
-  const positive = change == null ? null : change >= 0;
-  const changeColor =
-    positive == null
-      ? "text-white/40"
-      : positive
-        ? "text-aeras-positive"
-        : "text-aeras-negative";
-  const sparkStroke =
-    positive == null
-      ? "stroke-aeras-100"
-      : positive
-        ? "stroke-aeras-positive"
-        : "stroke-aeras-negative";
+  const { price, change, positive, changeColor, sparkStroke } =
+    priceDisplay(entry);
 
   return (
     <button
@@ -195,7 +218,7 @@ function AssetRow({
 
       <div className="w-[5.5rem] shrink-0 text-right">
         <div className="font-mono text-sm tabular-nums text-white">
-          {price == null ? "\u2014" : `$${formatPrice(price)}`}
+          {price == null ? "\u2014" : `$${formatAssetPrice(price)}`}
         </div>
         <div className={`font-mono text-[11px] tabular-nums ${changeColor}`}>
           {change == null
@@ -207,53 +230,4 @@ function AssetRow({
       <ChevronRight className="size-4 shrink-0 text-white/30" />
     </button>
   );
-}
-
-function Sparkline({
-  values,
-  strokeClassName,
-}: {
-  values: number[] | undefined;
-  strokeClassName: string;
-}) {
-  const W = 60;
-  const H = 18;
-  if (!values || values.length < 2) {
-    return <div className="h-[18px] w-[60px]" />;
-  }
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const stepX = W / (values.length - 1);
-  const points = values
-    .map((v, i) => {
-      const x = i * stepX;
-      const y = H - ((v - min) / range) * H;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-  return (
-    <svg
-      viewBox={`0 0 ${W} ${H}`}
-      width={W}
-      height={H}
-      className="overflow-visible"
-      aria-hidden="true"
-    >
-      <polyline
-        points={points}
-        fill="none"
-        strokeWidth={1.25}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className={strokeClassName}
-      />
-    </svg>
-  );
-}
-
-function formatPrice(price: number): string {
-  if (price >= 100) return price.toFixed(2);
-  if (price >= 1) return price.toFixed(2);
-  return price.toFixed(4);
 }

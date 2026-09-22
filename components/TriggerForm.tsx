@@ -41,6 +41,7 @@ export function TriggerForm({
   onOrderPlaced,
   modeToggle,
   autoFocus = false,
+  onPriceChange,
 }: {
   ticker: XStock;
   walletAddress: string;
@@ -53,6 +54,10 @@ export function TriggerForm({
   // own. Owned by AssetTradePanel, which is what the switch actually controls.
   modeToggle?: ReactNode;
   autoFocus?: boolean;
+  // Called with the trigger price whenever it changes, and with null when it
+  // is empty or the form unmounts. The Terminal draws it as a line on the
+  // chart beside the ticket, so the order can be seen where it would fill.
+  onPriceChange?: (price: number | null, direction: Direction) => void;
 }) {
   const [direction, setDirection] = useState<Direction>("buy");
   const [amountInput, setAmountInput] = useState("");
@@ -93,6 +98,14 @@ export function TriggerForm({
   const triggerPrice = Number(priceInput);
   const amountValid = Number.isFinite(amount) && amount > 0;
   const priceValid = Number.isFinite(triggerPrice) && triggerPrice > 0;
+
+  // Report the price to whoever draws it. The cleanup reports null, so the
+  // line leaves the chart with the form: switching back to market, or to
+  // another asset, unmounts this and clears it.
+  useEffect(() => {
+    onPriceChange?.(priceValid ? triggerPrice : null, direction);
+    return () => onPriceChange?.(null, direction);
+  }, [onPriceChange, priceValid, triggerPrice, direction]);
 
   // Order USD value: for a buy it is the USDC spent; for a sell it is the xStock
   // amount valued at the trigger price.

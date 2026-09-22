@@ -1,7 +1,11 @@
 "use client";
 
 // Turn gold a user already holds into XAUt on Ethereum, so it can be posted as
-// collateral in the Morpho Blue gold market.
+// collateral in a gold market there. Written for the Morpho Blue market and
+// shared with the Aave V4 Gold spoke, which needs the same conversion to the
+// same token in the same wallet; the two things that differ per venue (the
+// oracle that values the delivered gold, and the gas a full cycle costs) are
+// parameters. See docs/aave-gold.md, "Funding and the way home".
 //
 // The shape mirrors lib/morpho/fund.ts (plan first, price every leg, broadcast,
 // track, confirm arrival) but three things differ enough to be worth stating up
@@ -99,7 +103,11 @@ const MAX_GOLD_FUNDING_LOSS_BPS = 300;
 // not create: unable to act as their position approaches liquidation. The
 // thresholds and the dollar cap that go with it live in
 // lib/trustware/eth-gas.ts, shared with the Aave vaults.
-const GAS_UNITS_FULL_CYCLE = 700_000n;
+//
+// This is the Morpho figure and the default. The Aave gold spoke's cycle is
+// heavier (lib/aave/gold-borrow.ts, AAVE_GAS_UNITS_FULL_CYCLE) and passes its
+// own through `gasUnitsFullCycle`.
+export const MORPHO_GAS_UNITS_FULL_CYCLE = 700_000n;
 
 // How long to wait for delivered funds to become readable after Trustware
 // reports success. The destination transaction has already mined by then; this
@@ -163,14 +171,19 @@ export async function planGoldFunding(args: {
   evmAddress: string;
   // The user's Solana USDC, which pays for the gas top-up.
   solanaUsdcAtomic: string;
-  // Ethereum wallet state, from /api/morpho/gold-position.
+  // Ethereum wallet state, from the venue's position route.
   ethBalanceAtomic: string;
   gasPriceWei: string;
-  // One XAUt in USDT at the Morpho oracle, from /api/morpho/gold-market.
+  // One XAUt in the venue's own oracle unit (USDT on Morpho, USD on Aave),
+  // from the venue's market route. Never a registry price; see above.
   oracleUnitPrice: number;
+  // Gas units a full borrow cycle costs at the destination venue. Defaults to
+  // the Morpho figure.
+  gasUnitsFullCycle?: bigint;
   fetchQuote?: QuoteFn;
 }): Promise<GoldFundingPlan> {
   const fetchQuote = args.fetchQuote ?? fetchTrustwareQuoteViaProxy;
+  const gasUnitsFullCycle = args.gasUnitsFullCycle ?? MORPHO_GAS_UNITS_FULL_CYCLE;
   const { source } = args;
 
   if (args.sourceAmountAtomic <= 0n) {
@@ -349,7 +362,7 @@ export async function planGoldFunding(args: {
     solanaUsdcAtomic: args.solanaUsdcAtomic,
     solanaAddress: args.solanaAddress,
     evmAddress: args.evmAddress,
-    gasUnits: GAS_UNITS_FULL_CYCLE,
+    gasUnits: gasUnitsFullCycle,
     positionValueUsd: deliveredValueUsd,
     fetchQuote,
   });
@@ -382,18 +395,23 @@ export async function planGoldFunding(args: {
 
 // ── gas ────────────────────────────────────────────────────────────────────
 //
-// Thin wrappers over lib/trustware/eth-gas.ts with this venue's gas budget
-// baked in, so the card's hint copy keeps its two-argument calls.
+// Thin wrappers over lib/trustware/eth-gas.ts with this venue's gas budget as
+// the default, so the Morpho card's hint copy keeps its two-argument calls and
+// the Aave gold card passes its own budget as the third.
 
-export function requiredEthWei(gasPriceWei: string): bigint {
-  return requiredEthWeiFor(gasPriceWei, GAS_UNITS_FULL_CYCLE);
+export function requiredEthWei(
+  gasPriceWei: string,
+  gasUnitsFullCycle: bigint = MORPHO_GAS_UNITS_FULL_CYCLE,
+): bigint {
+  return requiredEthWeiFor(gasPriceWei, gasUnitsFullCycle);
 }
 
 export function needsEthGas(
   ethBalanceAtomic: string,
   gasPriceWei: string,
+  gasUnitsFullCycle: bigint = MORPHO_GAS_UNITS_FULL_CYCLE,
 ): boolean {
-  return needsEthGasFor(ethBalanceAtomic, gasPriceWei, GAS_UNITS_FULL_CYCLE);
+  return needsEthGasFor(ethBalanceAtomic, gasPriceWei, gasUnitsFullCycle);
 }
 
 // ── execution ──────────────────────────────────────────────────────────────
@@ -479,10 +497,15 @@ function trackLeg(
   );
 }
 
+// The position route each venue serves. Both report the wallet's Ethereum
+// XAUt as `collateralBalanceAtomic`, which is what the arrival check reads.
+export const MORPHO_GOLD_POSITION_ROUTE = "/api/morpho/gold-position";
+
 // Read the wallet's Ethereum XAUt balance until it reflects the delivery.
 async function awaitXaut(args: {
   evmAddress: string;
   atLeastAtomic: bigint;
+  positionRoute: string;
   signal?: AbortSignal;
 }): Promise<bigint> {
   const deadline = Date.now() + ARRIVAL_TIMEOUT_MS;
@@ -491,7 +514,7 @@ async function awaitXaut(args: {
     if (args.signal?.aborted) return last;
     try {
       const res = await fetch(
-        `/api/morpho/gold-position?address=${encodeURIComponent(args.evmAddress)}`,
+        `${args.positionRoute}?address=${encodeURIComponent(args.evmAddress)}`,
         { cache: "no-store" },
       );
       if (res.ok) {
@@ -526,12 +549,15 @@ export async function executeGoldFunding(args: {
   // Wallet XAUt before funding, so the arrival check measures the delta rather
   // than an absolute the user may already have exceeded.
   xautBeforeAtomic: string;
+  // Which venue's position route confirms the arrival. Defaults to Morpho's.
+  positionRoute?: string;
   onProgress?: Report;
   signal?: AbortSignal;
 }): Promise<{ xautDeliveredAtomic: string }> {
   const report: Report = (p) => args.onProgress?.(p);
   const { plan } = args;
   const before = BigInt(args.xautBeforeAtomic || "0");
+  const positionRoute = args.positionRoute ?? MORPHO_GOLD_POSITION_ROUTE;
 
   // The gas leg is independent of the collateral legs, so it goes first and
   // bridges while the rest proceeds. It is always Solana-sourced.
@@ -690,6 +716,7 @@ export async function executeGoldFunding(args: {
   const after = await awaitXaut({
     evmAddress: args.evmAddress,
     atLeastAtomic: before + BigInt(plan.minXautAtomic),
+    positionRoute,
     signal: args.signal,
   });
   const delivered = after > before ? after - before : 0n;

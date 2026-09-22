@@ -10,8 +10,9 @@
 // worth at its own price, which is what the wallet could actually realise. The
 // breakdown carries each part's own value so that gap stays visible.
 
+import { SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
-import { XSTOCKS } from "@/lib/jupiter/xstocks";
+import { XSTOCKS, xstockByMint } from "@/lib/jupiter/xstocks";
 import type { HeldEquivalent } from "@/lib/trustware/planner";
 import type { NativeHolding } from "@/lib/trustware/native";
 import { nativeUiAmount } from "@/lib/trustware/native";
@@ -22,9 +23,11 @@ import {
   type OndoWalletHolding,
 } from "@/lib/trustware/ondo-holdings";
 import { unwindTargetFor } from "@/lib/ondo/unwind";
-import { totalAccountUsd } from "./balances";
 import type { AccountBalances } from "./balances";
-import { SOLANA_EQUIVALENT_TOKENS } from "./equivalent-tokens";
+import {
+  SOLANA_EQUIVALENT_TOKENS,
+  equivalentTokenByMint,
+} from "./equivalent-tokens";
 
 export interface HoldingPart {
   mint: string;
@@ -159,70 +162,233 @@ export function groupHoldings(
   return groups;
 }
 
-// Everything the account is worth, across every chain it holds on.
+// ── The account, enumerated once ───────────────────────────────────────────
 //
-// totalAccountUsd covers Solana alone. This adds the cross-chain equity
-// holdings, priced off their Solana twin, and the native gas balances, priced
-// from the native feed. Anything that cannot be priced contributes nothing
-// rather than guessing, so the figure only ever understates.
+// Every priced thing the account holds, one entry per asset per chain. The
+// header total is the sum of this list, and every surface that draws rows draws
+// them from it, so a balance can no longer be shown in a list and missing from
+// the total. That has now happened three times (off-Solana USDC, Ondo on
+// Ethereum, and the whole Portfolio tab reading a Solana-only total), each time
+// because a second copy of the sum was written next to the rows instead of
+// derived from them.
+//
+// Anything that cannot be priced is left out rather than counted at zero, so
+// the figure only ever understates.
+
+export type HoldingKind = "stable" | "native" | "stock";
+
+export interface PortfolioHolding {
+  // Unique across the list. Chain-scoped, because the same symbol is genuinely
+  // held on several chains and a symbol alone collides (USDC, ETH).
+  key: string;
+  symbol: string;
+  name: string;
+  chainLabel: string;
+  amount: number;
+  usd: number;
+  kind: HoldingKind;
+  // The curated xStock mint whose price history this holding follows, when one
+  // exists. /api/jupiter/chart only serves the curated catalog, so this is the
+  // mint a trend line can actually fetch, which is not always the mint the
+  // holding was priced at: TSLAon has its own price but no chart, and it tracks
+  // TSLAx one for one. Undefined means "no history available", which covers
+  // dollar-denominated balances (correctly flat) and EVM gas (a real gap).
+  chartMint?: string;
+}
+
+export function portfolioHoldings(
+  balances: AccountBalances | null,
+  prices: JupiterPriceMap | null,
+  crossChain: HeldEquivalent[] = [],
+  native: NativeHolding[] = [],
+  nativePrices: Record<string, number> = {},
+  // Ondo collateral withdrawn to the user's Ethereum wallet. Kept apart from
+  // `crossChain` for the reason lib/trustware/ondo-holdings.ts gives: most Ondo
+  // margin tokens have no borrow vault and so are not convertible equivalents.
+  ondo: OndoWalletHolding[] = [],
+  // USDC held off Solana. Monad USDC is deliberately absent and is appended by
+  // the caller from its own read, so there is no double count.
+  stables: StableHolding[] = [],
+): PortfolioHolding[] {
+  const out: PortfolioHolding[] = [];
+
+  if (balances) {
+    if (balances.usdc > 0) {
+      out.push({
+        key: "solana:USDC",
+        symbol: "USDC",
+        name: "US Dollar",
+        chainLabel: "Solana",
+        amount: balances.usdc,
+        usd: balances.usdc,
+        kind: "stable",
+      });
+    }
+
+    const solPrice = prices?.[SOL_MINT]?.usdPrice;
+    if (solPrice && balances.sol > 0) {
+      out.push({
+        key: "solana:SOL",
+        symbol: "SOL",
+        name: "Solana",
+        chainLabel: "Solana",
+        amount: balances.sol,
+        usd: balances.sol * solPrice,
+        kind: "native",
+      });
+    }
+
+    for (const [mint, amount] of Object.entries(balances.xstocks)) {
+      const price = prices?.[mint]?.usdPrice;
+      if (!price || amount <= 0) continue;
+      const meta = xstockByMint(mint);
+      out.push({
+        key: mint,
+        symbol: meta?.symbol ?? mint.slice(0, 4),
+        name: meta?.name ?? "Tokenized asset",
+        chainLabel: "Solana",
+        amount,
+        usd: amount * price,
+        kind: "stock",
+        chartMint: meta ? mint : undefined,
+      });
+    }
+
+    // Ondo's Solana mints. Not tradable here, but the value is in the wallet
+    // either way, and omitting it makes the total disagree with the rows.
+    for (const [mint, amount] of Object.entries(balances.equivalents)) {
+      const price = prices?.[mint]?.usdPrice;
+      if (!price || amount <= 0) continue;
+      const meta = equivalentTokenByMint(mint);
+      out.push({
+        key: mint,
+        symbol: meta?.symbol ?? mint.slice(0, 4),
+        name: meta?.name ?? "Tokenized asset",
+        chainLabel: "Solana",
+        amount,
+        usd: amount * price,
+        kind: "stock",
+        // Its own mint has no chart. It tracks the xStock one for one, so the
+        // xStock's curve is the honest shape for it.
+        chartMint: meta?.xstockMint,
+      });
+    }
+  }
+
+  for (const held of crossChain) {
+    // Solana-side equivalents came out of `balances.equivalents` above.
+    if (held.source.kind === "solana") continue;
+    // The registry lists both issuers on EVM: Ondo's TSLAon, which has a Solana
+    // twin to price off, and Backed's TSLAx, which does not because the Solana
+    // xStock IS that asset. Looking only for a twin dropped every xStock-issued
+    // EVM holding from the total while groupHoldings rendered it as a row.
+    const twin = SOLANA_EQUIVALENT_TOKENS.find(
+      (t) => t.symbol === held.source.symbol,
+    );
+    const xstock = twin
+      ? undefined
+      : XSTOCKS.find((x) => x.symbol === held.source.symbol);
+    const priceMint = twin?.mint ?? xstock?.mint;
+    const price = priceMint ? prices?.[priceMint]?.usdPrice : undefined;
+    if (!price) continue;
+    const amount = Number(held.balanceAtomic) / 10 ** held.source.decimals;
+    if (amount <= 0) continue;
+    out.push({
+      key: `${held.source.chain}:${held.source.token}`,
+      symbol: held.source.symbol,
+      name: twin?.name ?? xstock?.name ?? "Tokenized asset",
+      chainLabel: held.source.chainLabel,
+      amount,
+      usd: amount * price,
+      kind: "stock",
+      chartMint: xstock?.mint ?? twin?.xstockMint,
+    });
+  }
+
+  for (const holding of native) {
+    const price = nativePrices[holding.priceId];
+    const amount = nativeUiAmount(holding);
+    if (!price || amount <= 0) continue;
+    out.push({
+      key: `${holding.chain}:${holding.symbol}`,
+      symbol: holding.symbol,
+      name: "Gas",
+      chainLabel: holding.chainLabel,
+      amount,
+      usd: amount * price,
+      kind: "native",
+    });
+  }
+
+  // Priced off the matching Solana xStock: SPCXon and SPCXx track the same
+  // underlying, and the mint is what this app has a price feed for.
+  for (const holding of ondo) {
+    const target = unwindTargetFor(holding.symbol);
+    if (!target) continue;
+    const price = prices?.[target.mint]?.usdPrice;
+    const amount = ondoHoldingUiAmount(holding);
+    if (!price || amount <= 0) continue;
+    out.push({
+      key: `1:${holding.contractAddress}`,
+      symbol: holding.symbol,
+      name: xstockByMint(target.mint)?.name ?? "Tokenized asset",
+      chainLabel: "Ethereum",
+      amount,
+      usd: amount * price,
+      kind: "stock",
+      chartMint: target.mint,
+    });
+  }
+
+  // USDC is dollar denominated, so the balance is the USD figure. No price feed
+  // to miss and nothing to understate.
+  for (const stable of stables) {
+    const amount = stableUiAmount(stable);
+    if (amount <= 0) continue;
+    out.push({
+      key: `${stable.chain}:${stable.symbol}`,
+      symbol: stable.symbol,
+      name: "US Dollar",
+      chainLabel: stable.chainLabel,
+      amount,
+      usd: amount,
+      kind: "stable",
+    });
+  }
+
+  return out;
+}
+
+export function sumHoldingsUsd(holdings: PortfolioHolding[]): number {
+  return holdings.reduce((sum, h) => sum + h.usd, 0);
+}
+
+// Everything the account is worth on Solana and on the chains the Trustware
+// scan reads. Monad and Lighter sit outside that scan and are added by the
+// caller from its own read.
+//
+// Deliberately the sum of portfolioHoldings rather than its own walk over the
+// same inputs: the two drifting apart is the bug this file keeps growing
+// comments about.
 export function totalPortfolioUsd(
   balances: AccountBalances | null,
   prices: JupiterPriceMap | null,
   crossChain: HeldEquivalent[],
   native: NativeHolding[],
   nativePrices: Record<string, number>,
-  // Ondo collateral withdrawn to the user's Ethereum wallet. Optional so every
-  // existing call site keeps working, but a caller that renders these as rows
-  // must pass them: a balance shown in the list and missing from the total is
-  // the thing that makes someone ask where their money went.
   ondo: OndoWalletHolding[] = [],
-  // USDC held off Solana, from the same wallet scan the USDC row renders. It
-  // was missing here while being displayed there, so a wallet holding $29.90
-  // of Ethereum USDC showed it in the list and left it out of the total. That
-  // is the exact failure the note above warns about, and this is the second
-  // time it has happened, so it is a parameter rather than a lookup: every
-  // caller that renders these rows has to pass them.
   stables: StableHolding[] = [],
 ): number | null {
-  const solana = totalAccountUsd(balances, prices);
-  if (solana == null) return null;
-
-  let total = solana;
-
-  for (const held of crossChain) {
-    // Solana-side equivalents are already inside totalAccountUsd.
-    if (held.source.kind === "solana") continue;
-    const twin = SOLANA_EQUIVALENT_TOKENS.find(
-      (t) => t.symbol === held.source.symbol,
-    );
-    const price = twin ? prices?.[twin.mint]?.usdPrice : undefined;
-    if (!price) continue;
-    total += (Number(held.balanceAtomic) / 10 ** held.source.decimals) * price;
-  }
-
-  for (const holding of native) {
-    const price = nativePrices[holding.priceId];
-    if (!price) continue;
-    total += nativeUiAmount(holding) * price;
-  }
-
-  // Priced off the matching Solana xStock: SPCXon and SPCXx track the same
-  // underlying, and the mint is what this app has a price feed for. No price
-  // means the holding is left out of the total rather than counted at zero.
-  for (const holding of ondo) {
-    const target = unwindTargetFor(holding.symbol);
-    const price = target ? prices?.[target.mint]?.usdPrice : undefined;
-    if (!price) continue;
-    total += ondoHoldingUiAmount(holding) * price;
-  }
-
-  // USDC is dollar denominated, so the balance is the USD figure. No price
-  // feed to miss and nothing to understate. Monad USDC is deliberately absent
-  // from this list and is added by the callers from their own read, so there
-  // is no double count.
-  for (const stable of stables) {
-    total += stableUiAmount(stable);
-  }
-
-  return total;
+  if (!balances) return null;
+  return sumHoldingsUsd(
+    portfolioHoldings(
+      balances,
+      prices,
+      crossChain,
+      native,
+      nativePrices,
+      ondo,
+      stables,
+    ),
+  );
 }

@@ -12,6 +12,7 @@ import { SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { AssetLogo } from "@/components/AssetLogo";
 import type { AccountBalances } from "@/lib/solana/balances";
+import type { EarnPositionsView } from "@/lib/positions/use-earn-positions";
 import {
   groupHoldings,
   totalPortfolioUsd,
@@ -35,7 +36,8 @@ import { nativeUiAmount, type NativeHolding } from "@/lib/trustware/native";
 import { stableUiAmount } from "@/lib/trustware/stables";
 import { BaseReturnForm } from "./BaseReturnForm";
 import { MonadFundForm } from "./MonadFundForm";
-import { SendForm } from "./SendForm";
+import { SendWidget } from "./SendWidget";
+import { ReceiveWidget } from "./ReceiveWidget";
 import { FundMenu, type FundOption } from "./FundMenu";
 import {
   Sheet,
@@ -124,6 +126,7 @@ export function WalletPanel({
   balancesRefreshing,
   prices,
   scan,
+  earn,
   onSent,
   onRefresh,
 }: {
@@ -135,6 +138,10 @@ export function WalletPanel({
   // Cross-chain holdings and native balances, scanned once by the page so both
   // the header total and these rows read from the same snapshot.
   scan: WalletScan;
+  // Vault deposits, read once by the page and handed down. Not read here,
+  // because the page's own total needs the same number and two reads would be
+  // two chances to disagree.
+  earn: EarnPositionsView;
   onSent: () => void;
   onRefresh: () => Promise<void> | void;
 }) {
@@ -145,7 +152,10 @@ export function WalletPanel({
   const [open, setOpen] = useState(true);
   // Which equity group is showing its breakdown. One at a time.
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
+  // Send is one self-contained widget now: it owns the network step, the
+  // compose step and the signing, so this is the only state the panel keeps
+  // for it.
+  const [sendOpen, setSendOpen] = useState(false);
   const [receiving, setReceiving] = useState(false);
   const [fundingMonad, setFundingMonad] = useState(false);
   const [movingOndo, setMovingOndo] = useState(false);
@@ -206,8 +216,10 @@ export function WalletPanel({
     scan.stables,
   );
   // Mirrors the header total in app/app/page.tsx: a missing Lighter read
-  // counts as 0, so the total can only understate.
-  const offSolanaUsd = monadUsd + (lighter.usd ?? 0);
+  // counts as 0, so the total can only understate. Vault deposits are in for
+  // the same reason the Lighter margin is: the assets left the token account
+  // when they were deposited and are still the user's.
+  const offSolanaUsd = monadUsd + (lighter.usd ?? 0) + earn.totalUsd;
   const totalUsd =
     solanaTotalUsd != null
       ? solanaTotalUsd + offSolanaUsd
@@ -457,6 +469,7 @@ export function WalletPanel({
               onRefresh();
               monad.refresh();
               lighter.refresh();
+              void earn.refresh();
             }}
             disabled={balancesRefreshing}
             className="underline-offset-2 hover:text-white hover:underline disabled:opacity-50"
@@ -538,6 +551,38 @@ export function WalletPanel({
                 }
               />
             )}
+            {/* Vault deposits, next to the Lighter margin for the same reason
+                it sits next to the wallet's dollars: all three are value held
+                somewhere other than the token account. Each row names its venue
+                and carries the rate it is earning, which is the one figure that
+                makes a deposit different from a balance. */}
+            {earn.rows.map((row) => (
+              <BalanceRow
+                key={row.key}
+                label={row.venue}
+                sublabel={row.note ? `${row.symbol} · ${row.note}` : row.symbol}
+                amount={row.amount ?? row.usd}
+                decimals={2}
+                usd={row.usd}
+                icon={
+                  <AssetLogo
+                    xstock={
+                      row.asset ?? {
+                        symbol: row.symbol,
+                        name: row.venue,
+                        logo: row.venueLogo,
+                      }
+                    }
+                    size={30}
+                  />
+                }
+                badge={
+                  <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+                    Vault
+                  </span>
+                }
+              />
+            ))}
             {groups.map((group) => (
               <HoldingRow
                 key={group.key}
@@ -762,7 +807,7 @@ export function WalletPanel({
             <ActionButton onClick={() => setReceiving(true)}>
               Receive
             </ActionButton>
-            <ActionButton onClick={() => setSending(true)}>Send</ActionButton>
+            <ActionButton onClick={() => setSendOpen(true)}>Send</ActionButton>
           </div>
           {fundError && (
             <p className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/60">
@@ -770,24 +815,11 @@ export function WalletPanel({
             </p>
           )}
 
-          <Sheet open={receiving} onOpenChange={setReceiving}>
-            <SheetContent side="right" className="w-full sm:max-w-md">
-              <SheetHeader className="border-b border-white/10">
-                <SheetTitle>Receive tokens</SheetTitle>
-                <SheetDescription>
-                  Two wallets, one account. Send each asset to the address for
-                  the chain it lives on.
-                </SheetDescription>
-              </SheetHeader>
-              <div className="space-y-3 overflow-y-auto px-4 py-4">
-                <ReceiveAddress
-                  chains={SOLANA_RECEIVE_CHAINS}
-                  address={walletAddress}
-                />
-                <EvmReceiveAddress />
-              </div>
-            </SheetContent>
-          </Sheet>
+          <ReceiveWidget
+            open={receiving}
+            onOpenChange={setReceiving}
+            solanaAddress={walletAddress}
+          />
 
           {/* Tokenized stocks arriving from another chain.
               Picking the ticker here rather than in the Fund menu is what keeps
@@ -972,27 +1004,15 @@ export function WalletPanel({
             </SheetContent>
           </Sheet>
 
-          <Sheet open={sending} onOpenChange={setSending}>
-            <SheetContent side="right" className="w-full sm:max-w-md">
-              <SheetHeader className="border-b border-white/10">
-                <SheetTitle>Send tokens</SheetTitle>
-                <SheetDescription className="font-mono text-xs">
-                  From {walletAddress.slice(0, 4)}…{walletAddress.slice(-4)}
-                </SheetDescription>
-              </SheetHeader>
-              <div className="overflow-y-auto px-4 pb-4">
-                <SendForm
-                  walletAddress={walletAddress}
-                  balances={balances}
-                  prices={prices}
-                  onClose={() => setSending(false)}
-                  onSent={() => {
-                    onSent();
-                  }}
-                />
-              </div>
-            </SheetContent>
-          </Sheet>
+          <SendWidget
+            open={sendOpen}
+            onOpenChange={setSendOpen}
+            solanaAddress={walletAddress}
+            balances={balances}
+            prices={prices}
+            onSent={onSent}
+          />
+
         </>
       )}
     </div>
@@ -1086,72 +1106,18 @@ function formatEquivalentAmount(atomic: string, decimals: number): string {
   return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
-// A chain an address can receive on.
-type ReceiveChain = {
-  name: string;
-  logo: string;
-};
-
-const SOLANA_RECEIVE_CHAINS: ReceiveChain[] = [
-  { name: "Solana", logo: "/logos/solana.png" },
-];
-
-// The three chains the embedded EVM wallet can spend on, which is why only
-// these three are named. Each is declared in Privy's supportedChains and
-// carries something the app uses: registered stock equivalents on the first
-// two, USDC and MON gas for Morpho earn on Monad.
-const EVM_RECEIVE_CHAINS: ReceiveChain[] = [
-  { name: "Ethereum", logo: "/logos/eth.png" },
-  { name: "BNB Chain", logo: "/logos/bnb.png" },
-  { name: "Base", logo: "/logos/base.svg" },
-  { name: "Monad", logo: "/logos/monad.png" },
-];
-
-// Which chains an address serves, as a logo row rather than a sentence.
-//
-// This is the whole header of a receive card. Naming three chains and what each
-// one is for ran to four lines a user had to read before doing the one thing
-// this panel is for, and the answer they actually need is which chains reach
-// this address.
-function ChainRow({ chains }: { chains: ReceiveChain[] }) {
-  return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-      {chains.map((chain) => (
-        <span
-          key={chain.name}
-          className="flex items-center gap-1.5 text-[11px] leading-none text-white/60"
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={chain.logo}
-            alt=""
-            aria-hidden="true"
-            className="h-4 w-4 shrink-0 rounded-full object-cover"
-          />
-          {chain.name}
-        </span>
-      ))}
-    </div>
-  );
-}
-
-// One receiving address: which chains reach it, the address, and a way to copy.
-//
-// `chains` draws the logo row; `label` is the plain-text header the deposit
-// panel uses, where each card already names a single chain and a row would only
-// repeat it.
+// One receiving address inside the deposit panel: a header, the address, and a
+// way to copy. The standalone Receive flow is components/ReceiveWidget.tsx,
+// which draws a QR; this stays plain text because each deposit card is one row
+// in a list of chains rather than a thing to point a phone at.
 function ReceiveAddress({
   label,
-  chains,
   address,
   accepts,
-  warning,
 }: {
-  label?: string;
-  chains?: ReceiveChain[];
+  label: string;
   address: string;
   accepts?: string;
-  warning?: string;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -1165,98 +1131,25 @@ function ReceiveAddress({
     }
   }
 
-  const copyButton = (
-    <button
-      type="button"
-      onClick={copy}
-      className="shrink-0 text-xs text-white/60 underline-offset-2 hover:text-white hover:underline"
-    >
-      {copied ? "Copied" : "Copy"}
-    </button>
-  );
-
   return (
     <div className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-3">
       <div className="flex items-center justify-between gap-3">
-        {chains ? (
-          <ChainRow chains={chains} />
-        ) : (
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-            {label}
-          </div>
-        )}
-        {copyButton}
+        <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+          {label}
+        </div>
+        <button
+          type="button"
+          onClick={copy}
+          className="shrink-0 text-xs text-white/60 underline-offset-2 hover:text-white hover:underline"
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
       </div>
       <div className="mt-1.5 break-all font-mono text-xs text-white">
         {address}
       </div>
       {accepts && <p className="mt-1.5 text-[11px] text-white/50">{accepts}</p>}
-      {warning && (
-        <p className="mt-1 text-[11px] text-aeras-warning">{warning}</p>
-      )}
     </div>
-  );
-}
-
-// The EVM half of receiving.
-//
-// Privy provisions an embedded EVM wallet alongside the Solana one, and it is
-// the same 0x address on every EVM chain. Nothing surfaced it before, so the
-// cross-chain deposit path the borrow flow already supports had no way to be
-// funded.
-//
-// Which chains it serves, and what each one is for, is EVM_RECEIVE_CHAINS.
-// Assets sent on any other EVM chain arrive at this same address and then
-// cannot be moved from here, so the warning says so rather than leaving it to
-// be discovered. That is the one thing the logo row cannot carry, because it is
-// about the chains that are absent from the row.
-function EvmReceiveAddress() {
-  const { address, ready } = useEmbeddedEvmWallet();
-  const { createWallet } = useCreateWallet();
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  if (!ready || !address) {
-    // Reloading would not help: an account created before this app asked for an
-    // EVM wallet simply does not have one, and Privy only provisions at login.
-    return (
-      <div className="rounded-xl border border-white/10 bg-white/5 px-3.5 py-3">
-        <ChainRow chains={EVM_RECEIVE_CHAINS} />
-        <p className="mt-2 text-[11px] text-white/50">
-          This account has no Ethereum wallet yet. Creating one takes a moment
-          and needs no signature.
-        </p>
-        <button
-          type="button"
-          disabled={creating}
-          onClick={async () => {
-            setError(null);
-            setCreating(true);
-            try {
-              await createWallet();
-            } catch (err) {
-              setError(err instanceof Error ? err.message : String(err));
-            } finally {
-              setCreating(false);
-            }
-          }}
-          className="mt-2 w-full rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-medium text-white transition-colors hover:border-white/25 disabled:opacity-50"
-        >
-          {creating ? "Creating…" : "Create Ethereum wallet"}
-        </button>
-        {error && (
-          <p className="mt-1.5 text-[11px] text-aeras-negative">{error}</p>
-        )}
-      </div>
-    );
-  }
-
-  return (
-    <ReceiveAddress
-      chains={EVM_RECEIVE_CHAINS}
-      address={address}
-      warning="Assets sent on any other chain reach this address but cannot be moved."
-    />
   );
 }
 

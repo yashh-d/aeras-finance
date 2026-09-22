@@ -233,6 +233,7 @@ export const XSTOCKS: readonly XStock[] = [
     // "mcdonald-s-xstock" and not "mcdonalds-xstock".
     coingeckoId: "mcdonald-s-xstock",
     category: "stocks",
+    logo: "/logos/markets/MCD.png",
   },
   {
     symbol: "AVGOx",

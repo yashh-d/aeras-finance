@@ -421,7 +421,7 @@ function InstructionsCard() {
         </Step>
         <Step n={4} title="Convert USDC to fiat">
           In the exchange, sell USDC for your local currency (USD, EUR, GBP,
-          etc.). This is usually a one-click "Convert" or market sell.
+          etc.). This is usually a one-click &quot;Convert&quot; or market sell.
         </Step>
         <Step n={5} title="Withdraw to your bank">
           Initiate a bank withdrawal from the exchange. ACH and SEPA typically

@@ -263,12 +263,18 @@
   font-size: clamp(40px, 6.2vw, 76px);
   line-height: 1.02;
   letter-spacing: -0.035em;
-  max-width: 13ch;
+  /* 14ch rather than 13ch so the headline still sets in four lines once the
+     highlighted phrase below is held together. */
+  max-width: 14ch;
+  text-wrap: balance;
   margin: 0 auto 24px;
 }
 .aeras-landing h1 em {
   font-style: normal;
   color: var(--blue);
+  /* Keep the highlighted phrase intact: the colour reads as one unit, so a
+     break inside it looks like two separate highlights. */
+  white-space: nowrap;
 }
 .aeras-landing .hero-sub {
   font-size: clamp(16px, 2vw, 20px);
