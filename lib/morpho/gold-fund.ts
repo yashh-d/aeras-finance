@@ -83,15 +83,31 @@ export type { EvmSigner, SolanaSigner } from "@/lib/trustware/execute";
 
 // ── tolerances ─────────────────────────────────────────────────────────────
 
-// How much value a conversion may destroy before the plan refuses.
+// How much value a conversion may destroy before the plan stops and asks.
 //
-// Tighter than lib/ondo/fund.ts's 10%, and deliberately so: that bound covers
-// illiquid single-name equity wrappers where SNDKon really does route at half
-// its mark. Gold is the most liquid thing in this app. Measured costs are 0.3%
-// to 0.4% per hop, so a two-hop conversion should land near 0.8%; 3% is roughly
-// four times the expected cost, which leaves room for a volatile hour without
-// leaving room for a bad route.
-const MAX_GOLD_FUNDING_LOSS_BPS = 300;
+// Tighter than lib/ondo/fund.ts's soft bound, and deliberately so: that one
+// covers illiquid single-name equity wrappers. Gold is the most liquid thing in
+// this app. Measured costs are 0.3% to 0.4% per hop, so a two-hop conversion
+// should land near 0.8% on a well-sized amount; 3% is roughly four times that,
+// which leaves room for a volatile hour without leaving room for a bad route.
+//
+// This is a SOFT bound, the same shape lib/ondo/fund.ts settled on. Past it
+// the conversion is priced, named in dollars and offered for explicit
+// confirmation rather than refused, because past it is not usually a bad
+// route: it is a small amount. Delivering on Ethereum carries a fixed cost of
+// about a dollar (measured 2026-09-22 at 0.1 gwei: $1.08 on a $10.10
+// conversion, 10.7%), and that dollar is 0.1% of a $1,000 conversion and 10%
+// of a $10 one. Whether a $1 fee is worth paying on a $10 test is the user's
+// call, not this module's, so the plan says what it costs and waits.
+export const MAX_GOLD_FUNDING_LOSS_BPS = 300;
+
+// The bound with no override. Nothing at this level is a fee on a small
+// amount: with the fixed cost near a dollar, a quarter of the value is only
+// reached below about $4, where Trustware's own $1 USD hint floor already
+// makes the quote meaningless, and above that size it can only mean a route
+// that delivers a fraction of what it sells. Wider than Ondo's 10% on purpose:
+// the $10 test that motivated the soft bound sits above 10%.
+export const HARD_MAX_GOLD_FUNDING_LOSS_BPS = 2_500;
 
 // Gas units for one full borrow lifecycle on Ethereum, measured against typical
 // Morpho Blue costs: ERC-20 approve (~50k), supplyCollateral (~130k), borrow
@@ -130,25 +146,55 @@ export type GoldCollateralRoute =
   // at execution time against the USDC that actually arrived.
   | { mode: "via-usdc"; sell: GoldRouteLeg; buy: GoldRouteLeg };
 
-export interface GoldFundingReady {
-  kind: "ready";
-  route: GoldCollateralRoute;
-  // Present when the wallet cannot pay Ethereum gas for a full borrow cycle.
-  gas?: GoldRouteLeg;
+// What a priced conversion is worth on both sides. Shared by the ready plan
+// and the confirmation prompt, so the prompt shows the same figures the plan
+// would run with.
+export interface GoldFundingValuation {
   // XAUt expected and guaranteed, 6-decimal atomic.
   expectedXautAtomic: string;
   minXautAtomic: string;
   // Both sides valued the honest way: the source at what it sells for, the
-  // delivered XAUt at the Morpho oracle. Never at a registry price.
+  // delivered XAUt at the venue's oracle. Never at a registry price.
   sourceValueUsd: number;
+  // Valued at the guaranteed minimum, which is what the bound is checked
+  // against and what the plan promises.
   deliveredValueUsd: number;
   lossBps: number;
+  // The same two figures at the quote's expected delivery, before slippage.
+  // The bound is checked on the floor, but the floor is the worst case and
+  // a user deciding whether to accept a cost should see the likely one too.
+  expectedDeliveredValueUsd: number;
+  expectedLossBps: number;
+  // Bridge and relayer fees across every collateral leg, as Trustware reports
+  // them. This is the part that does not shrink with the amount. Null when no
+  // leg reported a figure.
+  feesUsd: number | null;
+}
+
+export interface GoldFundingReady extends GoldFundingValuation {
+  kind: "ready";
+  route: GoldCollateralRoute;
+  // Present when the wallet cannot pay Ethereum gas for a full borrow cycle.
+  gas?: GoldRouteLeg;
   // What the gas top-up costs, USD. Null when no top-up is needed.
   gasCostUsd: number | null;
 }
 
+// Priced, routable, and costlier than the soft bound. Carries the numbers the
+// user has to see before they can say yes; re-plan with `acceptLossBps` set
+// to `lossBps` to go ahead.
+export interface GoldFundingNeedsConfirmation extends GoldFundingValuation {
+  kind: "needs-confirmation";
+  // Worst-case and likely cost in dollars, the two figures the decision
+  // turns on.
+  costUsd: number;
+  expectedCostUsd: number;
+  reason: string;
+}
+
 export type GoldFundingPlan =
   | GoldFundingReady
+  | GoldFundingNeedsConfirmation
   | { kind: "blocked"; reason: string };
 
 // XAUt atomic units valued at the market's own oracle. This is the only
@@ -180,6 +226,10 @@ export async function planGoldFunding(args: {
   // Gas units a full borrow cycle costs at the destination venue. Defaults to
   // the Morpho figure.
   gasUnitsFullCycle?: bigint;
+  // The loss, in bps, the user has already been shown and accepted. A plan
+  // costlier than this re-prompts rather than quietly running at a worse
+  // rate than they agreed to.
+  acceptLossBps?: number;
   fetchQuote?: QuoteFn;
 }): Promise<GoldFundingPlan> {
   const fetchQuote = args.fetchQuote ?? fetchTrustwareQuoteViaProxy;
@@ -348,10 +398,53 @@ export async function planGoldFunding(args: {
   const lossBps = Math.round(
     ((sourceValueUsd - deliveredValueUsd) / sourceValueUsd) * 10_000,
   );
-  if (lossBps > MAX_GOLD_FUNDING_LOSS_BPS) {
+  const expectedDeliveredValueUsd = xautToUsd(expectedXaut, args.oracleUnitPrice);
+  const expectedLossBps = Math.round(
+    ((sourceValueUsd - expectedDeliveredValueUsd) / sourceValueUsd) * 10_000,
+  );
+  const legs = route.mode === "direct" ? [route.leg] : [route.sell, route.buy];
+  const reported = legs.map((l) => l.totalFeesUsd).filter((f): f is number => f != null);
+  const feesUsd = reported.length ? reported.reduce((a, b) => a + b, 0) : null;
+  const valuation: GoldFundingValuation = {
+    expectedXautAtomic: expectedXaut.toString(),
+    minXautAtomic: minXaut.toString(),
+    sourceValueUsd,
+    deliveredValueUsd,
+    lossBps,
+    expectedDeliveredValueUsd,
+    expectedLossBps,
+    feesUsd,
+  };
+
+  if (lossBps > HARD_MAX_GOLD_FUNDING_LOSS_BPS) {
     return {
       kind: "blocked",
-      reason: `Converting ${source.symbol} into XAUt would lose about ${(lossBps / 100).toFixed(1)}% of its value right now (about $${(sourceValueUsd - deliveredValueUsd).toFixed(2)}). That is above the ${MAX_GOLD_FUNDING_LOSS_BPS / 100}% limit, so nothing was sent. Try a different amount or come back later.`,
+      reason: `Converting $${sourceValueUsd.toFixed(2)} of ${source.symbol} would deliver about $${deliveredValueUsd.toFixed(2)} of XAUt, a ${(lossBps / 100).toFixed(1)}% loss. That is a broken route, not a fee, so nothing was sent. Try a larger amount or come back later.`,
+    };
+  }
+
+  // Past the soft bound the caller must have seen this exact figure and said
+  // yes to it. A quote that moves against them between accepting and signing
+  // re-prompts instead of quietly costing more than they agreed to.
+  const accepted = args.acceptLossBps ?? -1;
+  if (lossBps > MAX_GOLD_FUNDING_LOSS_BPS && lossBps > accepted) {
+    const costUsd = sourceValueUsd - deliveredValueUsd;
+    const expectedCostUsd = sourceValueUsd - expectedDeliveredValueUsd;
+    // Trustware's reported fees understate the fixed part: measured live on
+    // 2026-09-22, $0.37 was reported on a $10.64 conversion that cost $1.13,
+    // and the rest is the destination-side cost the estimate folds into the
+    // rate. So the copy states what is reported and what a well-sized
+    // conversion measures, and does not project a break-even from the fees.
+    const fixed =
+      feesUsd != null && feesUsd > 0
+        ? ` Trustware reports $${feesUsd.toFixed(2)} of that as bridge and relayer fees, which are the same at any size; a well-sized conversion measures under 1%.`
+        : " Most of that is the fixed cost of delivering on Ethereum, which is the same at any size; a well-sized conversion measures under 1%.";
+    return {
+      kind: "needs-confirmation",
+      ...valuation,
+      costUsd,
+      expectedCostUsd,
+      reason: `Converting $${sourceValueUsd.toFixed(2)} of ${source.symbol} delivers at least $${deliveredValueUsd.toFixed(2)} of XAUt, a cost of $${costUsd.toFixed(2)} (${(lossBps / 100).toFixed(1)}%) in the worst case and about $${expectedCostUsd.toFixed(2)} at the quoted rate.${fixed} Nothing is sent until you accept it.`,
     };
   }
 
@@ -382,13 +475,9 @@ export async function planGoldFunding(args: {
 
   return {
     kind: "ready",
+    ...valuation,
     route,
     gas: gasPlan.leg,
-    expectedXautAtomic: expectedXaut.toString(),
-    minXautAtomic: minXaut.toString(),
-    sourceValueUsd,
-    deliveredValueUsd,
-    lossBps,
     gasCostUsd: gasPlan.costUsd,
   };
 }

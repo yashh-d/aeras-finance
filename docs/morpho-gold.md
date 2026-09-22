@@ -125,8 +125,15 @@ GLDx on Ethereum at $7,160 against a real sale price near $425, a 17x error.
 `approxUnitUsd` exists only to satisfy Trustware's `fromAmountUSD` requirement on
 Solana routes and to order a picker. `gold-fund.ts` values the delivered side at
 the Morpho oracle (measured within 0.42% of a live market quote) and the source
-side at what it actually sells for, then refuses above 3% loss. This is the same
-conclusion `lib/ondo/fund.ts` reached by a different road.
+side at what it actually sells for. Above 3% loss it stops and asks: the plan
+comes back as `needs-confirmation` with the cost in dollars, worst case and at
+the quoted rate, and the fixed bridge and relayer part named, and the card
+re-plans with that exact figure in `acceptLossBps` once the user accepts it.
+Above 25% it refuses with no override. The soft bound became a prompt on
+2026-09-22 after a $10 test read as a 10.7% loss: delivering on Ethereum costs
+about a dollar whatever the size, and whether that dollar is worth paying on a
+$10 test is the user's decision. This is the same shape `lib/ondo/fund.ts`
+reached by a different road.
 
 ### What routes, and what does not
 

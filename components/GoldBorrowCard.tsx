@@ -276,6 +276,9 @@ function GoldMarketForm({
   const [state, setState] = useState<FormState>({ kind: "idle" });
   const [plan, setPlan] = useState<GoldFundingPlan | null>(null);
   const [planning, setPlanning] = useState(false);
+  // The cost the user has accepted for this amount from this source. Cleared
+  // with the plan whenever either changes. See AaveGoldBorrowCard.
+  const [acceptedLossBps, setAcceptedLossBps] = useState<number | null>(null);
 
   const collateralDecimals = market.collateralToken.decimals;
   const loanDecimals = market.loanToken.decimals;
@@ -340,12 +343,14 @@ function GoldMarketForm({
     setMode(next);
     setInput("");
     setPlan(null);
+    setAcceptedLossBps(null);
     setState({ kind: "idle" });
   }
 
   function setAmount(next: string) {
     setInput(next);
     setPlan(null);
+    setAcceptedLossBps(null);
     if (state.kind !== "idle") setState({ kind: "idle" });
   }
 
@@ -380,7 +385,7 @@ function GoldMarketForm({
   // the Ethereum wallet is a plain approve-and-supply.
   const needsPlan = mode === "supply" && Boolean(selectedHolding);
   const planKey = needsPlan
-    ? `${sourceId}|${amountAtomic}|${wallet.gasPriceWei}`
+    ? `${sourceId}|${amountAtomic}|${wallet.gasPriceWei}|${acceptedLossBps ?? ""}`
     : "";
   const planSeq = useRef(0);
 
@@ -407,6 +412,7 @@ function GoldMarketForm({
           ethBalanceAtomic: wallet.ethBalanceAtomic,
           gasPriceWei: wallet.gasPriceWei,
           oracleUnitPrice: metric.oracleUnitPrice,
+          acceptLossBps: acceptedLossBps ?? undefined,
         });
         // A stale plan describes an amount the user has typed past. Drop it.
         if (seq === planSeq.current) setPlan(result);
@@ -455,7 +461,9 @@ function GoldMarketForm({
             throw new Error(
               plan?.kind === "blocked"
                 ? plan.reason
-                : "Still pricing the conversion. Try again in a moment.",
+                : plan?.kind === "needs-confirmation"
+                  ? "Accept the conversion cost first."
+                  : "Still pricing the conversion. Try again in a moment.",
             );
           }
           const { xautDeliveredAtomic } = await executeGoldFunding({
@@ -523,6 +531,8 @@ function GoldMarketForm({
 
   const busy = state.kind === "busy";
   const planBlocked = needsPlan && plan?.kind === "blocked";
+  const planConfirm =
+    needsPlan && plan?.kind === "needs-confirmation" ? plan : null;
   const planPending = needsPlan && (planning || !plan);
   const disabled =
     busy ||
@@ -530,6 +540,7 @@ function GoldMarketForm({
     overLimit ||
     !evm.ready ||
     planBlocked ||
+    Boolean(planConfirm) ||
     planPending;
 
   const unit =
@@ -695,6 +706,26 @@ function GoldMarketForm({
               <span className="text-white/50">Pricing the conversion…</span>
             ) : plan.kind === "blocked" ? (
               <span className="text-aeras-negative">{plan.reason}</span>
+            ) : plan.kind === "needs-confirmation" ? (
+              // Priced past the soft bound. Dollars and percent, worst case
+              // and likely case, and a button that re-plans with this exact
+              // figure accepted. See AaveGoldBorrowCard.
+              <div className="space-y-2">
+                <div className="text-white">
+                  This conversion costs {fmtUsd(plan.costUsd)}
+                </div>
+                <p className="leading-relaxed text-white/60">{plan.reason}</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAcceptedLossBps(plan.lossBps);
+                    if (state.kind !== "idle") setState({ kind: "idle" });
+                  }}
+                  className="aeras-press rounded-full border border-aeras-warning/50 bg-aeras-warning/15 px-3 py-1.5 text-xs font-medium text-white hover:bg-aeras-warning/25"
+                >
+                  Accept the {fmtUsd(plan.costUsd)} cost and continue
+                </button>
+              </div>
             ) : (
               <div className="space-y-1 text-white/60">
                 <div>
@@ -721,7 +752,7 @@ function GoldMarketForm({
         )}
 
         {/* What the position becomes */}
-        {projected && amountAtomic > 0n && !overLimit && !planBlocked && (
+        {projected && amountAtomic > 0n && !overLimit && !planBlocked && !planConfirm && (
           <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-[11px] text-white/60">
             <span>
               After:{" "}
