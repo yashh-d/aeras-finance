@@ -235,7 +235,6 @@ function AssetCard({
           label="Earn up to"
           value={best ? fmtSignedPct(best.net) : rates.loading ? "…" : "—"}
           tone={best ? (best.net > 0 ? "positive" : "warn") : "muted"}
-          sub={best ? best.option.label : rates.loading ? "reading rates" : "nothing can run right now"}
         />
         <ExposureStrip from={assetMark(xstock)} to={to} size={26} max={6} />
       </div>

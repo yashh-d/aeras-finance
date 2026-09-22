@@ -41,7 +41,6 @@ import {
   DetailCard,
   DetailColumns,
   EmptyState,
-  fmtPct,
   fmtSignedPct,
   GridCard,
   Pill,
@@ -86,23 +85,23 @@ function playMarks(r: ResolvedPlay, rates: StrategyRatesState): { from: Mark; to
 // A play's headline figure: the strategy's own figure from
 // lib/strategies/math.ts, at the play's preset, on the live rates. A play
 // that names no ratio borrows at the safe maximum, as every Trader borrow
-// does (docs/trader-mode-plan.md, D11).
+// does (docs/trader-mode-plan.md, D11). The figure and its label, nothing
+// under it (D16); the exposures are the strip.
 interface Headline {
   label: string;
   value: string;
   tone: "plain" | "positive" | "warn" | "muted";
-  sub: string;
 }
 
 function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRatesState): Headline {
   const { play } = r;
   const route = row?.route ?? borrowRouteFor(r.xstock.mint)!;
-  if (r.blocked) return { label: "Not available", value: "—", tone: "muted", sub: r.blocked };
+  if (r.blocked) return { label: r.blocked, value: "—", tone: "muted" };
   if (play.preset.kind === "earn") {
     const option = playOption(play, rates);
     const borrowApr = row?.borrowApr ?? null;
     if (!option || borrowApr == null) {
-      return { label: "Net on what you put in", value: "—", tone: "muted", sub: "reading rates" };
+      return { label: "Net on what you put in", value: "—", tone: "muted" };
     }
     const ratio = play.preset.ratio ?? maxBorrowRatio(route);
     const net = earnNetApy({
@@ -115,36 +114,20 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
       label: option.monDenominated ? "Net, in MON terms" : "Net on what you put in",
       value: fmtSignedPct(net),
       tone: net > 0 ? "positive" : "warn",
-      sub: `${fmtPct(option.apy)} at ${option.label}, borrowing at ${fmtPct(borrowApr)}`,
     };
   }
   if (play.preset.kind === "leverage") {
     const max = maxLeverageForRoute(route);
     const lev = play.preset.leverage === "max" ? max : Math.min(play.preset.leverage, max);
-    return {
-      label: "Exposure",
-      value: `${lev.toFixed(1)}×`,
-      tone: "plain",
-      sub: row?.borrowApr != null ? `one transaction, borrowing at ${fmtPct(row.borrowApr)}` : "one transaction",
-    };
+    return { label: "Exposure", value: `${lev.toFixed(1)}×`, tone: "plain" };
   }
   const ratio = play.preset.ratio ?? maxBorrowRatio(route);
   const nextHasMarket = r.next ? borrowRouteFor(r.next.mint) != null : true;
   if (!nextHasMarket) {
-    return {
-      label: "Exposure",
-      value: `${(1 + ratio).toFixed(2)}×`,
-      tone: "plain",
-      sub: `${Math.round(ratio * 100)}% of the stock's value into ${r.next?.symbol}`,
-    };
+    return { label: "Exposure", value: `${(1 + ratio).toFixed(2)}×`, tone: "plain" };
   }
   const p = ladderProjection({ equityUsd: 100, borrowRatio: ratio });
-  return {
-    label: "Exposure if run to the floor",
-    value: `${p.leverage.toFixed(2)}×`,
-    tone: "plain",
-    sub: `${p.rounds.length} rounds, each signed on its own`,
-  };
+  return { label: "Exposure", value: `${p.leverage.toFixed(2)}×`, tone: "plain" };
 }
 
 export function PlaysGrid({
@@ -254,7 +237,7 @@ function PlayCard({
       </div>
 
       <div className="mt-auto pt-1">
-        <BigFigure label={h.label} value={h.value} tone={h.tone} sub={h.sub} />
+        <BigFigure label={h.label} value={h.value} tone={h.tone} />
       </div>
     </GridCard>
   );
@@ -304,7 +287,7 @@ function PlayDetail({
             </div>
           </div>
         </div>
-        <BigFigure label={h.label} value={h.value} tone={h.tone} sub={h.sub} align="right" />
+        <BigFigure label={h.label} value={h.value} tone={h.tone} align="right" />
       </div>
 
       <DetailColumns

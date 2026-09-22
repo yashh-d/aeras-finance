@@ -292,6 +292,20 @@ position column carries marks too: the asset on "posted", USDC on
 "owed", the destination on "the loan is earning". `flow.test.ts` pins
 the arithmetic and the shape.
 
+**D16. No captions.** Asked for on 2026-09-22, in strong terms: nothing
+small under a figure. The headline on a play card and detail is the
+figure and its label alone (no "58% of the stock's value into PAXG", no
+"one transaction, borrowing at 5.69%"); the "earn up to" on a Buy + Earn
+card carries no venue line, since the strip shows the destination. The
+drawn flow is marks and verbs only: no "You put in", no "held as
+collateral", no "+58% of its value"; an edge reads "buy NVDAx", "borrow
+USDC" (dashed green, with the created figure once an amount is typed),
+"deposit", "stake" or "buy", and a mark carries a number under it only
+when the ticket has one. The USDC vaults draw as the venue's mark, not as
+USDC: Morpho with the Hyperithm mark beside it, Jupiter Lend and Kamino
+as their own marks, so "the Morpho sign" is what a vault deposit shows
+and the curator is still there, as a mark.
+
 ## Status (2026-09-22)
 
 Slices 0 to 2 are built and verified on a preview route against the live

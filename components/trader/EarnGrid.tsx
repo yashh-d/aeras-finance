@@ -159,7 +159,6 @@ function VenueCard({
           label="APY"
           value={apy == null ? (loading ? "…" : "—") : fmtPct(apy)}
           tone={apy == null ? "muted" : "positive"}
-          sub={quote?.basis ?? undefined}
         />
         <SmallFigure
           label="Staked"

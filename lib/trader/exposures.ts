@@ -7,7 +7,7 @@
 import { MAG7X_HOLDINGS } from "@/lib/glider/constants";
 import { xstockBySymbol, type XStock } from "@/lib/jupiter/xstocks";
 import type { EarnVenue } from "@/lib/strategies/rates";
-import { tokenLogoBySymbol, VENUE_LOGOS } from "@/lib/tokens/logos";
+import { curatorLogo, tokenLogoBySymbol, VENUE_LOGOS } from "@/lib/tokens/logos";
 
 import type { TierVenue } from "./tiers";
 
@@ -27,6 +27,14 @@ export function assetMark(x: XStock, key = x.mint): Mark {
 export const USDC_MARK: Mark = { key: "usdc", symbol: "USDC", name: "USDC", logo: tokenLogoBySymbol("USDC") };
 export const SHMON_MARK: Mark = { key: "shmon", symbol: "shMON", name: "shMON", logo: tokenLogoBySymbol("shMON") };
 export const ETH_MARK: Mark = { key: "eth", symbol: "ETH", name: "Ether", logo: VENUE_LOGOS.ethereum };
+// The USDC vaults as their venue's mark, not as USDC: the loan is USDC
+// already, so the mark says where it went. Morpho carries its curator's
+// mark beside it, because the vault is the Hyperithm one (BASE_CASE_VAULT
+// in lib/strategies/rates.ts picks it by that name).
+export const MORPHO_MARK: Mark = { key: "morpho", symbol: "MORPHO", name: "Morpho", logo: VENUE_LOGOS.morpho };
+export const HYPERITHM_MARK: Mark = { key: "hyperithm", symbol: "HYP", name: "Hyperithm", logo: curatorLogo("Hyperithm") };
+export const JUPITER_MARK: Mark = { key: "jupiter", symbol: "JUP", name: "Jupiter Lend", logo: VENUE_LOGOS.jupiter };
+export const KAMINO_MARK: Mark = { key: "kamino", symbol: "KMNO", name: "Kamino", logo: VENUE_LOGOS.kamino };
 // No marks on disk for these two yet; AssetLogo draws the monogram.
 export const BTC_MARK: Mark = { key: "btc", symbol: "BTC", name: "Bitcoin" };
 export const UNISWAP_MARK: Mark = { key: "uniswap", symbol: "UNI", name: "Uniswap pool" };
@@ -56,8 +64,10 @@ export function destinationMarks(venue: EarnVenue | TierVenue["venue"]): Mark[] 
     case "uniswap-lp":
       return [UNISWAP_MARK];
     case "morpho":
+      return [MORPHO_MARK, HYPERITHM_MARK];
     case "jupiter":
+      return [JUPITER_MARK];
     case "kamino":
-      return [USDC_MARK];
+      return [KAMINO_MARK];
   }
 }
