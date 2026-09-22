@@ -148,6 +148,28 @@ export function pricesFromStates(states: ReadonlyMap<string, PoolState>): Map<st
   return tokenUsdPrices(UNISWAP_POOLS, sqrt);
 }
 
+// ── gas ───────────────────────────────────────────────────────────────────
+
+// Current gas price per chain, wei as a decimal string. The Ethereum funding
+// planner sizes its ETH top-up from this rather than from a constant, the
+// way the gold and Aave venues do; the other chains keep fixed floors.
+export async function readGasPrices(): Promise<Partial<Record<UniswapChainId, string>>> {
+  const out: Partial<Record<UniswapChainId, string>> = {};
+  const chains = Object.keys(UNISWAP_CHAINS).map(Number) as UniswapChainId[];
+  await Promise.all(
+    chains.map(async (chainId) => {
+      try {
+        const [o] = await batch(chainId, [{ method: "eth_gasPrice", params: [] }]);
+        const h = hexOf(o);
+        if (h) out[chainId] = BigInt(h).toString();
+      } catch (err) {
+        console.warn(`[uniswap gas] ${UNISWAP_CHAINS[chainId].label}:`, err instanceof Error ? err.message : err);
+      }
+    }),
+  );
+  return out;
+}
+
 // ── balances ──────────────────────────────────────────────────────────────
 
 // Every registry token on the chain plus the native asset, atomic, keyed by

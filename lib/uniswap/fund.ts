@@ -20,6 +20,7 @@
 // re-made from a fresh balance read so a retry never re-buys what arrived.
 
 import { BASE_CHAIN_ID, BASE_NATIVE_TOKEN } from "@/lib/base/constants";
+import { ETHEREUM_CHAIN_ID } from "@/lib/ethereum/constants";
 import { USDC_DECIMALS } from "@/lib/jupiter/constants";
 import { MONAD_CHAIN_ID, MONAD_NATIVE_TOKEN } from "@/lib/morpho/constants";
 import type { EvmSigner, MorphoTxProgress } from "@/lib/morpho/deposit";
@@ -41,13 +42,14 @@ import {
 import { atomicToUi } from "@/lib/trustware/amounts";
 import { fetchTrustwareQuoteViaProxy } from "@/lib/trustware/client";
 import { TRUSTWARE_DEFAULT_SLIPPAGE } from "@/lib/trustware/constants";
+import { needsEthGas, planEthGas } from "@/lib/trustware/eth-gas";
 import {
   executeEvmRoute,
   trackTrustwareSettlement,
   type SolanaSigner,
 } from "@/lib/trustware/execute";
 
-import { fetchUniswapPositions, type WalletBalances } from "./client";
+import { fetchUniswapPools, fetchUniswapPositions, type WalletBalances } from "./client";
 import { DEPOSIT_FEE_WARN_USDC_ATOMIC, MIN_DEPOSIT_USDC_ATOMIC } from "./constants";
 import { mintPosition } from "./deposit";
 import { atomicToFloat, tokenUsdKey } from "./math";
@@ -117,13 +119,21 @@ const GAS: Partial<Record<UniswapChainId, GasPolicy>> = {
   },
 };
 
+// Ethereum: the reserve a Move to Solana keeps back, and the gas units one
+// full position lifecycle costs there (two Permit2 approvals, a first v3
+// mint with its NFT, a decrease with collect, a claim), which planEthGas
+// prices at the live gas price and refuses past 2% of the position.
 const ETHEREUM_GAS_FLOOR_WEI = 2_000_000_000_000_000n; // 0.002 ETH
+const ETHEREUM_GAS_UNITS_FULL_CYCLE = 1_000_000n;
 
 export function gasFloorWei(chainId: UniswapChainId): bigint {
   return GAS[chainId]?.floorWei ?? ETHEREUM_GAS_FLOOR_WEI;
 }
 
-export function needsGas(chainId: UniswapChainId, nativeAtomic: string | undefined): boolean {
+export function needsGas(chainId: UniswapChainId, nativeAtomic: string | undefined, gasPriceWei?: string): boolean {
+  if (chainId === ETHEREUM_CHAIN_ID) {
+    return gasPriceWei ? needsEthGas(nativeAtomic ?? "0", gasPriceWei, ETHEREUM_GAS_UNITS_FULL_CYCLE) : true;
+  }
   return BigInt(nativeAtomic || "0") < gasFloorWei(chainId);
 }
 
@@ -191,6 +201,8 @@ export async function planDeposit(args: {
   solanaUsdcAtomic: string;
   solanaAddress: string | undefined;
   evmAddress: string;
+  // The chain's gas price, wei; only Ethereum's planner reads it.
+  gasPriceWei?: string;
   fetchQuote?: QuoteFn;
 }): Promise<DepositPlan> {
   const { pool, usdcAtomic: usdc } = args;
@@ -240,12 +252,42 @@ export async function planDeposit(args: {
   const nativeHeld = BigInt(args.balances?.native ?? "0");
   const gas = GAS[pool.chainId];
   let reserveUsd = 0;
-  if (nativeHeld < gasFloorWei(pool.chainId)) {
-    if (!gas) {
-      return blocked(
-        `Your ${chain.label} wallet holds no ETH for gas. Deposits on ${chain.label} are enabled once the gas top-up lands (docs/uniswap-lp-plan.md, slice 4).`,
-      );
+  if (pool.chainId === ETHEREUM_CHAIN_ID) {
+    // Ethereum gas is sized from the live price, and the shared planner
+    // refuses when it would swamp the position (lib/trustware/eth-gas.ts).
+    if (!args.gasPriceWei) return blocked("Could not read the Ethereum gas price. Try again shortly.");
+    const ethPlan = await planEthGas({
+      ethBalanceAtomic: nativeHeld.toString(),
+      gasPriceWei: args.gasPriceWei,
+      solanaUsdcAtomic: args.solanaUsdcAtomic,
+      solanaAddress,
+      evmAddress: args.evmAddress,
+      gasUnits: ETHEREUM_GAS_UNITS_FULL_CYCLE,
+      positionValueUsd: Number(usdc) / 10 ** USDC_DECIMALS,
+      fetchQuote,
+    });
+    if (ethPlan.kind === "blocked") return blocked(ethPlan.reason);
+    if (ethPlan.leg) {
+      const source = BigInt(ethPlan.leg.sourceAmountAtomic);
+      if (source >= budget) {
+        return blocked(`The Ethereum gas top-up (about ${atomicToUi(source.toString(), USDC_DECIMALS)} USDC) would use up this deposit. Deposit more, or wait for cheaper gas.`);
+      }
+      legs.push({
+        token: null,
+        describe: "ETH for gas",
+        leg: {
+          request: ethPlan.leg.request,
+          sourceAmountAtomic: ethPlan.leg.sourceAmountAtomic,
+          toAmountMinAtomic: ethPlan.leg.toAmountMinAtomic,
+          totalFeesUsd: ethPlan.leg.totalFeesUsd,
+        },
+      });
+      if (ethPlan.leg.totalFeesUsd == null) feesKnown = false;
+      else feesUsd += ethPlan.leg.totalFeesUsd;
+      budget -= source;
     }
+  } else if (nativeHeld < gasFloorWei(pool.chainId)) {
+    if (!gas) return blocked(`Gas on ${chain.label} is not handled.`);
     if (nativeSide !== null) {
       const t = nativeSide === 0 ? pool.token0 : pool.token1;
       reserveUsd = usdOf(t, gas.floorWei - nativeHeld, nativeSide === 0 ? price0 : price1);
@@ -453,6 +495,7 @@ export async function depositFromSolana(args: {
   usdcAtomic: bigint;
   solanaUsdcAtomic: string;
   prices: Record<string, number>;
+  gasPriceWei?: string;
   signer: EvmSigner;
   solana: SolanaSigner;
   onProgress?: Report;
@@ -463,7 +506,10 @@ export async function depositFromSolana(args: {
   const chain = UNISWAP_CHAINS[pool.chainId];
 
   report({ stage: "funding", message: `Reading your ${chain.label} wallet.` });
-  const fresh = await readBalances(pool.chainId);
+  const [fresh, poolsPayload] = await Promise.all([
+    readBalances(pool.chainId),
+    fetchUniswapPools().catch(() => null),
+  ]);
   const prices = Object.keys(fresh.prices).length > 0 ? fresh.prices : args.prices;
   const plan = await planDeposit({
     pool,
@@ -473,6 +519,7 @@ export async function depositFromSolana(args: {
     solanaUsdcAtomic: args.solanaUsdcAtomic,
     solanaAddress: args.solana.address,
     evmAddress: signer.address,
+    gasPriceWei: poolsPayload?.gasPriceWei?.[pool.chainId] ?? args.gasPriceWei,
   });
   if (plan.kind === "blocked") throw new Error(plan.reason);
 

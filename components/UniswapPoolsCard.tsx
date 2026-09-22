@@ -313,6 +313,7 @@ function PoolDetail({
     : null;
   const prices = earn.positions?.prices ?? earn.pools?.prices ?? {};
   const balances = earn.positions?.balances[pool.chainId] ?? null;
+  const gasPriceWei = earn.pools?.gasPriceWei?.[pool.chainId];
 
   return (
     <div className="space-y-4 pb-4 pt-1">
@@ -362,6 +363,7 @@ function PoolDetail({
               solanaUsdcAtomic={solanaUsdcAtomic}
               balances={balances}
               prices={prices}
+              gasPriceWei={gasPriceWei}
               onSettled={onSettled}
             />
           )}
@@ -426,6 +428,7 @@ function DepositForm({
   solanaUsdcAtomic,
   balances,
   prices,
+  gasPriceWei,
   onSettled,
 }: {
   pool: UniswapPool;
@@ -434,6 +437,7 @@ function DepositForm({
   solanaUsdcAtomic: string;
   balances: WalletBalances | null;
   prices: Record<string, number>;
+  gasPriceWei: string | undefined;
   onSettled: () => Promise<void>;
 }) {
   const [input, setInput] = useState("");
@@ -470,6 +474,7 @@ function DepositForm({
           solanaUsdcAtomic,
           solanaAddress: solana.address,
           evmAddress: signer.address,
+          gasPriceWei,
         });
         if (!cancelled) setPlan(p);
       } catch (err) {
@@ -482,7 +487,7 @@ function DepositForm({
       cancelled = true;
       clearTimeout(id);
     };
-  }, [amountAtomic, pool, balances, prices, solanaUsdcAtomic, solana.address, signer.address, busy]);
+  }, [amountAtomic, pool, balances, prices, solanaUsdcAtomic, solana.address, signer.address, gasPriceWei, busy]);
 
   async function submit() {
     setState({ kind: "busy", message: "Starting." });
@@ -492,6 +497,7 @@ function DepositForm({
         usdcAtomic: amountAtomic,
         solanaUsdcAtomic,
         prices,
+        gasPriceWei,
         signer,
         solana,
         onProgress: (p) => setState(progressToState(p)),

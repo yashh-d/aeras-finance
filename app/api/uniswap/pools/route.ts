@@ -4,7 +4,7 @@ import { POOLS_CACHE_TTL_MS, POOLS_STALE_GRACE_MS, type UniswapChainId, type Uni
 import { baseUsdFromPool, priceToken1PerToken0 } from "@/lib/uniswap/math";
 import { feeAprs, readPoolVolumes, volumeKey, type VolumeSource } from "@/lib/uniswap/metrics";
 import { UNISWAP_POOLS } from "@/lib/uniswap/pools";
-import { poolStateKey, pricesFromStates, readPoolStates } from "@/lib/uniswap/server";
+import { poolStateKey, pricesFromStates, readGasPrices, readPoolStates } from "@/lib/uniswap/server";
 import { dedupe } from "@/lib/upstream";
 
 export const dynamic = "force-dynamic";
@@ -39,13 +39,15 @@ export interface UniswapPoolsPayload {
   pools: UniswapPoolMetric[];
   // USD per registry token, keyed `${chainId}:${address lowercased}`.
   prices: Record<string, number>;
+  // Gas price per chain, wei. The Ethereum deposit planner needs it.
+  gasPriceWei: Partial<Record<UniswapChainId, string>>;
   readAt: number;
 }
 
 let cache: { fetchedAt: number; body: UniswapPoolsPayload } | null = null;
 
 async function build(): Promise<UniswapPoolsPayload> {
-  const [volumes, states] = await Promise.all([readPoolVolumes(), readPoolStates()]);
+  const [volumes, states, gasPriceWei] = await Promise.all([readPoolVolumes(), readPoolStates(), readGasPrices()]);
   if (states.size === 0) throw new Error("No chain answered the pool state read.");
   const prices = pricesFromStates(states);
   const pools = UNISWAP_POOLS.map((p): UniswapPoolMetric => {
@@ -67,7 +69,7 @@ async function build(): Promise<UniswapPoolsPayload> {
       baseUsd: s ? baseUsdFromPool(p, s.sqrtPriceX96) : null,
     };
   });
-  return { pools, prices: Object.fromEntries(prices), readAt: Date.now() };
+  return { pools, prices: Object.fromEntries(prices), gasPriceWei, readAt: Date.now() };
 }
 
 export async function GET() {
