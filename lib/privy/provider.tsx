@@ -2,7 +2,7 @@
 
 import { PrivyProvider, usePrivy } from "@privy-io/react-auth";
 import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
-import { base, bsc, mainnet, monad } from "viem/chains";
+import { base, bsc, mainnet, monad, robinhood } from "viem/chains";
 import { useEffect, useMemo, type ReactNode } from "react";
 
 import {
@@ -147,8 +147,11 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
         // venue, so without a signable way off it, USDC sent there would be
         // stuck. Ethereum stays default because it carries the deeper
         // tokenized-stock liquidity; both the Morpho and Base flows switch the
-        // wallet themselves before signing.
-        supportedChains: [mainnet, bsc, monad, base],
+        // wallet themselves before signing. Robinhood Chain (4663) is declared
+        // for the Uniswap liquidity pools venue: the embedded wallet swaps,
+        // approves and mints there (lib/uniswap), and every position on the
+        // chain is an NFT it holds. See docs/uniswap-lp-plan.md D9.
+        supportedChains: [mainnet, bsc, monad, base, robinhood],
         defaultChain: mainnet,
         solana: { rpcs: solanaRpcs },
       }}
