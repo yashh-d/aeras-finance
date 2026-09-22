@@ -31,7 +31,11 @@ import {
   type EarnVaultState,
 } from "@/lib/jupiter/earn";
 import { fetchLiveVaultStateViaProxy } from "@/lib/jupiter/borrow";
-import { earnRows, readEarnVenues } from "@/lib/positions/earn";
+import {
+  earnRows,
+  readEarnVenues,
+  type ShmonEarnRead,
+} from "@/lib/positions/earn";
 import type {
   PositionGroup,
   PositionKind,
@@ -78,6 +82,7 @@ interface VenueSnapshot {
   kaminoShares: Map<string, string>;
   morphoPositions: Map<string, MorphoPosition>;
   morphoMetrics: Map<string, MorphoVaultMetric>;
+  shmon?: ShmonEarnRead | null;
   gold: GoldPosition[];
   aaveGold: AaveGoldPosition[];
   lighter: LighterPosition[];
@@ -91,6 +96,7 @@ const EMPTY_SNAPSHOT: VenueSnapshot = {
   kaminoShares: new Map(),
   morphoPositions: new Map(),
   morphoMetrics: new Map(),
+  shmon: null,
   gold: [],
   aaveGold: [],
   lighter: [],

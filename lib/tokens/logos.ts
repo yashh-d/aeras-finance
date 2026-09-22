@@ -34,6 +34,7 @@ const LOGO_BY_SYMBOL: Readonly<Record<string, string>> = {
   USDG: "/logos/usdg.png",
   // Monad's native token, held only for gas on the Morpho venue.
   MON: "/logos/monad.png",
+  shMON: "/logos/shmonad.png",
 };
 
 // Built from EARN_ASSETS so the mint set cannot drift from the vault registry.
@@ -72,6 +73,8 @@ export const VENUE_LOGOS: Readonly<Record<string, string>> = {
   // Aeras product ("Aeras Vault I") and wears the Aeras mark.
   blend: "/logos/blend.png",
   aeras: "/logos/aeras.png",
+  // FastLane's shMON mark, from shmonad.xyz's apple-touch-icon (180px).
+  shmonad: "/logos/shmonad.png",
   // Chain marks, shown beside the section for each EVM venue: Monad for the
   // Morpho earn vaults, Ethereum for the two gold borrow markets.
   monad: "/logos/monad.png",

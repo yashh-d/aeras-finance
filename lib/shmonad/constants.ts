@@ -46,9 +46,11 @@ export const UNSTAKE_WAIT_COPY = "about a day (4 to 5 epochs)";
 // its own endpoint and defaults to the public one.
 export const MONAD_HISTORY_RPC_URL =
   process.env.MONAD_HISTORY_RPC_URL ?? "https://rpc.monad.xyz";
-// Monad blocks land about every 0.4 seconds. Used only to guess the block a
-// window back; the real timestamps are read afterwards.
-export const MONAD_BLOCK_SECONDS_APPROX = 0.4;
+// Monad blocks landed every 0.302 seconds when measured (2026-09-22, over
+// 2.4M blocks). Used only to guess the block a window back; the real
+// timestamps are read afterwards. The public node served eth_call 2.4M blocks
+// back (8.4 days) and refused 2.8M, so the week window fits with a margin.
+export const MONAD_BLOCK_SECONDS_APPROX = 0.3;
 export const APY_WINDOW_SECONDS = 7 * 86_400;
 export const APY_FALLBACK_WINDOW_SECONDS = 86_400;
 
@@ -56,6 +58,12 @@ export const APY_FALLBACK_WINDOW_SECONDS = 86_400;
 // this far under previewRedeemDetailed's net figure. The fee moves with pool
 // utilization between the read and the block that mines the exit.
 export const INSTANT_EXIT_TOLERANCE_BPS = 25;
+
+// Native MON an exit or a return leg must find in the wallet before it is
+// signed. requestUnstake, redeem and completeUnstake each estimate at about
+// 100k gas, 0.01 MON at 102 gwei; twice that is the floor, well under the
+// 0.1 MON reserve a funded stake keeps back.
+export const EXIT_GAS_MIN_WEI = 20_000_000_000_000_000n; // 0.02 MON
 
 // Stake form limits, in Solana USDC atomic (6 decimals). Below the warn line
 // the route's fixed fee (about $0.03) plus its 0.3% passes 2% of the amount
