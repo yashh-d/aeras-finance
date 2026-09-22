@@ -225,6 +225,7 @@ function VenueDetail({
         walletAddress={walletAddress}
         solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
         onRefresh={onSettled}
+        compact
       />
     );
   }

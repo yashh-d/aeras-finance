@@ -105,16 +105,23 @@ export function ShMonadCard({
   solanaUsdcAtomic,
   onRefresh,
   className,
+  compact,
 }: {
   walletAddress: string | undefined;
   // Solana USDC available to stake from, 6-decimal atomic.
   solanaUsdcAtomic: string;
   onRefresh: () => Promise<void> | void;
   className?: string;
+  // Trader mode. Drops the prose: the venue disclosure at the foot, and the
+  // sentence over the way home, which becomes a button that opens the form
+  // rather than a block that is always on screen. Nothing it can do
+  // changes. See docs/trader-mode-plan.md, D18.
+  compact?: boolean;
 }) {
   const earn = useShmonEarn(walletAddress);
   const { metrics, position, monUsd } = earn;
   const [mode, setMode] = useState<"stake" | "withdraw">("stake");
+  const [returning, setReturning] = useState(false);
 
   const shares = BigInt(position?.sharesAtomic ?? "0");
   const pending = position?.pending;
@@ -210,14 +217,40 @@ export function ShMonadCard({
             />
           </div>
           {mode === "stake" ? (
-            <StakeForm earn={earn} solanaUsdcAtomic={solanaUsdcAtomic} onSettled={settled} />
+            <StakeForm
+              earn={earn}
+              solanaUsdcAtomic={solanaUsdcAtomic}
+              onSettled={settled}
+              compact={compact}
+            />
           ) : (
             <WithdrawPanel earn={earn} onSettled={settled} />
           )}
+          {/* The way home. Always available; in Trader mode it opens from a
+              line rather than sitting expanded under the card. */}
           {walletAddress && returnable > 0n && (
-            <ReturnForm earn={earn} solanaAddress={walletAddress} onSettled={settled} />
+            compact && !returning ? (
+              <button
+                type="button"
+                onClick={() => setReturning(true)}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-xs text-white/70 transition-colors hover:border-white/20 hover:text-white"
+              >
+                <span className="flex items-center gap-2">
+                  <AssetLogo xstock={{ symbol: "MON", name: "MON", logo: VENUE_LOGOS.monad }} size={18} />
+                  {fmtMon(returnable, 2)} unstaked
+                </span>
+                <span>Move to Solana</span>
+              </button>
+            ) : (
+              <ReturnForm
+                earn={earn}
+                solanaAddress={walletAddress}
+                onSettled={settled}
+                compact={compact}
+              />
+            )
           )}
-          {walletAddress && returnable === 0n && walletMon > 0n && (
+          {!compact && walletAddress && returnable === 0n && walletMon > 0n && (
             <p className="text-[11px] text-white/40">
               {fmtMon(walletMon, 4)} in the Monad wallet is the gas reserve and stays.
             </p>
@@ -225,14 +258,16 @@ export function ShMonadCard({
         </div>
       )}
 
-      <p className="mt-4 text-[11px] text-white/50">
-        shMON is FastLane&apos;s liquid staking token on Monad. Its value follows the price
-        of MON. Staking rewards and MEV revenue compound into the exchange rate, and
-        FastLane keeps {fmtPct(metrics?.stakingCommission ?? 0.05, 0)} of staking rewards.
-        Slashing is inactive on Monad today, with a circuit breaker at a 7% loss of
-        protocol equity. Deposits and exits are priced at different rates on purpose, so
-        staking and unstaking within the same epoch returns less MON than went in.
-      </p>
+      {!compact && (
+        <p className="mt-4 text-[11px] text-white/50">
+          shMON is FastLane&apos;s liquid staking token on Monad. Its value follows the price
+          of MON. Staking rewards and MEV revenue compound into the exchange rate, and
+          FastLane keeps {fmtPct(metrics?.stakingCommission ?? 0.05, 0)} of staking rewards.
+          Slashing is inactive on Monad today, with a circuit breaker at a 7% loss of
+          protocol equity. Deposits and exits are priced at different rates on purpose, so
+          staking and unstaking within the same epoch returns less MON than went in.
+        </p>
+      )}
     </div>
   );
 }
@@ -324,10 +359,12 @@ function StakeForm({
   earn,
   solanaUsdcAtomic,
   onSettled,
+  compact,
 }: {
   earn: ShmonEarn;
   solanaUsdcAtomic: string;
   onSettled: () => Promise<void>;
+  compact?: boolean;
 }) {
   const { evm, solanaSigner, metrics, position, monUsd } = earn;
   const [input, setInput] = useState("");
@@ -476,10 +513,12 @@ function StakeForm({
       <button type="button" disabled={disabled} onClick={handleSubmit} className={BUTTON_CLASS}>
         {busy ? state.message : "Stake"}
       </button>
-      <p className="text-[11px] text-white/50">
-        Converts USDC to MON through Trustware and stakes it, signed automatically. Keeps{" "}
-        {fmtMon(GAS_FLOOR_WEI, 1)} in the Monad wallet for gas. Bridging takes a few minutes.
-      </p>
+      {!compact && (
+        <p className="text-[11px] text-white/50">
+          Converts USDC to MON through Trustware and stakes it, signed automatically. Keeps{" "}
+          {fmtMon(GAS_FLOOR_WEI, 1)} in the Monad wallet for gas. Bridging takes a few minutes.
+        </p>
+      )}
     </div>
   );
 }
@@ -699,10 +738,12 @@ function ReturnForm({
   earn,
   solanaAddress,
   onSettled,
+  compact,
 }: {
   earn: ShmonEarn;
   solanaAddress: string;
   onSettled: () => Promise<void>;
+  compact?: boolean;
 }) {
   const { evm, position, monUsd } = earn;
   const [input, setInput] = useState("");
@@ -766,14 +807,18 @@ function ReturnForm({
 
   return (
     <div className="space-y-3 rounded-xl border border-white/10 bg-white/5 p-4">
-      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
-        MON in your Monad wallet
-      </div>
-      <p className="text-xs text-white/60">
-        {fmtMon(walletMon, 4)}
-        {monUsd != null && <> ({fmtUsd(monUsdValue(walletMon, monUsd))})</>}. Send it home to
-        Solana as USDC; the gas reserve stays.
-      </p>
+      {!compact && (
+        <>
+          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+            MON in your Monad wallet
+          </div>
+          <p className="text-xs text-white/60">
+            {fmtMon(walletMon, 4)}
+            {monUsd != null && <> ({fmtUsd(monUsdValue(walletMon, monUsd))})</>}. Send it home to
+            Solana as USDC; the gas reserve stays.
+          </p>
+        </>
+      )}
       <AmountInput
         label="Move to Solana"
         unit="MON"

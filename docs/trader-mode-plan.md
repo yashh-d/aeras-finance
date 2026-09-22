@@ -347,6 +347,19 @@ USDG/META when first measured) and move with a week of volume against a
 small TVL; they are the venue's own measured figures, the same ones the
 Investor card shows, and nothing caps or smooths them today.
 
+**D18. A warning is a mark and a few words.** Asked for on 2026-09-22.
+Under `compact` (Trader mode), the ticket's venue warnings collapse to a
+`MarkNote`: the MON logo and "Earns in MON" in place of the four-sentence
+staking risk, the pool's two token marks and "Earns trading fees, and
+holds both sides" in place of the impermanent-loss paragraph. Investor
+mode keeps the full prose, which is where the mechanics are stated.
+The shMON card takes a `compact` prop for the same reason and drops
+three pieces of prose under it: the venue disclosure at the foot, the
+sentence over the way home, and the note under the Stake button. The way
+home itself stays, as a line carrying the unstaked MON that opens the
+form, because removing it would strand MON on Monad with no route back
+from the card. Say so if it should go entirely.
+
 ## Status (2026-09-22)
 
 Slices 0 to 2 are built and verified on a preview route against the live
