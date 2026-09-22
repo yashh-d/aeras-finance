@@ -14,6 +14,7 @@
 // position and has to reason about vault shares, arrival polling and a gas
 // top-up leg. This one moves USDC one way and stops.
 
+import { BASE_CHAIN_ID, BASE_USDC } from "@/lib/base/constants";
 import { USDC_MINT } from "@/lib/jupiter/constants";
 
 import {
@@ -23,18 +24,12 @@ import {
 import { executeEvmRoute, type EvmSigner } from "./execute";
 import type { TrustwareQuoteRequest } from "./types";
 
-// Base mainnet.
-export const BASE_CHAIN_ID = 8453;
-
-// Circle's canonical USDC on Base, 6 decimals. The same address the Lighter
-// margin route already delivers to in lib/trustware/server.ts, which is where
-// this was taken from rather than from a doc. Lowercased, because every
-// contract comparison in this directory is lowercased.
-export const BASE_USDC = {
-  symbol: "USDC" as const,
-  address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
-  decimals: 6,
-};
+// The chain id and USDC contract moved to lib/base/constants.ts when the
+// Bitwise Mag7X venue made Base a place a position lives, so the server-only
+// Trustware validator could read them without importing this module's
+// execution path. Re-exported so the wallet panel and lib/trustware/stables.ts
+// keep their imports.
+export { BASE_CHAIN_ID, BASE_USDC };
 
 // Base pays gas in ETH, and the embedded EVM wallet is born with none.
 //
