@@ -14,8 +14,9 @@ export const MONAD_CHAIN_ID = 143;
 // Read-only JSON-RPC for balance / share-price reads. Server-only, so no
 // NEXT_PUBLIC_ prefix; falls back to Monad's public endpoint when unset. A paid
 // endpoint (Alchemy/QuickNode) can be dropped in via env without code changes.
+export const MONAD_PUBLIC_RPC_URL = "https://rpc.monad.xyz";
 export const MONAD_RPC_URL =
-  process.env.MONAD_RPC_URL ?? "https://rpc.monad.xyz";
+  process.env.MONAD_RPC_URL ?? MONAD_PUBLIC_RPC_URL;
 
 // Block explorer for surfacing a settled transaction.
 export const MONAD_EXPLORER_TX_BASE = "https://monadexplorer.com/tx/";

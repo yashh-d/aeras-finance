@@ -5,7 +5,12 @@ import {
   selectHeldEquivalents,
   type EquivalentBalances,
 } from "@/lib/trustware/balances";
+import { TRUSTWARE_SOLANA_CHAIN } from "@/lib/trustware/constants";
 import { isSupportedAddress, trustwareBalances } from "@/lib/trustware/server";
+import {
+  isAddressIncompatible,
+  type TrustwareBalancesResponse,
+} from "@/lib/trustware/types";
 import { selectNativeHoldings, type NativeHolding } from "@/lib/trustware/native";
 import { selectStableHoldings, type StableHolding } from "@/lib/trustware/stables";
 import {
@@ -100,6 +105,54 @@ export async function GET(request: Request) {
   });
 }
 
+// Every chain one of the selectors above reads. A failure on any other chain
+// in Trustware's 129-chain sweep is noise; a failure on one of these is a
+// hole in the wallet.
+const WATCHED_CHAINS = new Set(["1", "56", "8453", TRUSTWARE_SOLANA_CHAIN]);
+
+// Trustware reads Ethereum through Alchemy, and on 2026-09-22 two of eight
+// scans answered chain 1 with "alchemy failed: indexer unavailable; fallback
+// failed: context deadline exceeded" while the next scan was clean. One scan
+// costs about 2.3 seconds, so a scan with a watched chain missing is asked
+// again, twice at most, and the answer with the fewest holes is served.
+const SCAN_RETRY_DELAYS_MS = [300, 900];
+
+function watchedChainErrors(
+  raw: TrustwareBalancesResponse,
+): { chain: string; error: string }[] {
+  const out: { chain: string; error: string }[] = [];
+  for (const result of raw.results ?? []) {
+    const chain = result.chain_id;
+    if (!chain || !WATCHED_CHAINS.has(chain)) continue;
+    if (result.error && !isAddressIncompatible(result.error)) {
+      out.push({ chain, error: result.error });
+    }
+  }
+  return out;
+}
+
+function select(raw: TrustwareBalancesResponse): ScanResult {
+  const equivalents = selectHeldEquivalents(raw);
+  // The equivalents selector reports only the registry chains it reads. The
+  // native and stable rows come from Base too, so a failed Base read has to be
+  // named here or the wallet hook cannot tell "no ETH on Base" from "could not
+  // look".
+  const named = new Set(equivalents.unreadableChains.map((u) => u.chain));
+  for (const failed of watchedChainErrors(raw)) {
+    if (!named.has(failed.chain)) {
+      equivalents.unreadableChains.push(failed);
+      named.add(failed.chain);
+    }
+  }
+  return {
+    equivalents,
+    native: selectNativeHoldings(raw),
+    stables: selectStableHoldings(raw),
+    ondo: selectOndoHoldings(raw),
+    gold: selectGoldHoldings(raw),
+  };
+}
+
 async function scan(
   address: string | undefined,
   label: string,
@@ -107,16 +160,24 @@ async function scan(
   if (!address) {
     return { equivalents: EMPTY, native: [], stables: [], ondo: [], gold: [] };
   }
-  try {
-    const raw = await trustwareBalances(address);
-    return {
-      equivalents: selectHeldEquivalents(raw),
-      native: selectNativeHoldings(raw),
-      stables: selectStableHoldings(raw),
-      ondo: selectOndoHoldings(raw),
-      gold: selectGoldHoldings(raw),
-    };
-  } catch (err) {
+  let best: ScanResult | null = null;
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= SCAN_RETRY_DELAYS_MS.length; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, SCAN_RETRY_DELAYS_MS[attempt - 1]));
+    }
+    try {
+      const result = select(await trustwareBalances(address));
+      const holes = result.equivalents.unreadableChains.length;
+      if (holes === 0) return result;
+      if (!best || holes < best.equivalents.unreadableChains.length) best = result;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (best) return best;
+  {
+    const err = lastErr;
     return {
       equivalents: {
         held: [],

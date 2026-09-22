@@ -9,6 +9,7 @@ import { AssetGrid } from "@/components/AssetGrid";
 import { AssetLogo, LendingBadge } from "@/components/AssetLogo";
 import { AssetTile, ViewToggle } from "@/components/AssetTile";
 import { AssetTradePanel } from "@/components/AssetTradePanel";
+import { GliderMag7xCard, gliderMatchesQuery } from "@/components/glider/GliderMag7xCard";
 import { BorrowPanel } from "@/components/BorrowPanel";
 import { EarnPanel } from "@/components/EarnPanel";
 import { HedgePanel } from "@/components/HedgePanel";
@@ -21,12 +22,19 @@ import {
   useAssetStrategies,
 } from "@/components/strategies/AssetStrategies";
 import { StrategiesPanel } from "@/components/strategies/StrategiesPanel";
+import { ModeSwitch } from "@/components/trader/ModeSwitch";
+import {
+  TraderShell,
+  TRADER_SECTIONS,
+  type TraderSection,
+} from "@/components/trader/TraderShell";
 import { TerminalPanel } from "@/components/TerminalPanel";
 import { PriceChart } from "@/components/PriceChart";
 import { WalletPanel } from "@/components/WalletPanel";
 import { WaitlistPending, type UserView } from "@/components/WaitlistPending";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
 import { hasLendingMarket } from "@/lib/borrow/availability";
+import { GLIDER_LADDER_MINT } from "@/lib/glider/constants";
 import { formatUsdPrice } from "@/lib/format";
 import {
   DEFAULT_CHART_SELECTIONS,
@@ -46,6 +54,7 @@ import {
 import { useWalletScan, type WalletScan } from "@/lib/trustware/use-wallet-scan";
 import { useTriggerAuth } from "@/lib/jupiter/use-trigger-auth";
 import { useEarnPositions } from "@/lib/positions/use-earn-positions";
+import { useAppMode } from "@/lib/ui/use-app-mode";
 import { useViewMode } from "@/lib/ui/use-view-mode";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 import {
@@ -298,6 +307,12 @@ function SignedIn({
   // Which asset Home's grid has drilled into. Null shows the full grid.
   const [openAsset, setOpenAsset] = useState<XStock | null>(null);
   const [activeSection, setActiveSection] = useState<Section>("portfolio");
+  // Investor or Trader. Investor is every section below as it has always
+  // been; Trader is components/trader, four card-first sections over the
+  // same account. Trader keeps its own section so switching back and forth
+  // returns each mode to where it was. See docs/trader-mode-plan.md.
+  const [mode, setMode] = useAppMode();
+  const [traderSection, setTraderSection] = useState<TraderSection>("earn");
   const { prices, error: pricesError } = useJupiterPrices();
   const {
     balances,
@@ -504,7 +519,11 @@ function SignedIn({
           </button>
         </div>
 
-        <div className="px-6 pb-6 lg:px-0 lg:pb-0 lg:mt-10">
+        <div className="px-6 pb-5 lg:mt-5 lg:px-0 lg:pb-0">
+          <ModeSwitch mode={mode} onChange={setMode} />
+        </div>
+
+        <div className="px-6 pb-6 lg:mt-8 lg:px-0 lg:pb-0">
           <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
             Total balance
           </div>
@@ -518,6 +537,17 @@ function SignedIn({
         </div>
 
         <nav className="hidden lg:mt-10 lg:flex lg:flex-col lg:gap-0.5">
+          {mode === "trader" ? (
+            TRADER_SECTIONS.map((s) => (
+              <SidebarNavItem
+                key={s.id}
+                label={s.label}
+                active={traderSection === s.id}
+                onClick={() => setTraderSection(s.id)}
+              />
+            ))
+          ) : (
+            <>
           <SidebarNavItem
             label="Home"
             active={activeSection === "portfolio"}
@@ -573,6 +603,8 @@ function SignedIn({
             active={activeSection === "activity"}
             onClick={() => setActiveSection("activity")}
           />
+            </>
+          )}
         </nav>
 
         <div className="hidden lg:mt-auto lg:flex lg:flex-col lg:gap-2 lg:border-t lg:border-white/10 lg:pt-5">
@@ -622,7 +654,23 @@ function SignedIn({
       {/* Main content */}
       <main className="relative flex-1 px-6 py-8 lg:px-10 lg:py-10">
         <div className="mx-auto max-w-6xl space-y-6">
-          {activeSection === "earn" ? (
+          {mode === "trader" ? (
+            <TraderShell
+              section={traderSection}
+              walletAddress={walletAddress}
+              balances={balances}
+              balancesError={balancesError}
+              balancesRefreshing={balancesRefreshing}
+              prices={prices}
+              scan={walletScan}
+              earn={earn}
+              holdings={holdings}
+              totalUsd={totalUsd}
+              onRefresh={refreshAll}
+              onSettled={settleAll}
+              onSwitchToInvestor={() => setMode("investor")}
+            />
+          ) : activeSection === "earn" ? (
             <EarnPanel
               walletAddress={walletAddress}
               balances={balances}
@@ -871,7 +919,9 @@ function MarketsSection({
   // surfaces show different things: this one carries a holdings column and the
   // whole catalog, so the dense table can be right here and tiles right there.
   const [view, setView] = useViewMode(MARKETS_VIEW_STORAGE_KEY);
-  const [category, setCategory] = useState<XStockCategory | "all">("all");
+  // "portfolios" is the one group that is not a catalog category: the
+  // Bitwise Mag7X portfolio, which is not a token (see components/glider).
+  const [category, setCategory] = useState<XStockCategory | "all" | "portfolios">("all");
   // Categories the user has clicked "See all" on. Only meaningful while the
   // full catalog is showing; picking one category or typing a search reveals
   // every match on its own.
@@ -903,6 +953,10 @@ function MarketsSection({
   // category or typed a query, hiding matches behind "See all" would bury the
   // thing they just asked for.
   const collapsible = category === "all" && trimmed === "";
+  // The portfolio group has no ticker to match, so its search terms live
+  // with the card. Shown under "All" and under its own pill.
+  const showPortfolios =
+    (category === "all" || category === "portfolios") && gliderMatchesQuery(trimmed);
 
   const groups = useMemo(() => {
     const q = trimmed.toLowerCase();
@@ -975,10 +1029,15 @@ function MarketsSection({
               onClick={() => setCategory(c.id)}
             />
           ))}
+          <CategoryPill
+            label="Portfolios"
+            active={category === "portfolios"}
+            onClick={() => setCategory("portfolios")}
+          />
         </div>
       </div>
 
-      {groups.length === 0 ? (
+      {groups.length === 0 && !showPortfolios ? (
         <div className={`${GLASS_SURFACE} p-8 text-center text-sm text-white/50`}>
           No assets match that search.
         </div>
@@ -1105,6 +1164,19 @@ function MarketsSection({
             </div>
           );
         })
+      )}
+
+      {showPortfolios && (
+        <GliderMag7xCard
+          prices={prices}
+          balances={balances}
+          walletAddress={walletAddress}
+          expanded={expandedMint === GLIDER_LADDER_MINT}
+          onToggle={() =>
+            setExpandedMint(expandedMint === GLIDER_LADDER_MINT ? null : GLIDER_LADDER_MINT)
+          }
+          onRefresh={onRefresh}
+        />
       )}
     </div>
   );

@@ -36,7 +36,9 @@ EVM chains appear only as a source of funds **for anything that becomes a positi
 
 The swap surface is the one exception, and it is deliberate. A swap may end on an EVM chain: Solana USDC to Ethereum USDT is a supported pair. That is wallet plumbing, not lending, and it does not weaken the rule that a *position* never settles off Solana. Its tokens are a separate hardcoded registry in `lib/trustware/swap-tokens.ts`, and both sides of a pair must be in it.
 
-**Base is a source of USDC and nothing else.** No venue, no position, no tokenized-stock entries in the equivalents registry. It is offered only because `lib/trustware/base.ts` can move USDC off it to Solana, and that is the bar for listing any chain here: a chain a user can receive on but not spend from strands funds, which is exactly what the wallet panel's "cannot be moved" warning exists to say about every chain that is *not* listed. Verified live by `scripts/trustware-base-check.mts` (2026-08-28, 4/4 sizes signable). Two things that fall out of the measurements: the route costs about $0.30 flat, so a $5 move loses 5.4% of itself and the form warns below $25; and gas is ETH on Base with no automatic top-up, because Base USDC arrives from outside the app so there is no inbound leg to attach one to, unlike Monad.
+**Base is a source of USDC, and the home of one position: Bitwise Mag7X.** No tokenized-stock entries in the equivalents registry, no borrow venue. Base was listed only because `lib/trustware/base.ts` can move USDC off it to Solana, and that is still the bar for listing any chain here: a chain a user can receive on but not spend from strands funds, which is exactly what the wallet panel's "cannot be moved" warning exists to say about every chain that is *not* listed. Verified live by `scripts/trustware-base-check.mts` (2026-08-28, 4/4 sizes signable). Two things that fall out of the measurements: the route costs about $0.30 flat, so a $5 move loses 5.4% of itself and the form warns below $25; and gas is ETH on Base with no automatic top-up on the plain return, because Base USDC that arrives from outside the app has no inbound leg to attach one to, unlike Monad.
+
+**Bitwise Mag7X on Glider is the fifth exception**, as of 2026-09-22, and the second *earn* position on an EVM chain after Monad. It is not a token: Bitwise publishes a model portfolio of eight Coinbase-issued tokenized stocks on Base at equal weight (the Mag7 plus SpaceX), and Glider runs it inside a ZeroDev Kernel smart account per investor, owned by the user's embedded EVM wallet, with Glider's agent holding a session key that can rebalance but cannot withdraw. `lib/glider` holds the registry, the B2B client, enrollment, funding and exit; `app/api/glider` serves the strategy view, the ten-year CAGR table (Nasdaq), and the per-user portfolio; `components/glider` is the "Portfolios" group on Markets. Funding is Solana USDC to Base USDC through Trustware delivered **straight to the smart account** (the Ondo-margin pattern, one Solana signature, no ETH), behind a `glider-deposit` intent the route handler verifies against Glider before it builds anything. The exit is Glider's liquidate-all to USDC in the embedded wallet on Base, a `base-gas` leg when the wallet cannot pay for a Base transaction (the inbound leg the paragraph above said did not exist), then the existing return leg home. Three things to hold onto: **the 10% is a campaign**, read live and never defaulted; **nothing here is collateral**, so the strategies that send borrowed USDC into it leave the loan's health untouched by it; and **the holdings are Reg S**, so `lib/glider/eligibility.ts` gates enrollment on the edge's country and the user's attestation, because Glider's API gates nothing. Read `docs/glider.md` before touching any of it.
 
 **Ondo tokens live on Solana by default.** An Ondo `...on` token is only ever meant to be on Ethereum for as long as it is posted on Ondo Perps as margin for a trade or a hedge. Ethereum is a waypoint, not a home: sitting in the embedded EVM wallet the token earns nothing, backs nothing, cannot be lent on Kamino or Jupiter Lend, and cannot be sold without another bridge, while the same asset as a Solana xStock trades on Jupiter and works everywhere else in the app. So any surface that shows an Ondo token on Ethereum must offer the way back (`lib/ondo/unwind.ts`, surfaced as "Move to Solana" in the wallet panel). The conversion is never automatic: it needs two Ethereum signatures and costs real money, so it is always the user's call. This is about what the app offers by default, not what it does unasked.
 
@@ -50,7 +52,31 @@ Two things separate it from the Monad venue and are easy to get backwards. It is
 
 **Aave-on-Ethereum earn is the fourth exception**, the second *earn* position off Solana. Users deposit USDC or USDT into two kinds of Aave ERC-4626 vault: the stata token (`waEthUSDC`, the Aave V3 Core supply rate, instant exit) and the Umbrella stake token (`stkwaEthUSDC`, the same rate plus safety incentives, in exchange for taking first loss on Aave's bad debt and a **20-day cooldown plus 2-day window** to leave). `lib/aave` holds the registry, the on-chain read layer and the write path; `app/api/aave` serves rates and positions read from Ethereum; `components/AaveVaultsCard.tsx` is the venue inside the Earn table. Funding is the Monad machinery pointed at Ethereum, with ETH for gas bought through `lib/trustware/eth-gas.ts` (shared with the gold market). Read `docs/aave.md` before touching it. **It was built without live verification** (the session could not reach Ethereum), so `scripts/aave-check.mts` must pass before the venue is shown to anyone.
 
-EVM code is confined to four files. `lib/privy/evm.ts` resolves the embedded EVM wallet and hands back its EIP-1193 provider. `lib/trustware/evm-tx.ts` translates a Trustware route payload into `eth_sendTransaction` params. `lib/trustware/execute.ts` grants ERC-20 allowances, switches the wallet's active chain, broadcasts the source leg, and tracks the route to settlement. `lib/ethereum/tx.ts` is the Ethereum-mainnet version of that plumbing for the venues that call contracts directly: chain switch with read-back, send, receipt wait, and a USDT-aware approval. Nothing outside those files should reach for an EVM provider. (The venue modules `lib/morpho/deposit.ts`, `lib/morpho/fund.ts`, `lib/morpho/gold-borrow.ts`, `lib/aave/gold-borrow.ts` and `lib/aave/deposit.ts` also sign EVM transactions, but only through the signer shape `lib/privy/evm.ts` exposes.)
+**Aeras Vault I on Blend is the fifth exception**, as of 2026-09-21, and the
+only venue where the position is not a token in the embedded wallet at all. It
+is a per-user Gnosis Safe that Blend (portal.blend.money) allocates across a
+set of USDC vaults on three EVM chains (Ethereum, Monad and Base on that day)
+and rebalances; the user is the Safe's only signer and Aeras holds no key. The
+app deposits from Monad, funded by the same Solana-to-Monad USDC and MON legs
+the Morpho venue uses, and where Blend then puts the money is Blend's decision,
+read off the deposit quote and never assumed. `lib/blend` holds it,
+`app/api/blend` reads yield and the per-wallet position with the server key,
+and `components/BlendVaultsCard.tsx` is the venue. A withdrawal is one
+transaction per chain the position sits on, sent by the embedded wallet as the
+Safe's sole owner through the Safe's own `execTransaction` (`lib/blend/safe.ts`)
+and paid by that wallet, with gas bought from Solana USDC first where it holds
+none; Blend's SDK would send those as paymaster-sponsored UserOperations, and
+nothing here does. Every chain's transaction is simulated at review and a step
+that would revert is refused unsigned. Read `docs/blend.md` before touching
+it, in particular why the position read is gated on a browser-side marker,
+why the deposit is quoted after funding, and what the Monad liquidity revert
+of 2026-09-22 looked like.
+
+**shMON staking on Monad is the sixth exception**, as of 2026-09-22, and the second position on Monad. Users convert Solana USDC into native MON through Trustware and stake it in shMON, FastLane's liquid staking token: an ERC-4626 vault whose asset is native MON and whose `deposit` is payable, with the shares in the embedded EVM wallet. `lib/shmonad` holds the registry, the math, the server reads and the write path; `app/api/shmonad` serves the rate (derived from a week of share price growth, keyless) and per-wallet positions; `components/ShMonadCard.tsx` is the card under the Vaults table. Three things separate it from the Morpho venue. The position is denominated in MON, so it carries MON price exposure and is never the Buy + Earn default. There is no separate gas leg, because the delivered MON is the gas token and the stake keeps 0.1 MON back. And the exit is two paths: an instant one paying a utilization-priced fee out of a pool that was 91% drawn when measured, and a queued one that takes about a day and allows one request per wallet. Read `docs/shmonad.md` before touching it.
+
+**Uniswap liquidity pools are the seventh exception**, as of 2026-09-22, and the first positions on Robinhood Chain (chainId 4663, an Arbitrum Orbit L2 with ETH gas). Users open concentrated liquidity positions in twelve curated Uniswap v3 and v4 pools: five tokenized-stock and gold pools on Robinhood Chain quoted in **USDG** (Paxos, not USDC), five on Monad, USDC/WETH on Ethereum and WETH/USDC on Base. The position is an NFT in the embedded EVM wallet holding both tokens of the pair, so it carries both tokens' price exposure and impermanent loss, and its rate is the pool's trailing 7-day fee APR, never an APY. Funding is the Monad machinery pointed at each chain: one Trustware leg from Solana USDC per token a bridge delivers, a gas leg when the wallet is under the chain's floor, and an on-chain swap for the stock tokens, which no bridge delivers. Calldata for every mint, withdrawal and claim comes from Uniswap's Liquidity Provisioning API through `app/api/uniswap/lp`, which pins the wallet and the pool; `UNISWAP_API_KEY` is server-only. v4 positions do not enumerate, so `app/api/uniswap/positions` records each mint from its receipt into `uniswap_positions`. `lib/uniswap` holds it, `lib/robinhood/constants.ts` the chain, `components/UniswapPoolsCard.tsx` is the card under the Vaults table. Read `docs/uniswap-lp.md` before touching it. The LP API builds calldata on all four chains with the configured key (verified 2026-09-22); **nothing has been signed live yet.**
+
+EVM code is confined to four files. `lib/privy/evm.ts` resolves the embedded EVM wallet and hands back its EIP-1193 provider. `lib/trustware/evm-tx.ts` translates a Trustware route payload into `eth_sendTransaction` params. `lib/trustware/execute.ts` grants ERC-20 allowances, switches the wallet's active chain, broadcasts the source leg, and tracks the route to settlement. `lib/ethereum/tx.ts` is the Ethereum-mainnet version of that plumbing for the venues that call contracts directly: chain switch with read-back, send, receipt wait, and a USDT-aware approval. Nothing outside those files should reach for an EVM provider. (The venue modules `lib/morpho/deposit.ts`, `lib/morpho/fund.ts`, `lib/morpho/gold-borrow.ts`, `lib/aave/gold-borrow.ts`, `lib/aave/deposit.ts`, `lib/shmonad/stake.ts` and the Uniswap modules `lib/uniswap/deposit.ts` and `lib/uniswap/withdraw.ts` also sign EVM transactions, but only through the signer shape `lib/privy/evm.ts` exposes. `lib/blend/execute.ts` sends Blend's plans, Safe batches included, through that same provider.)
 
 **The Solana RPC is two endpoints, not one**, as of 2026-09-14.
 `NEXT_PUBLIC_SOLANA_RPC_URL` is the primary (Alchemy) and serves every read,
@@ -90,6 +116,41 @@ through them; the embedded wallet still signs via Privy. Trustware still
 proxies allowance reads and cross-chain balance scans, which is what the
 `/sdk/rpc/evm` and `/data` endpoints in `lib/trustware/constants.ts` are for.
 
+**All three Alchemy endpoints share one app key, and Alchemy meters throughput
+per app across networks.** Measured 2026-09-22: forty Solana reads fired with
+twenty Ethereum batches got fifteen of the Ethereum batches and six of ten
+Monad reads refused with a 429, while each chain alone at thirty concurrent
+passed. So the browser's Solana polling can starve a server-side Ethereum
+read, which is what "Ethereum RPC 429" in a route log means. Every batched EVM
+read therefore goes through `lib/ethereum/json-rpc.ts`, which retries a
+throttle three times on the paid node and then asks the public node
+(`ETHEREUM_PUBLIC_RPC_URL`, `MONAD_PUBLIC_RPC_URL`), and goes to the public
+node at once on a 5xx. A per-call revert is an answer and is never retried.
+Separate Alchemy apps per chain would split the buckets and are the right
+next step; the retry is what keeps the venues readable until then.
+
+Trustware's balance scan has the same dependency one layer down: it reads
+Ethereum through Alchemy too, and two of eight scans on 2026-09-22 came back
+with chain `1` unreadable ("alchemy failed: indexer unavailable"). The route
+retries a scan whose watched chains failed, and `useWalletScan` keeps the
+last good rows for a chain the new scan could not read rather than blanking
+them, and says so through `error`. Before that, every Ethereum holding
+silently left the wallet panel for a poll and came back the next.
+
+The Uniswap venue adds two more of the same shape, `ROBINHOOD_RPC_URL` and
+`BASE_RPC_URL`, server-only, defaulting to the public nodes named in
+`lib/robinhood/constants.ts` and `lib/base/constants.ts`. Both are set to
+Alchemy as of 2026-09-22: the public Robinhood node is rate-limited and the
+public Base node answers "over rate limit" to the sixth call of a batch
+(`lib/uniswap/rpc.ts`, `lib/uniswap/server.ts`).
+
+Monad history is a third setting. `MONAD_HISTORY_RPC_URL`, server-only,
+defaults to the public `https://rpc.monad.xyz`. The shMON rate is derived from
+share price growth over a week, which needs `eth_call` at a block a week back,
+and measured 2026-09-22 the Alchemy Monad endpoint serves about a day of
+history while the public node serves about eight. `lib/shmonad/server.ts`
+reads the history there and everything live from `MONAD_RPC_URL`.
+
 ## Repo Layout
 
 ```
@@ -110,6 +171,21 @@ proxies allowance reads and cross-chain balance scans, which is what the
                      per-wallet positions, cooldowns and rewards, plus
                      gold-market and gold-position for the Aave V4 Gold spoke
                      (Ethereum RPC reads)
+    /glider          Bitwise Mag7X: the strategy view (composition, boost
+                     campaign, TVL, performance), the ten-year CAGR table
+                     from Nasdaq, and per-user enrollment, portfolio,
+                     rebalance, liquidation and Base balances, all keyed to
+                     the verified identity's embedded EVM wallet
+    /blend           Aeras Vault I (Blend): strategy yield and the per-wallet
+                     position, read with the server key
+    /shmonad         shMON staking: live rate from share price growth, pool
+                     state, and per-wallet positions with the queued-exit
+                     state (Monad RPC reads)
+    /uniswap         Liquidity pools: pool figures (Uniswap's indexer and
+                     each chain's state), per-wallet positions with fees
+                     (GET) and mint recording from a receipt (POST), and
+                     the LP API proxy that builds mint, decrease and claim
+                     calldata
     /lighter         Lighter perps market catalog
     /news            Headlines for the Terminal: market-wide feeds, or one
                      catalog asset's coverage (?asset=<mint>), read from public
@@ -123,6 +199,9 @@ proxies allowance reads and cross-chain balance scans, which is what the
     /trustware       Route, quote, balances, allowance, receipt, status proxies
     /waitlist        Public signup
 /components          UI components
+  /trader            Trader mode: the Investor / Trader switch, the shell,
+                     and its four sections (Earn, Buy + Earn, Strategies,
+                     Portfolio) as card grids over the existing tickets
   /ui                shadcn primitives
 /lib
   /aave              Aave on Ethereum. The earn vaults: curated stata and
@@ -130,7 +209,19 @@ proxies allowance reads and cross-chain balance scans, which is what the
                      reads, the write path and Trustware funding. The V4 Gold
                      spoke (gold-*.ts): registry, ABI subset, position math,
                      server reads, write path
+  /blend             Aeras Vault I on Blend: constants, the SIWE session and
+                     its storage, the SDK loader, the Safe encoding the owner
+                     drives it with, plan submission through the wallet, the
+                     per-chain gas review and top-ups, the deposit path (fund
+                     from Solana, sign in, quote, execute) and the withdrawal
+                     path (quote, simulate, review, buy gas, execute, sweep)
+  /base              Base chain constants shared by the Trustware validator
+                     and the Mag7X funding and exit paths
   /borrow            Borrow summary and market stats hooks
+  /glider            Bitwise Mag7X on Glider: the holdings registry, the B2B
+                     and public API client, strategy and history loaders,
+                     eligibility, enrollment, funding through Trustware, and
+                     the exit (liquidate, Base gas, return leg)
   /ethereum          Ethereum mainnet constants, batched server-side RPC reads,
                      and the client transaction plumbing shared by the venues
                      that settle there (Morpho gold, Aave gold, Aave vaults)
@@ -152,10 +243,19 @@ proxies allowance reads and cross-chain balance scans, which is what the
   /privy             Privy config, auth, Solana and EVM wallet hooks
   /strategies        The Strategies page's math, live rate join, signed legs,
                      step runner and run store. See docs/buy-strategies-plan.md
+  /shmonad           shMON staking on Monad: registry, ABI subset, math,
+                     server reads, the payable stake and both exits,
+                     Trustware funding from Solana USDC and the leg home
+  /robinhood         Robinhood Chain constants: chain id, RPC, USDG, gas
+  /uniswap           Liquidity pools on four chains: the twelve-pool
+                     registry, tick and liquidity maths, per-chain RPC,
+                     server reads, the LP API client, the positions store,
+                     the funding planner, the mint and the exits
   /solana            Connection, balances, holdings, sending, activity, plus
                      the shared broadcast path: priority-fee.ts (compute unit
                      pricing) and send-confirm.ts (sendAndConfirm)
   /supabase          Server-only admin client (service role key)
+  /trader            Trader mode's Earn venue registry and its live quotes
   /trustware         Cross-chain conversion: equivalents, planner, execution,
                      plus the curated swap registry and its pricing, and the
                      ETH gas top-up planner (eth-gas.ts) the Ethereum venues share
@@ -174,17 +274,22 @@ proxies allowance reads and cross-chain balance scans, which is what the
                      overlap, and route counts derived from the issuer lists
   asset-routes.md    Every route as one table row, with status. Routes only;
                      the reasoning and sources are in asset-catalog.md
+  glider.md
   jupiter-borrow.md
   kamino.md
   morpho-gold.md
   ondo-perps.md
   privy.md
+  shmonad.md
+  shmonad-plan.md    The plan the shMON venue was built from, decisions numbered
+  uniswap-lp.md
+  uniswap-lp-plan.md The plan the Uniswap venue was built from
 CLAUDE.md            This file
 ```
 
 ## Integration Notes
 
-These are the things that are easy to get wrong. Read the relevant file in `docs/` before writing integration code, and verify against the live docs if anything looks stale. Coverage is partial: there is a doc for Aave (the earn vaults in `aave.md`, the gold spoke in `aave-gold.md`), Jupiter borrow, Kamino, Morpho gold, Ondo perps, and Privy, and none for Trustware or Lighter. For those two, the module comments and the matching script in `scripts/` are the record.
+These are the things that are easy to get wrong. Read the relevant file in `docs/` before writing integration code, and verify against the live docs if anything looks stale. Coverage is partial: there is a doc for Aave (the earn vaults in `aave.md`, the gold spoke in `aave-gold.md`), Glider (`glider.md`), Jupiter borrow, Kamino, Morpho gold, Ondo perps, Privy, and shMON (`shmonad.md`), and none for Trustware or Lighter. For those two, the module comments and the matching script in `scripts/` are the record.
 
 For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json` pointing at `https://developers.jup.ag/docs/mcp`. Prefer it over web fetches when checking Jupiter API behavior:
 
@@ -199,7 +304,7 @@ For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json`
 - Because of the above, **never index the wallets array**. `useWallets()` is sorted by `connectedAt`, so `wallets[0]` stops being the embedded wallet the moment a user connects an external one, and reads and signatures silently land on the wrong account. Resolve the embedded wallet through `lib/privy/solana.ts` (`useEmbeddedSolanaWallet`) or `lib/privy/evm.ts` (`useEmbeddedEvmWallet`); both pin to `walletClientType === "privy"`. The Solana subpath's `ConnectedStandardSolanaWallet` carries no `walletClientType`, so `lib/privy/solana.ts` reads the embedded address off `user.linkedAccounts` and matches the signer by address.
 - A wallet-only login links no email, and email is the merge key for the users table (`users_email_unique` in `0001_waitlist.sql`). `app/app/page.tsx` therefore holds `/api/auth/sync` until an email exists and prompts for one. Do not relax that: syncing first inserts a DID row with a null email, which can never adopt the waitlist row the same person created through the form, and stamping the address on later collides with that row and 500s every subsequent sign-in.
 - `supportedChains` is `[mainnet, bsc, monad, base]` with `defaultChain: mainnet`. Privy signs only on chains declared here, so `execute.ts` fails loudly on an undeclared chain instead of signing on the wrong network. Adding a Trustware source chain means adding it both here and to the registry the chain is for: `lib/trustware/equivalents.ts` for tokenized stocks, `lib/trustware/stables.ts` and `native.ts` for a USDC-and-gas chain like Base.
-- For Solana signing, use `signTransaction` or `signAndSendTransaction` from the Solana wallet object. For the EVM leg, go through the EIP-1193 provider returned by `useEmbeddedEvmWallet()`. viem is a dependency, but only for calldata encoding (`encodeFunctionData`, `erc20Abi`) and chain constants. There is no wagmi and no viem wallet client.
+- For Solana signing, use `signTransaction` or `signAndSendTransaction` from the Solana wallet object. For the EVM leg, go through the EIP-1193 provider returned by `useEmbeddedEvmWallet()`. viem is a dependency, but only for calldata encoding (`encodeFunctionData`, `erc20Abi`) and chain constants. There is no wagmi and no viem wallet client. (Blend's SDK executes through one; the app does not call its `execute`, and drives Blend's plans through the raw provider in `lib/blend/execute.ts` instead.)
 - To sign on a non-default EVM chain, switch at the WALLET level (`wallet.switchChain(chainId)`, exposed as `useEmbeddedEvmWallet().switchChain`) and then request a FRESH provider. A provider instance is bound to the chain that was active when it was requested, and `wallet_switchEthereumChain` on a provider does not move the wallet's own active chain, which is what the signing confirmation follows. Getting this wrong once presented a Monad approval as an Ethereum transaction. After switching, read back `eth_chainId` on the fresh provider before signing anything.
 - The switch lands via React state: Privy rebuilds the wallet object with the new chain on the NEXT render, so any callback that closed over the old wallet object keeps resolving old-chain providers forever. `useEmbeddedEvmWallet` resolves the wallet through a ref for this reason; never capture a Privy wallet object across a chain switch.
 - The Privy app ID goes in `NEXT_PUBLIC_PRIVY_APP_ID`. The app secret is server-side only and never exposed to the client.
@@ -353,7 +458,10 @@ These exist in the repo and are past the "do not build" line. They are listed he
   (SharesMathLib, the Taylor-series accrual, `_isHealthy`) including rounding direction,
   verified against Morpho's indexer on a live position to the seventh decimal of health.
   Funding is bounded on value loss priced at the market's own oracle, never at a token
-  registry: Trustware lists Ethereum GLDx at 17x its real sale price. One upstream
+  registry: Trustware lists Ethereum GLDx at 17x its real sale price. The bound is
+  soft at 3% and hard at 25% as of 2026-09-22: between them the plan comes back
+  as `needs-confirmation` and the card asks, because delivering on Ethereum costs
+  about a dollar at any size and that is 10% of a $10 test. One upstream
   defect is live and worked around rather than hidden: Trustware cannot route Solana
   gold directly to XAUt even though it runs both halves of that path individually, so
   funding sells to USDC first. The planner tries direct every time and will use it the
@@ -396,6 +504,45 @@ These exist in the repo and are past the "do not build" line. They are listed he
   and pressing one opens its ticket in place of the market ticket. The
   Strategies page draws the same strip; the paragraph and mechanics table it
   used to show beside the ticket are gone.
+- Aeras Vault I on Blend (`lib/blend`, `app/api/blend`,
+  `components/BlendVaultsCard.tsx`), as of 2026-09-21: the fifth column of
+  the Earn table. The deposit flow is fund the Monad wallet from Solana
+  if short (`ensureMonadUsdc` in `lib/morpho/fund.ts`, lifted out of the
+  Morpho deposit for this), SIWE sign-in with the embedded EVM wallet (silent,
+  session kept in sessionStorage per address), quote, refuse if fees exceed 1%
+  of the amount, then `execute()`, which on 2026-09-21 was one ERC-20
+  transfer of USDC from the EOA on Monad with no approval, so no paymaster is
+  involved. The position column reads Blend's server API by address, gated on
+  a localStorage marker set at first sign-in, because Blend's lookup creates an
+  account for any address it does not know. Withdrawals (2026-09-22) quote
+  to Monad, simulate each chain's transaction from the owner and show the
+  amount, bridge fee and gas per chain for review, buy missing gas from
+  Solana, then send one owner `execTransaction` per source chain on the
+  user's Safe (v1.5.0, sole owner, no guard, verified on chain) and sweep
+  what the bridges deliver into the wallet. The user pays gas; there is no
+  paymaster. Verified by `scripts/blend-withdraw-sim.mts`, which on that day
+  showed Ethereum and Base passing and Monad reverting for the full slice on
+  vault liquidity, which the review refuses. No withdrawal has signed yet.
+  See `docs/blend.md`.
+- Bitwise Mag7X on Glider (`lib/glider`, `lib/base`, `app/api/glider`,
+  `components/glider`), as of 2026-09-22. A "Portfolios" group on Markets
+  with the one portfolio: exposure table priced through the matching
+  xStocks, ten-year CAGR per holding and for the daily-rebalanced
+  equal-weight basket (Nasdaq, split-adjusted; SpaceX gets a since-listing
+  figure and the basket names it as excluded), Glider's live and backtest
+  performance under separate names, the boost campaign read live, and a
+  ticket that creates the account (one `personal_sign`), funds it from
+  Solana USDC (one Solana signature, delivered to the smart account), asks
+  Glider to buy the holdings, and exits whole (one EIP-712 signature, a Base
+  gas leg if needed, the return leg home). Buy + Earn lists it as a
+  destination while the boost is live and Buy + Buy more as a ladder-ending
+  pick, both through the one deposit and exit path in
+  `lib/strategies/execute.ts`; the Positions view shows it as an earn row on
+  "Glider · Base". See Chain Assumptions and `docs/glider.md`. **Built
+  without a Glider API key:** every read is verified live; enrollment,
+  deposit and exit follow Glider's B2B docs and `scripts/glider-check.mts`
+  must pass, and one small live deposit and exit must be done, before the
+  ticket is shown to anyone. `GLIDER_API_KEY` is server-only.
 - Aave-on-Ethereum earn (`lib/aave`, `app/api/aave`, `components/AaveVaultsCard.tsx`),
   as of 2026-09-16. USDC and USDT into the Aave V3 Core stata tokens (instant) and
   the Umbrella stake tokens (higher rate, slashable, 20-day cooldown). See Chain
@@ -498,6 +645,62 @@ These exist in the repo and are past the "do not build" line. They are listed he
   `lib/company/listing.ts`. `scripts/company-check.mts` is the live check for
   every Nasdaq section and every TradingView symbol.
 
+- shMON staking on Monad (`lib/shmonad`, `app/api/shmonad`,
+  `components/ShMonadCard.tsx`), as of 2026-09-22. See Chain Assumptions and
+  `docs/shmonad.md`. The Stake form takes Solana USDC and runs one Trustware
+  leg to native MON plus one payable `deposit`, both signed silently; the
+  Withdraw panel offers the instant exit (fee read live, capped by the pool)
+  and the queued one (a state machine whose readiness is a simulated
+  `completeUnstake`); Move to Solana routes native MON home as USDC in one
+  verified leg. The APY is share price growth over a week, read from the
+  public Monad node because the paid one keeps a day. It is a Buy + Earn
+  venue option with a currency-mismatch warning and is never the default.
+  Read side verified by `scripts/shmonad-check.mts`; **no transaction has
+  been signed live yet**, so the manual test in `docs/shmonad.md` is the
+  first.
+- Uniswap liquidity pools (`lib/uniswap`, `lib/robinhood`, `app/api/uniswap`,
+  `components/UniswapPoolsCard.tsx`), as of 2026-09-22. See Chain
+  Assumptions and `docs/uniswap-lp.md`. Twelve pools on Robinhood Chain,
+  Monad, Ethereum and Base; a ±10% band around the price, sized 50/50; the
+  deposit form prices its Trustware legs before the button; positions show
+  amounts, fees, and whether the price is in range, with Claim, Withdraw
+  and Reopen; Move to Solana for every pool token in the wallet. GLD on
+  Robinhood Chain is listed but not depositable (no provider routes into
+  it). Read side and the LP API's `check_approval` and `create` on all
+  four chains verified by `scripts/uniswap-check.mts`; **no transaction
+  has been signed**, so the manual test in `docs/uniswap-lp.md` is the
+  first.
+
+- Trader mode (`components/trader`, `lib/trader`, `lib/strategies/plays.ts`,
+  `lib/ui/use-app-mode.ts`), as of 2026-09-22. A second way of looking at
+  the same account, behind an Investor / Trader control under the logo,
+  remembered per browser. Investor is every section above, unchanged, and
+  the default. Trader is four card-first sections fed the reads the page
+  already holds: Earn (one card per venue in `lib/trader/earn-venues.ts`,
+  shMON today, opening onto the venue's own card), Buy + Earn ("Buy Tesla,
+  earn up to Y%": one card per borrowable asset, where Y is the best net
+  rate across the three tiers in `lib/trader/tiers.ts` that the borrowed
+  USDC can go to, ranked Portfolio (Bitwise Mag7X), Staking (shMON today;
+  ETH and BTC staking are unbuilt slots) and Liquidity pools (Uniswap,
+  unbuilt), at the **safe maximum** borrow ratio, `maxBorrowRatio`, which
+  every Trader borrow uses so the card shows the most the position can
+  earn, with the ratio on the card and health and the liquidation drop on
+  the ticket; Investor keeps its half-of-CF default. The detail prices the
+  three tiers and mounts `EarnTicket` on the chosen one with that tier's
+  venue alone, so Investor's five-venue picker is not here; the vault
+  destinations are plays. No Trader surface names Jupiter Lend or Kamino:
+  the `VenueNames` context in `components/strategies/shared.tsx`, false
+  under `TraderShell`, makes the shared tickets drop the venue from their
+  copy while the route still decides everything), Strategies (the plays in
+  `lib/strategies/plays.ts`: named, thesis-driven presets over earn,
+  leverage and ladder that pre-fill the existing tickets through additive
+  `initial*` props and add no signing path; `plays.test.ts` pins every play
+  to the catalog), and Portfolio (the wallet card and the positions view).
+  Every figure on a Trader card is the figure Investor mode shows for the
+  same venue and asset, from the same hook. Read `docs/trader-mode-plan.md`
+  before touching it. Uniswap LP, named for the Earn grid, is its own build
+  and its plan is not yet written.
+
 ## Out of Scope
 
 These will come later. Do not build them now, even if it seems easy.
@@ -520,10 +723,31 @@ These will come later. Do not build them now, even if it seems easy.
   only native SOL, and it is sized to the shortfall. No MoonPay SDK, no card
   data, no KYC and no webhooks touch this app. Anything wider, funding the buy
   flow or the wallet panel from fiat, is still out of scope.
+
+  **The same sheet fronts a first vault deposit on the Earn tab**, as of
+  2026-09-21 (`purpose="deposit"`). A first Jupiter Lend deposit allocates the
+  share token account (0.0015 SOL); a first K-Vault deposit allocates that plus
+  the farm's 920-byte per-user state (0.0068 SOL together), because deposits
+  auto-stake. `lib/jupiter/earn-deposit-cost.ts` and
+  `lib/kamino/vault-deposit-cost.ts` price them the way the borrow estimators
+  do, sizes as constants and rent from the chain, except that Kamino's are read
+  off KTX's own instructions rather than derived from seeds. The routes are the
+  borrow tab's: wallet USDC, a sliver of the asset being deposited, or Privy.
+  Two things the deposit path adds: the fee payer must be left holding the
+  zero-byte rent floor (650,240 lamports today), which `toSetupCost` now
+  enforces for the borrow path too, and the deposit is re-clamped to the
+  on-chain balance after funding because the sale may have spent part of it.
+  `scripts/earn-deposit-cost-check.mts` is the live check. The Strategies
+  page's Buy + Earn step deposits through the same builders but does not run
+  this preflight yet.
 - Additional lending venues beyond Kamino, Jupiter Lend, Morpho-on-Monad, the
-  Morpho-on-Ethereum gold market, the Aave V4 Gold spoke and the Aave vaults on
-  Ethereum (MarginFi, Save, etc.)
+  Morpho-on-Ethereum gold market, the Aave V4 Gold spoke, the Aave vaults on
+  Ethereum, Aeras Vault I on Blend, shMON staking on Monad and the Uniswap
+  liquidity pools (MarginFi, Save, etc.)
+  Additional Glider strategies beyond Bitwise Mag7X are out too: the client
+  is written for one strategy id on one chain on purpose, and a second would
+  need its own registry, eligibility review and exit path checked.
 - Portfolio analytics beyond a single position view
 - Mobile-specific UI
-- EVM chains as a destination for a position, **except** the venues described under Chain Assumptions: Morpho earn on Monad, the two gold borrow markets on Ethereum (Morpho Blue and the Aave V4 Gold spoke), and the Aave vaults on Ethereum. Outside those, a position never settles off Solana. Swapping out to an EVM chain is also allowed and is described under Chain Assumptions.
+- EVM chains as a destination for a position, **except** the venues described under Chain Assumptions: Morpho earn on Monad, the two gold borrow markets on Ethereum (Morpho Blue and the Aave V4 Gold spoke), the Aave vaults on Ethereum, Aeras Vault I on Blend, shMON staking on Monad, the Bitwise Mag7X portfolio on Base, and the Uniswap liquidity pools on Robinhood Chain, Monad, Ethereum and Base. Outside those, a position never settles off Solana. Swapping out to an EVM chain is also allowed and is described under Chain Assumptions.
 - Notifications and email

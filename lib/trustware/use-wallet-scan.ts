@@ -18,6 +18,11 @@ import type { NativeHolding } from "./native";
 import type { StableHolding } from "./stables";
 import type { OndoWalletHolding } from "./ondo-holdings";
 import type { GoldHolding } from "./gold-holdings";
+import {
+  carryUnreadableChains,
+  describeUnreadableChains,
+  type ScanRows,
+} from "./scan-merge";
 
 export interface WalletScan extends EquivalentBalances {
   native: NativeHolding[];
@@ -40,7 +45,14 @@ export interface WalletScan extends EquivalentBalances {
   refresh: () => void;
 }
 
-const EMPTY = { held: [], unreadableChains: [], native: [], stables: [], ondo: [], gold: [] };
+const EMPTY: ScanRows = {
+  held: [],
+  unreadableChains: [],
+  native: [],
+  stables: [],
+  ondo: [],
+  gold: [],
+};
 
 // Slower than the Solana balance poll. One scan sweeps every chain Trustware
 // can see, so it is a far heavier call than reading a few token accounts, and
@@ -52,12 +64,7 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
   const { address: evmAddress } = useEmbeddedEvmWallet();
   const [data, setData] = useState<{
     key: string;
-    scan: EquivalentBalances & {
-      native: NativeHolding[];
-      stables: StableHolding[];
-      ondo: OndoWalletHolding[];
-      gold: GoldHolding[];
-    };
+    scan: ScanRows;
     prices: Record<string, number>;
     error: string | null;
   } | null>(null);
@@ -65,6 +72,10 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
   // Survives the effect re-running, which state in the `data` object does not:
   // that is replaced wholesale on every poll.
   const pricesRef = useRef<Record<string, number>>({});
+  // The last rows shown for this pair of addresses, so a poll that could not
+  // read a chain keeps that chain's rows instead of blanking them. See
+  // lib/trustware/scan-merge.ts for why.
+  const lastRowsRef = useRef<{ key: string; rows: ScanRows } | null>(null);
 
   const refresh = useCallback(() => setGeneration((n) => n + 1), []);
 
@@ -97,12 +108,9 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
         fetch("/api/prices/native", { cache: "no-store" }),
       ]);
 
-      let scan = EMPTY as EquivalentBalances & {
-        native: NativeHolding[];
-        stables: StableHolding[];
-        ondo: OndoWalletHolding[];
-        gold: GoldHolding[];
-      };
+      const previous =
+        lastRowsRef.current?.key === addressKey ? lastRowsRef.current.rows : null;
+      let scan: ScanRows = EMPTY;
       let error: string | null = null;
       if (scanRes.status === "fulfilled") {
         const body = await scanRes.value.json();
@@ -114,6 +122,17 @@ export function useWalletScan(solanaAddress: string | undefined): WalletScan {
       } else {
         error = String(scanRes.reason);
       }
+
+      // A chain the scan could not read keeps the rows it had, and the panel
+      // is told. A request that failed outright keeps everything: the money
+      // did not move because a read did not land.
+      if (error) {
+        if (previous) scan = previous;
+      } else {
+        scan = carryUnreadableChains(previous, scan);
+        error = describeUnreadableChains(scan.unreadableChains);
+      }
+      lastRowsRef.current = { key: addressKey, rows: scan };
 
       // Carry the last good prices forward on a failure. Losing them does not
       // merely blank a dollar figure: every total drops an unpriced native

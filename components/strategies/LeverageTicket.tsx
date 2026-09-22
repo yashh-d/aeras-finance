@@ -65,6 +65,8 @@ import {
   SECONDARY_BUTTON,
   StepList,
   UsdcAmount,
+  useTicketFlow,
+  useVenueNames,
 } from "./shared";
 
 const LEVERAGE_MIN = 1.1;
@@ -81,16 +83,23 @@ interface Props {
   store: StrategyRunsStore;
   saved: StrategyRun | null;
   onRefresh: () => Promise<void> | void;
+  // A play's preset (lib/strategies/plays.ts): the multiple the ticket
+  // opens on, or "max" for the route's ceiling. Seeds the slider and
+  // nothing else.
+  initialLeverage?: number | "max";
 }
 
 export function LeverageTicket(props: Props) {
   const { xstock, route } = props.row;
+  // False under Trader mode: the copy then names no lending venue.
+  const named = useVenueNames();
   if (!route.vault) {
     return (
       <Note>
-        {xstock.symbol} is lent against on Kamino, which has no flashloan in
-        this app, so leverage cannot be opened in one transaction. Use Buy more
-        instead: it reaches the same exposure in a few signed rounds.
+        {named
+          ? `${xstock.symbol} is lent against on Kamino, which has no flashloan in this app, so leverage cannot be opened in one transaction.`
+          : `${xstock.symbol}'s lending market has no flashloan, so leverage cannot be opened in one transaction.`}{" "}
+        Use Buy more instead: it reaches the same exposure in a few signed rounds.
       </Note>
     );
   }
@@ -105,18 +114,26 @@ function JupiterLeverage({
   store,
   saved,
   onRefresh,
+  initialLeverage,
 }: Props) {
   const { xstock, route } = row;
   const vault = route.vault!;
   const signTx = useSignSolanaTxBase64();
   const { getAccessToken } = usePrivy();
   const run = useStrategyRun();
+  const named = useVenueNames();
+  // Set under Trader mode: draws the run above the preview.
+  const flow = useTicketFlow();
   const savedData = saved?.data.kind === "leverage" ? saved.data : null;
 
   const maxLeverage = maxLeverageForRoute(route);
   const leverageMax = Math.max(LEVERAGE_MIN + 0.1, Math.floor(maxLeverage * 10) / 10);
   const presets = leveragePresets(route);
-  const [leverage, setLeverage] = useState(() => Math.min(2, leverageMax));
+  const [leverage, setLeverage] = useState(() =>
+    initialLeverage === "max"
+      ? leverageMax
+      : Math.max(LEVERAGE_MIN, Math.min(initialLeverage ?? 2, leverageMax)),
+  );
   const [amountInput, setAmountInput] = useState("");
   const [live, setLive] = useState<LiveVaultState | null>(null);
   const [previewState, setPreview] = useState<SwapQuote | null>(null);
@@ -424,6 +441,16 @@ function JupiterLeverage({
         </div>
       </div>
 
+      {flow?.({
+        kind: "leverage",
+        xstock,
+        amountUsd: equityValid ? equityUsd : null,
+        leverage,
+        borrowUsd,
+        exposureUsd,
+        exposureUi,
+      })}
+
       <PreviewBlock>
         <PreviewRow
           label="Exposure"
@@ -459,8 +486,9 @@ function JupiterLeverage({
       {previewErr && <Note tone="warn">{previewErr}</Note>}
       {liquidityShort && (
         <Note tone="warn">
-          Jupiter Lend only has {fmtUsd(live?.borrowableUsd)} left to lend in
-          this vault. Lower the amount or the leverage.
+          {named ? "Jupiter Lend" : "The lending market"} only has{" "}
+          {fmtUsd(live?.borrowableUsd)} left to lend in this vault. Lower the
+          amount or the leverage.
         </Note>
       )}
 
@@ -468,8 +496,11 @@ function JupiterLeverage({
 
       {run.finished ? (
         <Note>
-          Open. The position is on the Borrow tab and in the Earn tab&apos;s
-          looping card. Come back here to close it.
+          Open.{" "}
+          {named
+            ? "The position is on the Borrow tab and in the Earn tab's looping card."
+            : "The position is open."}{" "}
+          Come back here to close it.
         </Note>
       ) : (
         <button type="button" onClick={handleOpen} disabled={!canOpen} className={PRIMARY_BUTTON}>

@@ -75,10 +75,19 @@ export const VENUE_LOGOS: Readonly<Record<string, string>> = {
   aeras: "/logos/aeras.png",
   // FastLane's shMON mark, from shmonad.xyz's apple-touch-icon (180px).
   shmonad: "/logos/shmonad.png",
+  // Glider's mark, from cdn.glider.fi/logo.png, for the Bitwise Mag7X
+  // portfolio row and its position. Bitwise designs the model; Glider runs
+  // the account, and the account is what the user holds.
+  glider: "/logos/glider.png",
+  // Uniswap's unicorn mark, from the UNI token's Trust Wallet asset, for
+  // the liquidity pools card and its positions.
+  uniswap: "/logos/uniswap.png",
   // Chain marks, shown beside the section for each EVM venue: Monad for the
-  // Morpho earn vaults, Ethereum for the two gold borrow markets.
+  // Morpho earn vaults, Ethereum for the two gold borrow markets, Robinhood
+  // Chain (LI.FI's chain icon) for the tokenized-stock liquidity pools.
   monad: "/logos/monad.png",
   ethereum: "/logos/eth.png",
+  robinhood: "/logos/robinhood.svg",
 };
 
 // Morpho vault curators. Sourced from Morpho's own CDN, which serves these for

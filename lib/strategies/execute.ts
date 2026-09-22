@@ -19,6 +19,10 @@ import {
 } from "@solana/spl-token";
 
 import type { BorrowRoute } from "@/lib/borrow/route";
+import { fetchGliderPortfolio } from "@/lib/glider/client";
+import { ensureMag7xPortfolio } from "@/lib/glider/enroll";
+import { exitMag7xToSolana } from "@/lib/glider/exit";
+import { executeMag7xDeposit, planMag7xDeposit } from "@/lib/glider/fund";
 import {
   buildOperateTx,
   fetchLiveVaultStateViaProxy,
@@ -81,6 +85,9 @@ import { stakeFromSolana } from "@/lib/shmonad/fund";
 import { instantCapacityShares, withTolerance } from "@/lib/shmonad/math";
 import { redeemInstant } from "@/lib/shmonad/stake";
 import { maxReturnableMonAtomic, sendMonToSolana } from "@/lib/shmonad/unwind";
+import { fetchUniswapPositions } from "@/lib/uniswap/client";
+import { depositFromSolana as depositIntoPoolFromSolana } from "@/lib/uniswap/fund";
+import { exitPositionToSolana } from "@/lib/uniswap/withdraw";
 import { awaitTokenBalance } from "@/lib/solana/await-balance";
 import { atomicToUiString, getConnection } from "@/lib/solana/balances";
 import {
@@ -345,7 +352,12 @@ export async function depositUsdcToEarn(args: {
   walletAddress: string;
   amountUsdc: number;
   signTx: SignTx;
+  // The embedded EVM wallet and a Solana sign-and-send, for the venues that
+  // settle off Solana (Morpho and shMON on Monad, Mag7X on Base).
   monad?: MonadSigners;
+  // The user's eligibility statement for Bitwise Mag7X, which the server
+  // refuses enrollment without. Ignored by every other venue.
+  gliderAttested?: boolean;
   onProgress?: (message: string) => void;
 }): Promise<{ signature: string }> {
   const { option, walletAddress, amountUsdc, signTx } = args;
@@ -407,6 +419,51 @@ export async function depositUsdcToEarn(args: {
       solanaUsdcAtomic: held.toString(),
       walletMonAtomic: fresh?.walletMonAtomic ?? "0",
       sharesPerMonAtomic: fresh?.sharesPerMonAtomic ?? "0",
+      signer: args.monad.evm,
+      solana: { address: walletAddress, signAndSendBase64: args.monad.solanaSignAndSend },
+      onProgress: toMorphoReport(args.onProgress),
+    });
+    return { signature: txHash };
+  }
+
+  if (option.venue === "glider") {
+    // Bitwise Mag7X. The borrowed USDC goes to Base by Trustware, delivered
+    // straight to the user's Glider smart account (created here on first
+    // use, one EVM signature), and Glider is asked to buy the holdings. The
+    // signature returned is the Solana leg's, which Solscan can show.
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    const portfolio = await ensureMag7xPortfolio({
+      evm: args.monad.evm,
+      attested: args.gliderAttested ?? false,
+      onProgress: args.onProgress,
+    });
+    const plan = await planMag7xDeposit({
+      amountAtomic: BigInt(deposit.toString()),
+      solanaAddress: walletAddress,
+      solanaUsdcAtomic: held.toString(),
+      portfolio,
+    });
+    if (plan.kind === "blocked") throw new Error(plan.reason);
+    const r = await executeMag7xDeposit({
+      plan,
+      solana: { address: walletAddress, signAndSendBase64: args.monad.solanaSignAndSend },
+      onProgress: (p) => args.onProgress?.(p.message),
+    });
+    return { signature: r.txHash };
+  }
+
+  if (option.venue === "uniswap") {
+    // A Uniswap liquidity pool. Trustware moves the borrowed USDC to the
+    // pool's chain, buys gas there if the wallet has none, balances the two
+    // sides and mints the position. The hash is an EVM one, so the step
+    // reports no Solscan signature.
+    if (!option.uniswapPool) throw new Error("Uniswap pool record missing");
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    const { txHash } = await depositIntoPoolFromSolana({
+      pool: option.uniswapPool,
+      usdcAtomic: BigInt(deposit.toString()),
+      solanaUsdcAtomic: held.toString(),
+      prices: {},
       signer: args.monad.evm,
       solana: { address: walletAddress, signAndSendBase64: args.monad.solanaSignAndSend },
       onProgress: toMorphoReport(args.onProgress),
@@ -598,6 +655,12 @@ export async function readEarnPositionUsdc(args: {
     const pos = r.positions.get(option.morphoVault.address.toLowerCase());
     return pos ? Number(atomicToUiString(pos.assetsAtomic, USDC_DECIMALS)) : 0;
   }
+  if (option.venue === "glider") {
+    // What Glider values the portfolio at, holdings and any idle USDC. A
+    // liquidation pays somewhat less: Glider's swap fee, then the leg home.
+    const read = await fetchGliderPortfolio();
+    return read.portfolio?.totalValueUsd ?? 0;
+  }
   if (option.venue === "shmonad") {
     // What the instant exit would pay, at the MON price: the figure a close
     // can actually spend. No price means no figure, which the close treats
@@ -610,6 +673,21 @@ export async function readEarnPositionUsdc(args: {
     if (BigInt(pos.sharesAtomic) === 0n) return 0;
     if (monUsd == null) throw new Error("The MON price is unavailable right now. Try again shortly.");
     return (Number(pos.instantNetMonAtomic) / 1e18) * monUsd;
+  }
+  if (option.venue === "uniswap") {
+    // What the wallet's positions in this pool are worth now, fees
+    // included. A position whose value the read could not price counts as
+    // nothing rather than as a guess; the close then withdraws what it can
+    // and says what came back.
+    if (!option.uniswapPool || !args.evmAddress) return 0;
+    const { positions } = await fetchUniswapPositions();
+    const poolId = option.uniswapPool.id.toLowerCase();
+    return positions
+      .filter(
+        (p) =>
+          p.chainId === option.uniswapPool!.chainId && p.poolId.toLowerCase() === poolId,
+      )
+      .reduce((sum, p) => sum + (p.valueUsd ?? 0) + (p.feesUsd ?? 0), 0);
   }
   if (option.venue === "jupiter") {
     const meta = earnAssetByMint(USDC_MINT);
@@ -655,6 +733,52 @@ export async function withdrawUsdcFromEarn(args: {
   const amount = Math.min(amountUsdc, held);
   if (amount <= 0) return { signature: null, withdrawnUsdc: 0 };
   const amountAtomic = toAtomicBN(amount, USDC_DECIMALS);
+
+  if (option.venue === "glider") {
+    // Whole position only. Glider's liquidate-all sells every holding to
+    // USDC on Base; a partial in-kind withdrawal would strand a Coinbase
+    // tokenized stock in the EVM wallet with no route home. The USDC then
+    // comes back to Solana through lib/glider/exit.ts, buying a little Base
+    // ETH for gas on the way when the wallet has none.
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    const read = await fetchGliderPortfolio();
+    const r = await exitMag7xToSolana({
+      evm: args.monad.evm,
+      solana: { address: walletAddress, signAndSendBase64: args.monad.solanaSignAndSend },
+      hasHoldings: (read.portfolio?.totalValueUsd ?? 0) - (read.portfolio?.idleUsdc ?? 0) > 1,
+      onProgress: (p) => args.onProgress?.(p.message),
+    });
+    const delivered = r.deliveredAtomic ?? r.returnedAtomic;
+    return { signature: null, withdrawnUsdc: Number(delivered) / 10 ** USDC_DECIMALS };
+  }
+
+  if (option.venue === "uniswap") {
+    // Whole positions only. A liquidity position is a range, not a balance:
+    // taking part of one leaves a smaller range in the same place rather
+    // than freeing a chosen number of dollars, so a partial withdrawal
+    // cannot be sized to a repayment. Every position in the pool is closed
+    // and both sides come home as USDC.
+    if (!option.uniswapPool) throw new Error("Uniswap pool record missing");
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    const pool = option.uniswapPool;
+    const { positions } = await fetchUniswapPositions();
+    const mine = positions.filter(
+      (p) => p.chainId === pool.chainId && p.poolId.toLowerCase() === pool.id.toLowerCase(),
+    );
+    if (mine.length === 0) return { signature: null, withdrawnUsdc: 0 };
+    let delivered = 0n;
+    for (const position of mine) {
+      const r = await exitPositionToSolana({
+        pool,
+        position,
+        evm: args.monad.evm,
+        solanaAddress: walletAddress,
+        onProgress: toMorphoReport(args.onProgress),
+      });
+      delivered += r.deliveredAtomic;
+    }
+    return { signature: null, withdrawnUsdc: Number(delivered) / 10 ** USDC_DECIMALS };
+  }
 
   if (option.venue === "shmonad") {
     if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");

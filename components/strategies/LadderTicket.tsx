@@ -16,20 +16,32 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AssetLogo } from "@/components/AssetLogo";
 import { borrowRouteFor } from "@/lib/borrow/route";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
+import { fetchGliderPortfolio } from "@/lib/glider/client";
+import {
+  GLIDER_LADDER_MINT,
+  GLIDER_STRATEGY_NAME,
+  MAG7X_MIN_DEPOSIT_USD,
+} from "@/lib/glider/constants";
 import { XSTOCKS, xstockByMint, type XStock } from "@/lib/jupiter/xstocks";
+import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
+import { VENUE_LOGOS } from "@/lib/tokens/logos";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
 import type { AccountBalances } from "@/lib/solana/balances";
 import {
   buyWithUsdc,
   closeLeverage,
   depositAndBorrow,
+  depositUsdcToEarn,
   readAtaBalanceAtomic,
   readJupiterPosition,
   readKaminoPosition,
   repayAndWithdraw,
   sellForUsdc,
   tokenProgramFor,
+  withdrawUsdcFromEarn,
   type BuyResult,
+  type MonadSigners,
 } from "@/lib/strategies/execute";
 import {
   defaultBorrowRatio,
@@ -38,7 +50,7 @@ import {
   minHealth,
   type HealthInput,
 } from "@/lib/strategies/math";
-import type { StrategyRates } from "@/lib/strategies/rates";
+import type { StrategyRates, UsdcEarnOption } from "@/lib/strategies/rates";
 import { useStrategyRun, type StepDef } from "@/lib/strategies/run";
 import {
   newRunId,
@@ -61,9 +73,20 @@ import {
   SECONDARY_BUTTON,
   StepList,
   UsdcAmount,
+  useTicketFlow,
+  useVenueNames,
 } from "./shared";
 
 const MIN_BUY_USD = 5;
+
+// What the Mag7X round hands to the shared deposit and exit path in
+// lib/strategies/execute.ts. `apy` is not read there; the pick is an
+// exposure, and its boost is drawn from the strategy view, not from here.
+const GLIDER_OPTION: UsdcEarnOption = {
+  venue: "glider",
+  label: `${GLIDER_STRATEGY_NAME} on Base`,
+  apy: 0,
+};
 const UNWIND_SLIPPAGE_BPS = 150;
 // Interest on each round's loan, covered by repaying a little over what was
 // borrowed. The venue caps the overshoot at the real debt.
@@ -80,6 +103,8 @@ export function LadderTicket({
   store,
   saved,
   onRefresh,
+  initialRatio,
+  initialNextMint,
 }: {
   row: StrategyRates;
   // Every collateral asset's live rates, for the borrow leg of whatever the
@@ -91,18 +116,37 @@ export function LadderTicket({
   store: StrategyRunsStore;
   saved: StrategyRun | null;
   onRefresh: () => Promise<void> | void;
+  // A play's preset (lib/strategies/plays.ts): the ratio and the first
+  // pick the ticket opens on. Seeds the state below and nothing else.
+  initialRatio?: number;
+  initialNextMint?: string;
 }) {
   const signTx = useSignSolanaTxBase64();
   const run = useStrategyRun();
+  // False under Trader mode: the copy then names no lending venue.
+  const named = useVenueNames();
+  // Set under Trader mode: draws the ladder above the preview.
+  const flow = useTicketFlow();
   const savedData = saved?.data.kind === "ladder" ? saved.data : null;
   const [amountInput, setAmountInput] = useState("");
-  const [ratio, setRatio] = useState(() => defaultBorrowRatio(row.route));
+  const [ratio, setRatio] = useState(() => initialRatio ?? defaultBorrowRatio(row.route));
   const [phase, setPhase] = useState<Phase>("idle");
   const [rounds, setRounds] = useState<LadderRound[]>([]);
   // USDC the last round borrowed, waiting to be spent.
   const [pendingUsd, setPendingUsd] = useState(0);
-  const [nextMint, setNextMint] = useState(row.xstock.mint);
+  const [nextMint, setNextMint] = useState(initialNextMint ?? row.xstock.mint);
   const [mode, setMode] = useState<"open" | "close">("open");
+  // The Mag7X eligibility statement, required by the enroll route the first
+  // time borrowed USDC is sent there.
+  const [attested, setAttested] = useState(false);
+  const evm = useEmbeddedEvmWallet();
+  const solanaSignAndSend = useSendSolanaTxBase64();
+  const monad: MonadSigners | undefined = evm.address
+    ? {
+        evm: { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider },
+        solanaSignAndSend,
+      }
+    : undefined;
   const bought = useRef<BuyResult | null>(null);
   const runId = useRef<string | null>(null);
   const data = useRef<LadderRunData | null>(null);
@@ -125,6 +169,8 @@ export function LadderTicket({
   const priceOf = (mint: string) => prices?.[mint]?.usdPrice ?? null;
   const ratesFor = (mint: string) => rows.find((r) => r.xstock.mint === mint);
   const assetOf = (mint: string) => xstockByMint(mint);
+  const symbolOf = (mint: string) =>
+    mint === GLIDER_LADDER_MINT ? "Mag7X" : (assetOf(mint)?.symbol ?? "?");
 
   // Persist after every step and every phase change.
   const { save } = store;
@@ -267,7 +313,7 @@ export function LadderTicket({
 
     const borrow: StepDef = {
       id: `borrow-${n}`,
-      label: `Round ${n}: deposit ${asset.symbol} and borrow USDC on ${route.venueLabel}`,
+      label: `Round ${n}: deposit ${asset.symbol} and borrow USDC${named ? ` on ${route.venueLabel}` : ""}`,
       run: async (report) => {
         const b = bought.current ?? restored();
         if (!b) throw new Error("The buy has not landed yet.");
@@ -312,6 +358,58 @@ export function LadderTicket({
     return [buy, borrow];
   }
 
+  // A round whose borrowed USDC goes into Bitwise Mag7X on Glider rather
+  // than into a catalog asset. One step, and the last: nothing on Base can be
+  // posted as collateral here, so there is no borrow and the ladder ends.
+  // Goes through the same deposit path Buy + Earn uses, so there is one.
+  function gliderRoundSteps(usd: number, n: number): StepDef[] {
+    const d = data.current!;
+    d.inFlight = { mint: GLIDER_LADDER_MINT, usd };
+    const finish = () => {
+      const round: LadderRound = {
+        mint: GLIDER_LADDER_MINT,
+        buyUsd: usd,
+        boughtUi: usd,
+        boughtAtomic: String(Math.round(usd * 1_000_000)),
+        borrowedUsd: 0,
+      };
+      setRounds((prev) => [...prev, round]);
+      setPendingUsd(0);
+      if (data.current) data.current.inFlight = undefined;
+      setPhase("done");
+    };
+    return [
+      {
+        id: `buy-${n}`,
+        label: `Round ${n}: put ${fmtUsd(usd)} of borrowed USDC into ${GLIDER_STRATEGY_NAME} on Base`,
+        run: async (report) => {
+          const r = await depositUsdcToEarn({
+            option: GLIDER_OPTION,
+            walletAddress,
+            amountUsdc: usd,
+            signTx,
+            monad,
+            gliderAttested: attested,
+            onProgress: report,
+          });
+          finish();
+          return { signatures: [r.signature] };
+        },
+        // Landed if Glider values the portfolio at most of what was sent.
+        // A resume after an interrupted deposit cannot tell an older
+        // position from this one; the ladder ends here either way, so the
+        // worst case is a round recorded as landed that a second press of
+        // Resume would otherwise have re-sent.
+        reconcile: async () => {
+          const read = await fetchGliderPortfolio();
+          const ok = (read.portfolio?.totalValueUsd ?? 0) >= usd * 0.5;
+          if (ok) finish();
+          return ok;
+        },
+      },
+    ];
+  }
+
   async function handleStart() {
     if (!amountValid || phase !== "idle") return;
     runId.current = newRunId();
@@ -330,9 +428,15 @@ export function LadderTicket({
 
   async function handleContinue() {
     if (phase !== "prompt" || pendingUsd <= 0) return;
+    bought.current = null;
+    if (nextMint === GLIDER_LADDER_MINT) {
+      setPhase("running");
+      await run.extend(gliderRoundSteps(pendingUsd, rounds.length + 1));
+      await onRefresh();
+      return;
+    }
     const asset = assetOf(nextMint);
     if (!asset) return;
-    bought.current = null;
     setPhase("running");
     await run.extend(roundSteps(asset, pendingUsd, rounds.length + 1, false));
     await onRefresh();
@@ -356,10 +460,15 @@ export function LadderTicket({
       .map((s) => ({ id: s.id, label: s.label, run: async () => ({ signatures: s.signatures }) }));
     const inFlight = savedData.inFlight;
     if (inFlight && savedData.phase === "running") {
-      const asset = assetOf(inFlight.mint);
-      if (!asset) return;
+      let live: StepDef[];
+      if (inFlight.mint === GLIDER_LADDER_MINT) {
+        live = gliderRoundSteps(inFlight.usd, n);
+      } else {
+        const asset = assetOf(inFlight.mint);
+        if (!asset) return;
+        live = roundSteps(asset, inFlight.usd, n, n === 1);
+      }
       setPhase("running");
-      const live = roundSteps(asset, inFlight.usd, n, n === 1);
       await run.resume([...stubs, ...live], saved.steps);
     } else {
       setPhase(savedData.phase === "done" ? "done" : "prompt");
@@ -397,14 +506,32 @@ export function LadderTicket({
     } else {
       for (let i = rs.length - 1; i >= 0; i--) {
         const r = rs[i];
+        const n = i + 1;
+        if (r.mint === GLIDER_LADDER_MINT) {
+          steps.push({
+            id: `exit-${n}`,
+            label: `Round ${n}: sell the Mag7X holdings on Base and bring the USDC back to Solana`,
+            run: async (report) => {
+              const out = await withdrawUsdcFromEarn({
+                option: GLIDER_OPTION,
+                walletAddress,
+                amountUsdc: r.buyUsd,
+                signTx,
+                monad,
+                onProgress: report,
+              });
+              return { signatures: out.signature ? [out.signature] : [] };
+            },
+          });
+          continue;
+        }
         const asset = assetOf(r.mint);
         const route = borrowRouteFor(r.mint);
         if (!asset) continue;
-        const n = i + 1;
         if (r.borrowedUsd > 0 && route) {
           steps.push({
             id: `repay-${n}`,
-            label: `Round ${n}: repay ${fmtUsd(r.borrowedUsd)} and withdraw ${asset.symbol} from ${route.venueLabel}`,
+            label: `Round ${n}: repay ${fmtUsd(r.borrowedUsd)} and withdraw ${asset.symbol}${named ? ` from ${route.venueLabel}` : ""}`,
             run: async (report) => {
               const out = await repayAndWithdraw({
                 route,
@@ -457,6 +584,7 @@ export function LadderTicket({
     data.current = null;
   }
 
+  const nextIsGlider = nextMint === GLIDER_LADDER_MINT;
   const nextAsset = assetOf(nextMint) ?? row.xstock;
   const nextRoute = borrowRouteFor(nextMint);
   const nextBorrow = floorCents(pendingUsd * ratio);
@@ -473,7 +601,7 @@ export function LadderTicket({
         {savedData.rounds.map((r, i) => (
           <PreviewRow
             key={i}
-            label={`${r.boughtUi.toFixed(4)} ${assetOf(r.mint)?.symbol ?? "?"}`}
+            label={r.mint === GLIDER_LADDER_MINT ? `${fmtUsd(r.buyUsd)} in Mag7X` : `${r.boughtUi.toFixed(4)} ${symbolOf(r.mint)}`}
             value={r.borrowedUsd > 0 ? `borrowed ${fmtUsd(r.borrowedUsd)}` : "held"}
             muted={r.borrowedUsd === 0}
           />
@@ -497,7 +625,7 @@ export function LadderTicket({
             <button type="button" onClick={handleResume} className={PRIMARY_BUTTON}>
               Resume
             </button>
-            <button type="button" onClick={() => store.remove(saved.id)} className={SECONDARY_BUTTON} title="Forget this run. Positions already opened stay on the Borrow tab.">
+            <button type="button" onClick={() => store.remove(saved.id)} className={SECONDARY_BUTTON} title={named ? "Forget this run. Positions already opened stay on the Borrow tab." : "Forget this run. Positions already opened stay open."}>
               Discard
             </button>
           </div>
@@ -548,6 +676,17 @@ export function LadderTicket({
             autoFocus
           />
           <RatioSlider route={row.route} value={ratio} onChange={setRatio} />
+
+          {flow?.({
+            kind: "ladder",
+            xstock: row.xstock,
+            amountUsd: amountValid ? amountUsd : null,
+            ratio,
+            next: nextIsGlider ? null : nextAsset,
+            nextIsGlider,
+            nextHasMarket: nextRoute != null,
+            rounds: projection?.rounds ?? null,
+          })}
 
           {projection && (
             <PreviewBlock>
@@ -614,7 +753,7 @@ export function LadderTicket({
               {shownRounds.map((r, i) => (
                 <PreviewRow
                   key={i}
-                  label={`${r.boughtUi.toFixed(4)} ${assetOf(r.mint)?.symbol ?? "?"}`}
+                  label={r.mint === GLIDER_LADDER_MINT ? `${fmtUsd(r.buyUsd)} in Mag7X` : `${r.boughtUi.toFixed(4)} ${symbolOf(r.mint)}`}
                   value={r.borrowedUsd > 0 ? `borrowed ${fmtUsd(r.borrowedUsd)}` : "held"}
                   muted={r.borrowedUsd === 0}
                 />
@@ -637,6 +776,20 @@ export function LadderTicket({
                 {fmtUsd(pendingUsd)} USDC is in your wallet. Buy what with it?
               </div>
               <div className="grid max-h-48 grid-cols-2 gap-1.5 overflow-y-auto pr-1 sm:grid-cols-3">
+                <button
+                  type="button"
+                  onClick={() => setNextMint(GLIDER_LADDER_MINT)}
+                  className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-xs transition-colors ${
+                    nextIsGlider
+                      ? "border-white/20 bg-white/10 text-white"
+                      : "border-white/10 text-white/60 hover:text-white"
+                  }`}
+                  title={`${GLIDER_STRATEGY_NAME}: Mag7 + SpaceX at equal weight on Base, via Glider`}
+                >
+                  <AssetLogo xstock={{ symbol: "MAG7X", name: GLIDER_STRATEGY_NAME, logo: VENUE_LOGOS.glider }} size={18} />
+                  <span className="truncate">Mag7X</span>
+                  <span className="ml-auto text-[9px] uppercase tracking-wider text-white/30">ends</span>
+                </button>
                 {XSTOCKS.map((x) => {
                   const collateral = borrowRouteFor(x.mint) != null;
                   const active = x.mint === nextMint;
@@ -663,19 +816,49 @@ export function LadderTicket({
                 })}
               </div>
               <PreviewRow
-                label={`Then borrow on ${nextRoute?.venueLabel ?? "—"}`}
+                label={named ? `Then borrow on ${nextRoute?.venueLabel ?? "—"}` : "Then borrow"}
                 value={
-                  nextRoute == null
-                    ? `nothing, ${nextAsset.symbol} has no market`
-                    : nextContinues
-                      ? fmtUsd(nextBorrow)
-                      : `nothing, under ${fmtUsd(LADDER_FLOOR_USD)}`
+                  nextIsGlider
+                    ? "nothing, Mag7X is not collateral here"
+                    : nextRoute == null
+                      ? `nothing, ${nextAsset.symbol} has no market`
+                      : nextContinues
+                        ? fmtUsd(nextBorrow)
+                        : `nothing, under ${fmtUsd(LADDER_FLOOR_USD)}`
                 }
                 muted={!nextContinues}
               />
+              {nextIsGlider && (
+                <>
+                  <Note>
+                    Mag7X is equity exposure on Base, not a cash deposit: eight Coinbase
+                    tokenized stocks at equal weight, plus Glider&apos;s boost campaign paid in
+                    dollars while it runs. Minimum {fmtUsd(MAG7X_MIN_DEPOSIT_USD)}, because Glider
+                    skips any slice under its $5 swap threshold.
+                  </Note>
+                  <label className="flex items-start gap-2 text-xs text-white/60">
+                    <input
+                      type="checkbox"
+                      checked={attested}
+                      onChange={(e) => setAttested(e.target.checked)}
+                      disabled={run.running}
+                      className="mt-0.5"
+                    />
+                    <span>
+                      I am not a US person and not in a restricted jurisdiction. Coinbase
+                      tokenized stocks are offered under Regulation S.
+                    </span>
+                  </label>
+                </>
+              )}
               <div className="flex gap-2">
-                <button type="button" onClick={handleContinue} disabled={run.running} className={PRIMARY_BUTTON}>
-                  Buy {nextAsset.symbol} with {fmtUsd(pendingUsd)}
+                <button
+                  type="button"
+                  onClick={handleContinue}
+                  disabled={run.running || (nextIsGlider && (!attested || !monad || pendingUsd < MAG7X_MIN_DEPOSIT_USD))}
+                  className={PRIMARY_BUTTON}
+                >
+                  {nextIsGlider ? `Put ${fmtUsd(pendingUsd)} into Mag7X` : `Buy ${nextAsset.symbol} with ${fmtUsd(pendingUsd)}`}
                 </button>
                 <button type="button" onClick={() => setPhase("done")} disabled={run.running} className={SECONDARY_BUTTON}>
                   Stop here
@@ -703,7 +886,9 @@ export function LadderTicket({
                 Ladder finished.{" "}
                 {pendingUsd > 0
                   ? `${fmtUsd(pendingUsd)} of borrowed USDC stays in the wallet.`
-                  : "Every position is on the Borrow tab."}{" "}
+                  : named
+                    ? "Every position is on the Borrow tab."
+                    : "Every position is open."}{" "}
                 Come back here to unwind it.
               </Note>
             </div>

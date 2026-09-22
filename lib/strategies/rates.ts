@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { KaminoReserveMetric } from "@/app/api/kamino/reserves/metrics/route";
 import { borrowRouteFor, type BorrowRoute } from "@/lib/borrow/route";
+import { fetchGliderStrategy } from "@/lib/glider/client";
 import {
   jupiterMarketKey,
   kaminoMarketKey,
@@ -34,8 +35,10 @@ import {
 import { fetchMorphoMetrics } from "@/lib/morpho/client";
 import { MONAD_USDC_VAULTS, type MorphoVault } from "@/lib/morpho/vaults";
 import { fetchShmonMetrics } from "@/lib/shmonad/client";
+import { fetchUniswapPools } from "@/lib/uniswap/client";
+import { isDepositable, UNISWAP_CHAINS, UNISWAP_POOLS, type UniswapPool } from "@/lib/uniswap/pools";
 
-export type EarnVenue = "morpho" | "jupiter" | "kamino" | "shmonad";
+export type EarnVenue = "morpho" | "jupiter" | "kamino" | "shmonad" | "glider" | "uniswap";
 
 export interface UsdcEarnOption {
   venue: EarnVenue;
@@ -46,12 +49,46 @@ export interface UsdcEarnOption {
   kaminoVault?: KaminoVaultMeta;
   // Set for Morpho on Monad.
   morphoVault?: MorphoVault;
+  // Set for Bitwise Mag7X on Glider. Not a stable deposit: the borrowed USDC
+  // becomes equal-weight exposure to eight tokenized stocks on Base, and
+  // `apy` is the boost campaign paid in dollars on top of what the stocks
+  // do. The ticket says so beside the figure.
+  glider?: { boostApr: number; campaignId: string };
+  // Set for a Uniswap liquidity pool. The borrowed USDC becomes both sides
+  // of the pair, so the position is two assets and a fee rate, not a
+  // deposit. See lib/uniswap/pools.ts.
+  uniswapPool?: UniswapPool;
   // True for shMON staking: the borrowed USDC becomes MON, so the earn side
   // does not hold its dollar value and earnNetApy's spread is not a hedge.
   // Never the default, and the ticket says so when it is picked.
   monDenominated?: boolean;
+  // True for a liquidity pool: the position is rebalanced by the market as
+  // the price moves, so it can be worth less than the deposit even when the
+  // fees are positive. Never the default, and the ticket says so.
+  impermanentLoss?: boolean;
   // The instant exit fee at the venue, decimal, for the ticket's warning.
   exitFee?: number;
+}
+
+// The pools a strategy may deposit into: the ones both sides can be obtained
+// for. A pool with a token nothing can route to (GLD on Robinhood Chain) is
+// listed on the venue's own card for its figures and is not offered here.
+export function strategyUniswapPools(): UniswapPool[] {
+  return UNISWAP_POOLS.filter(isDepositable);
+}
+
+// One earn option per depositable pool, priced at its fee APR. The rate is
+// the pool's trading fees alone: no reward program is counted, and the
+// impermanent loss the position takes to earn it is not netted off, which
+// is why the ticket states it rather than folding it into the number.
+export function uniswapOption(pool: UniswapPool, feeApr: number): UsdcEarnOption {
+  return {
+    venue: "uniswap",
+    label: `${pool.label} on ${UNISWAP_CHAINS[pool.chainId].label}`,
+    apy: feeApr,
+    uniswapPool: pool,
+    impermanentLoss: true,
+  };
 }
 
 // The base-case vault. Curated by Hyperithm; the largest of the Monad USDC
@@ -76,17 +113,24 @@ export interface StrategyRatesState {
   // Where borrowed USDC goes by default: the Hyperithm vault on Monad when its
   // rate is known, else the best of the Solana venues. Null while loading.
   defaultEarn: UsdcEarnOption | null;
-  // Every venue, so the ticket can offer the others.
+  // Every venue, so the ticket can offer the others. One entry per venue:
+  // the Uniswap entry is the best-paying depositable pool, and the rest of
+  // them are in `uniswapOptions`.
   earnOptions: UsdcEarnOption[];
+  // Every depositable Uniswap pool priced, best fee APR first, so a surface
+  // can offer the pool as well as the venue.
+  uniswapOptions: UsdcEarnOption[];
   loading: boolean;
 }
 
 // Where borrowed USDC goes by default: the base case when its rate is known,
 // else the best of the USDC venues. A MON-denominated option never leads: its
 // rate is in MON terms, and the strip figure would read as a USDC spread it
-// is not. Pure, and pinned by rates.test.ts.
+// is not. Nor does a liquidity pool, for the same reason one step further on:
+// its position is two assets the market rebalances, so its fee rate is not a
+// spread against the loan either. Pure, and pinned by rates.test.ts.
 export function pickDefaultEarn(options: UsdcEarnOption[]): UsdcEarnOption | null {
-  const usdc = options.filter((o) => !o.monDenominated);
+  const usdc = options.filter((o) => !o.monDenominated && !o.impermanentLoss);
   if (usdc.length === 0) return null;
   return (
     usdc.find((o) => o.venue === "morpho") ??
@@ -106,6 +150,7 @@ function statFor(route: BorrowRoute, stats: Map<string, MarketStat>) {
 export function useStrategyRates(enabled = true): StrategyRatesState {
   const { stats, loading: statsLoading } = useBorrowMarketStats(enabled);
   const [earnOptions, setEarnOptions] = useState<UsdcEarnOption[]>([]);
+  const [uniswapOptions, setUniswapOptions] = useState<UsdcEarnOption[]>([]);
   const [supplyApyByReserve, setSupplyApyByReserve] = useState<
     Map<string, number>
   >(new Map());
@@ -173,6 +218,46 @@ export function useStrategyRates(enabled = true): StrategyRatesState {
           } catch {}
         })(),
         (async () => {
+          // Uniswap liquidity pools. Every depositable pool is priced at its
+          // own fee APR and kept in `uniswapOptions`; the best-paying one
+          // also stands as the venue's entry in `earnOptions`, since those
+          // are keyed by venue. A pool with no measured volume has no rate
+          // and is dropped rather than shown as zero.
+          try {
+            const payload = await fetchUniswapPools();
+            const byId = new Map(
+              payload.pools.map((m) => [`${m.chainId}:${m.id.toLowerCase()}`, m]),
+            );
+            const priced = strategyUniswapPools()
+              .map((pool) => {
+                const m = byId.get(`${pool.chainId}:${pool.id.toLowerCase()}`);
+                const apr = m?.feeApr7d ?? m?.feeApr24h ?? null;
+                return apr != null && apr > 0 ? uniswapOption(pool, apr) : null;
+              })
+              .filter((o): o is UsdcEarnOption => o != null)
+              .sort((a, b) => b.apy - a.apy);
+            if (cancelled || priced.length === 0) return;
+            setUniswapOptions(priced);
+            options.push(priced[0]);
+          } catch {}
+        })(),
+        (async () => {
+          // Bitwise Mag7X on Glider, offered only while its boost campaign is
+          // live: without the boost there is no rate to put on a tile, and
+          // equity exposure with no stated return is not an "earn" option.
+          try {
+            const s = await fetchGliderStrategy();
+            if (s.boost && s.boost.apr > 0) {
+              options.push({
+                venue: "glider",
+                label: `${s.name} on Base`,
+                apy: s.boost.apr,
+                glider: { boostApr: s.boost.apr, campaignId: s.boost.campaignId },
+              });
+            }
+          } catch {}
+        })(),
+        (async () => {
           try {
             const res = await fetch("/api/kamino/reserves/metrics", {
               cache: "no-store",
@@ -224,6 +309,7 @@ export function useStrategyRates(enabled = true): StrategyRatesState {
     rows,
     defaultEarn,
     earnOptions,
+    uniswapOptions,
     loading: loading || statsLoading,
   };
 }

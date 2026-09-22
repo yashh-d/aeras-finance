@@ -46,6 +46,7 @@ import {
 } from "@/lib/strategies/runs-client";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import { useSendSolanaTxBase64, useSignSolanaTxBase64 } from "@/lib/privy/sign";
+import { tokenLogoBySymbol } from "@/lib/tokens/logos";
 
 import {
   floorCents,
@@ -53,6 +54,7 @@ import {
   fmtPct,
   fmtSignedPct,
   fmtUsd,
+  MarkNote,
   Note,
   PreviewBlock,
   PreviewRow,
@@ -61,6 +63,9 @@ import {
   SECONDARY_BUTTON,
   StepList,
   UsdcAmount,
+  useCompactTicket,
+  useTicketFlow,
+  useVenueNames,
 } from "./shared";
 
 const MIN_BUY_USD = 5;
@@ -79,6 +84,8 @@ export function EarnTicket({
   store,
   saved,
   onRefresh,
+  initialVenue,
+  initialRatio,
 }: {
   row: StrategyRates;
   // The base case: the Hyperithm vault on Monad when its rate is known.
@@ -93,17 +100,28 @@ export function EarnTicket({
   // A run of this strategy on this asset, still going or finished.
   saved: StrategyRun | null;
   onRefresh: () => Promise<void> | void;
+  // A play's preset (lib/strategies/plays.ts): the venue and ratio the
+  // ticket opens on. Seeds the state below and nothing else; the user can
+  // still change both.
+  initialVenue?: UsdcEarnOption["venue"];
+  initialRatio?: number;
 }) {
   const signTx = useSignSolanaTxBase64();
   const solanaSignAndSend = useSendSolanaTxBase64();
   const evm = useEmbeddedEvmWallet();
   const run = useStrategyRun();
+  // False under Trader mode: the copy then names no lending venue.
+  const named = useVenueNames();
+  // True under Trader mode: no venue picker, shorter notes, fewer rows.
+  const compact = useCompactTicket();
+  // Set under Trader mode: draws the run above the preview.
+  const flow = useTicketFlow();
   const savedData = saved?.data.kind === "earn" ? saved.data : null;
   const [amountInput, setAmountInput] = useState("");
-  const [ratio, setRatio] = useState(() => defaultBorrowRatio(row.route));
+  const [ratio, setRatio] = useState(() => initialRatio ?? defaultBorrowRatio(row.route));
   // Where the borrowed USDC goes. Starts on the base case and follows it
   // until the user picks another venue.
-  const [venue, setVenue] = useState<UsdcEarnOption["venue"] | null>(null);
+  const [venue, setVenue] = useState<UsdcEarnOption["venue"] | null>(initialVenue ?? null);
   const earn =
     (venue ? earnOptions.find((o) => o.venue === venue) : null) ?? defaultEarn;
   // The Monad legs need the embedded EVM wallet. Undefined until Privy has
@@ -120,6 +138,9 @@ export function EarnTicket({
   const data = useRef<EarnRunData | null>(null);
   const bought = useRef<BuyResult | null>(null);
   const [mode, setMode] = useState<"open" | "close">("open");
+  // The Mag7X eligibility statement. The enroll route refuses without it;
+  // every other venue ignores it.
+  const [attested, setAttested] = useState(false);
 
   const { xstock, route } = row;
   const price = prices?.[xstock.mint]?.usdPrice ?? null;
@@ -175,8 +196,13 @@ export function EarnTicket({
     [earnOptions, earn],
   );
   // Both Monad venues need the embedded EVM wallet and the Trustware leg.
+  // The venues that settle off Solana and need the embedded EVM wallet:
+  // Morpho and shMON on Monad, Bitwise Mag7X on Base.
   const needsMonad = (o: UsdcEarnOption | null) =>
-    o?.venue === "morpho" || o?.venue === "shmonad";
+    o?.venue === "morpho" ||
+    o?.venue === "shmonad" ||
+    o?.venue === "glider" ||
+    o?.venue === "uniswap";
 
   // The three opening steps, from data that may be fresh or restored.
   function openSteps(d: EarnRunData, option: UsdcEarnOption): StepDef[] {
@@ -223,8 +249,9 @@ export function EarnTicket({
       },
       {
         id: "collateral",
-        label:
-          route.venue === "jupiter"
+        label: !named
+          ? `Deposit ${xstock.symbol} and borrow USDC`
+          : route.venue === "jupiter"
             ? `Deposit ${xstock.symbol} and borrow USDC on ${route.venueLabel}`
             : `Deposit ${xstock.symbol} on Kamino, then borrow USDC`,
         run: async (report) => {
@@ -271,7 +298,11 @@ export function EarnTicket({
             ? `Move the borrowed USDC to Monad and deposit it into ${option.morphoVault?.name ?? option.label}`
             : option.venue === "shmonad"
               ? "Move the borrowed USDC to Monad as MON and stake it in shMON"
-              : `Deposit the borrowed USDC into ${option.label}`,
+              : option.venue === "glider"
+                ? "Move the borrowed USDC to Base and buy the Mag7X holdings"
+                : option.venue === "uniswap"
+                  ? `Move the borrowed USDC to ${option.uniswapPool?.label ?? "the pool"} and open the position`
+                  : `Deposit the borrowed USDC into ${option.label}`,
         run: async (report) => {
           if (!d.borrowedUsd || d.borrowedUsd <= 0) throw new Error("Nothing was borrowed.");
           const r = await depositUsdcToEarn({
@@ -280,6 +311,7 @@ export function EarnTicket({
             amountUsdc: d.borrowedUsd,
             signTx,
             monad,
+            gliderAttested: attested,
             onProgress: report,
           });
           // A Monad deposit ends in an EVM hash, which Solscan cannot show.
@@ -319,6 +351,7 @@ export function EarnTicket({
     !liquidityShort &&
     earn != null &&
     (!needsMonad(earn) || monad != null) &&
+    (earn?.venue !== "glider" || attested) &&
     price != null &&
     !run.running &&
     run.steps.length === 0 &&
@@ -369,7 +402,11 @@ export function EarnTicket({
             ? `Withdraw the USDC from ${option.morphoVault?.name ?? option.label} and bring it back to Solana`
             : option.venue === "shmonad"
               ? "Unstake from shMON instantly and bring the MON back to Solana as USDC"
-              : `Withdraw the USDC from ${option.label}`,
+              : option.venue === "glider"
+                ? "Sell the Mag7X holdings on Base and bring the USDC back to Solana"
+                : option.venue === "uniswap"
+                  ? `Close the ${option.uniswapPool?.label ?? "pool"} position and bring both sides back to Solana`
+                  : `Withdraw the USDC from ${option.label}`,
         run: async (report) => {
           const held = balances?.usdc ?? 0;
           // Whatever the wallet does not already cover, up to the whole
@@ -378,7 +415,19 @@ export function EarnTicket({
           // a little more than the loan; shMON's instant exit adds up to
           // another 1%.
           const homePad =
-            option.venue === "morpho" ? 1.01 : option.venue === "shmonad" ? 1.02 : 1;
+            option.venue === "morpho"
+              ? 1.01
+              : option.venue === "shmonad"
+                ? 1.02
+                : option.venue === "glider"
+                  ? 1.03
+                  : // A pool exit is whole-position anyway (the venue
+                    // branch ignores the amount), so the pad only has to
+                    // not under-ask: the swap and two legs home cost more
+                    // than a vault withdrawal.
+                    option.venue === "uniswap"
+                    ? 1.03
+                    : 1;
           const need = Math.max(0, borrowed * CLOSE_REPAY_PAD * homePad - held);
           const r = await withdrawUsdcFromEarn({
             option,
@@ -393,8 +442,9 @@ export function EarnTicket({
       },
       {
         id: "repay",
-        label:
-          route.venue === "jupiter"
+        label: !named
+          ? `Repay the loan and withdraw ${xstock.symbol}`
+          : route.venue === "jupiter"
             ? `Repay the loan and withdraw ${xstock.symbol} from ${route.venueLabel}`
             : `Repay on Kamino, then withdraw ${xstock.symbol}`,
         run: async (report) => {
@@ -462,7 +512,7 @@ export function EarnTicket({
           </div>
           <PreviewRow label="Put in" value={fmtUsd(savedData.amountUsd)} />
           <PreviewRow label={`Holding ${xstock.symbol}`} value={savedData.bought?.boughtUi != null ? savedData.bought.boughtUi.toFixed(4) : "—"} />
-          <PreviewRow label={`Borrowed on ${route.venueLabel}`} value={fmtUsd(savedData.borrowedUsd)} />
+          <PreviewRow label={named ? `Borrowed on ${route.venueLabel}` : "Borrowed"} value={fmtUsd(savedData.borrowedUsd)} />
           <PreviewRow label="Earning in" value={option?.label ?? savedData.earnLabel} />
           <PreviewRow label="Opened" value={new Date(saved.openedAt).toLocaleDateString()} muted />
         </PreviewBlock>
@@ -522,7 +572,7 @@ export function EarnTicket({
         disabled={run.running}
       />
 
-      {earnOptions.length > 1 && (
+      {earnOptions.length > 1 && !compact && (
         <div>
           <div className="mb-2 text-xs text-white/50">Borrowed USDC earns in</div>
           <div className="flex flex-wrap gap-2">
@@ -546,18 +596,74 @@ export function EarnTicket({
         </div>
       )}
 
+      {earn?.venue === "glider" && (
+        <>
+          {compact ? (
+            <Note>
+              The loan buys eight tokenized stocks at equal weight. The{" "}
+              {fmtPct(earn.apy)} is Bitwise&apos;s boost, paid on top of what the
+              stocks do, and the basket does not count toward the loan&apos;s
+              health.
+            </Note>
+          ) : (
+            <Note>
+              Bitwise Mag7X is equity exposure, not a cash deposit. The borrowed
+              USDC buys eight Coinbase tokenized stocks on Base at equal weight,
+              and the {fmtPct(earn.apy)} is Glider&apos;s boost campaign, paid in
+              dollars on top of whatever the stocks do. The loan stays on Solana
+              against {xstock.symbol}; the Mag7X value does not count toward its
+              health.
+            </Note>
+          )}
+          <label className="flex items-start gap-2 text-xs text-white/60">
+            <input
+              type="checkbox"
+              checked={attested}
+              onChange={(e) => setAttested(e.target.checked)}
+              disabled={run.running}
+              className="mt-0.5"
+            />
+            <span>
+              I am not a US person and not in a restricted jurisdiction.
+              Coinbase tokenized stocks are offered under Regulation S.
+            </span>
+          </label>
+        </>
+      )}
+
       {needsMonad(earn) && !monad && (
         <Note>Waiting for the embedded Ethereum wallet to provision.</Note>
       )}
 
-      {earn?.monDenominated && (
-        <Note tone="warn">
-          Earns in MON, not USDC. The loan is USDC. If MON falls, the staked
-          value may not cover the loan, and closing pays the instant exit fee
-          ({fmtPct(earn.exitFee)} now). The rate shown is the staking APY in
-          MON terms.
-        </Note>
-      )}
+      {earn?.monDenominated &&
+        (compact ? (
+          <MarkNote logos={[tokenLogoBySymbol("MON")]}>Earns in MON</MarkNote>
+        ) : (
+          <Note tone="warn">
+            Earns in MON, not USDC. The loan is USDC. If MON falls, the staked
+            value may not cover the loan, and closing pays the instant exit fee
+            ({fmtPct(earn.exitFee)} now). The rate shown is the staking APY in
+            MON terms.
+          </Note>
+        ))}
+
+      {earn?.impermanentLoss &&
+        (compact ? (
+          <MarkNote
+            logos={[earn.uniswapPool?.token0.logo, earn.uniswapPool?.token1.logo]}
+          >
+            Earns trading fees, and holds both sides
+          </MarkNote>
+        ) : (
+          <Note tone="warn">
+            A liquidity position is both sides of{" "}
+            {earn.uniswapPool?.label ?? "the pair"}, and the pool sells whichever
+            side rises. The {fmtPct(earn.apy)} is the trading fees it earns; it
+            is not a deposit rate, and the position can be worth less than the
+            loan while still earning. Closing takes the whole position out and
+            brings both sides back as USDC.
+          </Note>
+        ))}
 
       {spread != null && spread <= 0 && (
         <Note tone="warn">
@@ -568,10 +674,20 @@ export function EarnTicket({
         </Note>
       )}
 
+      {flow?.({
+        kind: "earn",
+        xstock,
+        amountUsd: amountValid ? amountUsd : null,
+        ratio,
+        borrowUsd,
+        price,
+        option: earn,
+      })}
+
       <PreviewBlock>
         <PreviewRow label="Buys" value={amountValid ? `${fmtUsd(amountUsd)} of ${xstock.symbol}` : "—"} />
         <PreviewRow
-          label={`Borrows on ${route.venueLabel}`}
+          label={named ? `Borrows on ${route.venueLabel}` : "Borrows"}
           value={borrowUsd != null ? `${fmtUsd(borrowUsd)} USDC at ${fmtPct(row.borrowApr)}` : "—"}
           warn={liquidityShort}
         />
@@ -597,21 +713,27 @@ export function EarnTicket({
           label="Liquidation if the price drops"
           value={drop != null ? `−${(drop * 100).toFixed(0)}%` : "—"}
         />
-        <PreviewRow
-          label="Steps"
-          value={
-            needsMonad(earn)
-              ? `buy, borrow, fund Monad, deposit. All signed automatically`
-              : `buy, borrow, deposit. All signed automatically`
-          }
-          muted
-        />
+        {!compact && (
+          <PreviewRow
+            label="Steps"
+            value={
+              earn?.venue === "glider"
+                ? `buy, borrow, fund Base, buy Mag7X. All signed automatically`
+                : earn?.venue === "uniswap"
+                  ? `buy, borrow, fund the chain, open the position. All signed automatically`
+                  : needsMonad(earn)
+                    ? `buy, borrow, fund Monad, deposit. All signed automatically`
+                    : `buy, borrow, deposit. All signed automatically`
+            }
+            muted
+          />
+        )}
       </PreviewBlock>
 
       {liquidityShort && (
         <Note tone="warn">
-          {route.venueLabel} only has {fmtUsd(row.liquidityUsd)} left to lend.
-          Lower the amount or the ratio.
+          {named ? route.venueLabel : "The lending market"} only has{" "}
+          {fmtUsd(row.liquidityUsd)} left to lend. Lower the amount or the ratio.
         </Note>
       )}
 
@@ -619,8 +741,8 @@ export function EarnTicket({
 
       {run.finished ? (
         <Note>
-          Done. The loan is on the Borrow tab and the USDC is earning in{" "}
-          {earn?.label ?? "the vault"}. Come back here to close it.
+          Done. The loan is {named ? "on the Borrow tab" : "open"} and the USDC
+          is earning in {earn?.label ?? "the vault"}. Come back here to close it.
         </Note>
       ) : (
         <button type="button" onClick={handleStart} disabled={!canStart} className={PRIMARY_BUTTON}>

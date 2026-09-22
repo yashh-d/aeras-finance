@@ -19,8 +19,9 @@ export const ETHEREUM_CHAIN_ID = 1;
 // serve, so this is the second read-only endpoint after MONAD_RPC_URL and
 // follows the same shape: public fallback, paid endpoint droppable via env with
 // no code change.
+export const ETHEREUM_PUBLIC_RPC_URL = "https://ethereum-rpc.publicnode.com";
 export const ETHEREUM_RPC_URL =
-  process.env.ETHEREUM_RPC_URL ?? "https://ethereum-rpc.publicnode.com";
+  process.env.ETHEREUM_RPC_URL ?? ETHEREUM_PUBLIC_RPC_URL;
 
 export const ETHEREUM_EXPLORER_TX_BASE = "https://etherscan.io/tx/";
 

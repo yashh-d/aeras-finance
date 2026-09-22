@@ -4,6 +4,11 @@
 
 import "server-only";
 
+import {
+  BASE_CHAIN_ID,
+  BASE_NATIVE_TOKEN_ALIASES,
+  BASE_USDC,
+} from "@/lib/base/constants";
 import { XSTOCK_BORROW_VAULTS } from "@/lib/jupiter/borrow";
 import { XSTOCKS } from "@/lib/jupiter/xstocks";
 import { USDC_MINT } from "@/lib/jupiter/constants";
@@ -14,6 +19,11 @@ import {
 } from "@/lib/morpho/constants";
 import { XAUT } from "@/lib/morpho/gold-market";
 import { ONDO_MARGIN_TOKEN_ADDRESSES } from "@/lib/ondo/collateral";
+import {
+  NATIVE_FUNDING_TOKEN,
+  isUniswapChainId,
+  uniswapTokenByAddress,
+} from "@/lib/uniswap/pools";
 import {
   TRUSTWARE_API_BASE_URL,
   TRUSTWARE_DATA_BASE_URL,
@@ -103,6 +113,26 @@ const LIGHTER_MARGIN_SOURCES: Record<string, string> = {
   "56": "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
 };
 
+// Where a Bitwise Mag7X deposit lands: canonical USDC on Base, delivered to
+// the Glider smart account provisioned for the user's portfolio. The third
+// shape whose recipient is not the user's own wallet, and the only one of the
+// three the route handler verifies before building: it asks Glider, over our
+// tenant key, whether the address is the Base smart account of a portfolio
+// owned by the verified identity's embedded EVM wallet, and refuses
+// otherwise (lib/glider/server.ts, verifyGliderSmartAccount). The source is
+// the same USDC allowlist the Lighter margin shape takes, because a
+// Mag7X deposit is USDC and nothing else.
+const BASE_CHAIN = String(BASE_CHAIN_ID);
+const GLIDER_DEPOSIT_TOKEN = BASE_USDC.address;
+
+// Native ETH on Base, delivered to the user's own embedded EVM wallet: the
+// gas a Mag7X exit needs before the Base USDC it lands can be sent home
+// through the return leg in lib/trustware/base.ts. Both spellings Trustware
+// uses for a native asset are accepted (lib/base/constants.ts says why), and
+// the recipient is pinned to the user's wallet, so a wrong source can only
+// waste the caller's own funds.
+const BASE_GAS_TOKENS = new Set(BASE_NATIVE_TOKEN_ALIASES);
+
 // Margin destinations for Ondo Perps, delivered to the deposit address Ondo
 // provisioned for the user's account. Ethereum only: Ondo credits no other
 // network, and `provision_address` answers service_unavailable for Solana.
@@ -131,7 +161,10 @@ export type TrustwareShape =
   | "unwind"
   | "swap"
   | "ondo-margin"
-  | "lighter-margin";
+  | "lighter-margin"
+  | "glider-deposit"
+  | "base-gas"
+  | "lp";
 
 export type TrustwareValidation =
   | { ok: true; shape: TrustwareShape }
@@ -140,9 +173,10 @@ export type TrustwareValidation =
 // Which embedded wallet a shape delivers to.
 //
 // `null` means the destination is NOT the user's own wallet and the caller's
-// toAddress stands. That is true of exactly two shapes, both of which send to
-// an address a third party provisioned, and both of which the caller has to
-// ask for by name through `intent`.
+// toAddress stands. That is true of exactly three shapes, all of which send
+// to an address a third party provisioned, all of which the caller has to ask
+// for by name through `intent`, and one of which (glider-deposit) the route
+// handler additionally verifies against the provisioning party.
 //
 // This is the table that decides whether a payout address is caller-supplied,
 // so read it as the security boundary it is rather than as a lookup.
@@ -155,6 +189,9 @@ const SHAPE_DESTINATION: Record<TrustwareShape, "solana" | "evm" | null> = {
   swap: null, // resolved per request: the destination chain decides. See below.
   "ondo-margin": null,
   "lighter-margin": null,
+  "glider-deposit": null,
+  "base-gas": "evm",
+  lp: "evm",
 };
 
 // The address a validated request is allowed to deliver to, or null to keep
@@ -243,6 +280,20 @@ export function destinationForShape(
 //            EVM destinations. BOTH sides must be in SWAP_TOKENS. Widening this
 //            to "either side" would turn the proxy back into an open relay.
 //
+//   glider-deposit  USDC (Solana, or one of the EVM USDC sources) -> USDC on
+//            Base, delivered to the Glider smart account of the user's own
+//            Bitwise Mag7X portfolio. Requires `intent: "glider-deposit"`;
+//            the recipient is verified against Glider in the route handler.
+//
+//   base-gas anything -> native ETH on Base, delivered to the user's own
+//            embedded EVM wallet. The gas leg of a Mag7X exit.
+//
+//   lp       anything -> a token of a listed Uniswap pool, or that chain's
+//            native asset, on Robinhood Chain, Monad, Ethereum or Base,
+//            delivered to the user's own embedded EVM wallet; and, on the
+//            same chain, one listed token -> another. The funding legs and
+//            the on-chain swap of a liquidity position. See isLpFunding.
+//
 // Adding a token to lib/trustware/swap-tokens.ts widens this boundary, so that
 // file is the thing to review, not this function.
 //
@@ -319,6 +370,17 @@ export function validateTrustwareRequest(
       ? match("lighter-margin")
       : fail("that is not a valid Lighter margin deposit");
   }
+  if (req.intent === "glider-deposit") {
+    const fromIsUsdc =
+      (req.fromChain === TRUSTWARE_SOLANA_CHAIN && req.fromToken === USDC_MINT) ||
+      LIGHTER_MARGIN_SOURCES[req.fromChain!] === req.fromToken!.toLowerCase();
+    return fromIsUsdc &&
+      req.toChain === BASE_CHAIN &&
+      req.toToken.toLowerCase() === GLIDER_DEPOSIT_TOKEN &&
+      EVM_ADDRESS.test(req.toAddress!)
+      ? match("glider-deposit")
+      : fail("that is not a valid Bitwise Mag7X deposit");
+  }
 
   // Everything below delivers to the user's own embedded wallet, so none of
   // these branches inspects toAddress: the route handler overwrites it with
@@ -337,10 +399,25 @@ export function validateTrustwareRequest(
     req.toChain === TRUSTWARE_SOLANA_CHAIN && req.toToken === USDC_MINT;
   if (isFundingReturn) return match("return");
 
+  const isBaseGas =
+    req.toChain === BASE_CHAIN && BASE_GAS_TOKENS.has(req.toToken.toLowerCase());
+  if (isBaseGas) return match("base-gas");
+
   const isGoldCollateral =
     req.toChain === ETHEREUM_CHAIN &&
     MORPHO_GOLD_COLLATERAL_TOKENS.has(req.toToken.toLowerCase());
   if (isGoldCollateral) return match("gold");
+
+  // lp  anything -> a token of a listed Uniswap pool (or the chain's native
+  //     asset, for gas) on one of the four chains the pools live on,
+  //     delivered to the user's own embedded EVM wallet. The funding legs of
+  //     a liquidity position (lib/uniswap/fund.ts). When the source is on the
+  //     same chain it must be a listed token too: that is the on-chain swap
+  //     that makes the stock half of a Robinhood Chain deposit, and requiring
+  //     both sides keeps this from being an open swap on that chain. Same
+  //     trust model as `funding`: destination pinned here, source constrained
+  //     by the planner, a wrong source only wastes the caller's own funds.
+  if (isLpFunding(req)) return match("lp");
 
   // unwind  an Ondo collateral token on Ethereum -> the canonical Solana
   //         xStock, delivered to a Solana address. The reverse of `margin`,
@@ -380,6 +457,21 @@ export function validateTrustwareRequest(
     return fail("the source and destination are the same token");
   }
   return match("swap");
+}
+
+function isLpToken(chainId: number, token: string): boolean {
+  if (!isUniswapChainId(chainId)) return false;
+  const lc = token.toLowerCase();
+  if (uniswapTokenByAddress(chainId, lc)) return true;
+  // Both spellings of the native asset, the way the base-gas shape takes both.
+  return lc === NATIVE_FUNDING_TOKEN[chainId].toLowerCase() || lc === "0x0000000000000000000000000000000000000000" || lc === "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+}
+
+function isLpFunding(req: Partial<TrustwareQuoteRequest>): boolean {
+  const toChain = Number(req.toChain);
+  if (!Number.isInteger(toChain) || !isLpToken(toChain, req.toToken!)) return false;
+  if (req.fromChain === req.toChain) return isLpToken(toChain, req.fromToken!);
+  return true;
 }
 
 const UPSTREAM_TIMEOUT_MS = 12_000;

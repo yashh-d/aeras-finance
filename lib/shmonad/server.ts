@@ -22,7 +22,8 @@ import {
   type Hex,
 } from "viem";
 
-import { MONAD_RPC_URL } from "@/lib/morpho/constants";
+import { jsonRpcBatchSettled, type RpcEndpoints } from "@/lib/ethereum/json-rpc";
+import { MONAD_PUBLIC_RPC_URL, MONAD_RPC_URL } from "@/lib/morpho/constants";
 
 import { SHMON_ABI } from "./abi";
 import {
@@ -48,29 +49,27 @@ interface RpcOutcome {
   error?: string;
 }
 
+// The live endpoint falls back to the public node when the paid one is
+// throttled or down (lib/ethereum/json-rpc.ts has the measurements). The
+// history endpoint gets no fallback: it already is the public node, and the
+// paid one does not hold the blocks a week back that the read is for.
+function monadEndpoints(url: string): RpcEndpoints {
+  return {
+    label: "Monad",
+    url,
+    fallbackUrl:
+      url === MONAD_RPC_URL && url !== MONAD_PUBLIC_RPC_URL ? MONAD_PUBLIC_RPC_URL : undefined,
+  };
+}
+
 // One batched round trip; each call settles on its own so a revert (which is
 // an answer for the completeUnstake probe) does not fail the batch.
 async function rpcBatchSettled(url: string, calls: RpcCall[]): Promise<RpcOutcome[]> {
-  const res = await fetch(url, {
-    method: "POST",
-    cache: "no-store",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(calls.map((c, i) => ({ jsonrpc: "2.0", id: i, ...c }))),
-  });
-  if (!res.ok) throw new Error(`Monad RPC ${res.status}`);
-  const json = (await res.json()) as
-    | { id: number; result?: Hex | Record<string, unknown> | null; error?: { message: string } }[]
-    | { error?: { message: string } };
-  if (!Array.isArray(json)) {
-    throw new Error(json.error?.message ?? "Monad RPC: unexpected response");
-  }
-  const byId = new Map(json.map((r) => [r.id, r]));
-  return calls.map((_, i) => {
-    const entry = byId.get(i);
-    if (!entry) return { error: `no response for call ${i}` };
-    if (entry.error) return { error: entry.error.message };
-    return { result: entry.result };
-  });
+  const outcomes = await jsonRpcBatchSettled(monadEndpoints(url), calls);
+  return outcomes.map((o) => ({
+    result: o.result as Hex | Record<string, unknown> | null | undefined,
+    error: o.error,
+  }));
 }
 
 // Strict variant: every call must answer with a hex result.

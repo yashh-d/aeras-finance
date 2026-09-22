@@ -4,48 +4,39 @@
 // app/api/morpho/position/route.ts: these are reads, and standing up an
 // app-owned EVM provider is a bigger commitment than the job needs.
 //
-// Extracted from lib/morpho/gold-server.ts when the Aave venue needed the same
-// thing. Behaviour is unchanged: one round trip per batch, responses matched
-// back by id because a batch is not required to come back in request order.
+// The transport is lib/ethereum/json-rpc.ts, which retries a throttled batch
+// and falls back to the public node when the paid one will not answer. This
+// module only fixes the endpoints and keeps the shape the Ethereum readers
+// were written against: one round trip per batch, responses matched back by
+// id, and the "Ethereum RPC ..." wording their routes log.
 
 import "server-only";
 
 import type { Hex } from "viem";
 
-import { ETHEREUM_RPC_URL } from "./constants";
+import { ETHEREUM_PUBLIC_RPC_URL, ETHEREUM_RPC_URL } from "./constants";
+import {
+  jsonRpcBatch,
+  jsonRpcBatchSettled,
+  type RpcCall,
+  type RpcEndpoints,
+} from "./json-rpc";
 
-export interface RpcCall {
-  method: string;
-  params: unknown[];
-}
+export type { RpcCall } from "./json-rpc";
 
-// One batched JSON-RPC round trip. Public endpoints rate-limit per request
-// rather than per payload, and a full position read is many calls, so batching
-// is the difference between one request and a dozen.
+const ETHEREUM: RpcEndpoints = {
+  label: "Ethereum",
+  url: ETHEREUM_RPC_URL,
+  // No second node when the primary already is the public one.
+  fallbackUrl:
+    ETHEREUM_RPC_URL === ETHEREUM_PUBLIC_RPC_URL ? undefined : ETHEREUM_PUBLIC_RPC_URL,
+};
+
+// One batched round trip. Public endpoints rate-limit per request rather than
+// per payload, and a full position read is many calls, so batching is the
+// difference between one request and a dozen. Every call must answer.
 export async function rpcBatch(calls: RpcCall[]): Promise<Hex[]> {
-  const res = await fetch(ETHEREUM_RPC_URL, {
-    method: "POST",
-    cache: "no-store",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(
-      calls.map((c, i) => ({ jsonrpc: "2.0", id: i, ...c })),
-    ),
-  });
-  if (!res.ok) throw new Error(`Ethereum RPC ${res.status}`);
-  const json = (await res.json()) as
-    | { id: number; result?: Hex; error?: { message: string } }[]
-    | { error?: { message: string } };
-  if (!Array.isArray(json)) {
-    throw new Error(json.error?.message ?? "Ethereum RPC: unexpected response");
-  }
-  const byId = new Map(json.map((r) => [r.id, r]));
-  return calls.map((_, i) => {
-    const entry = byId.get(i);
-    if (!entry) throw new Error(`Ethereum RPC: no response for call ${i}`);
-    if (entry.error) throw new Error(entry.error.message);
-    if (!entry.result) throw new Error(`Ethereum RPC: empty result for call ${i}`);
-    return entry.result;
-  });
+  return (await jsonRpcBatch(ETHEREUM, calls)) as Hex[];
 }
 
 export function ethCall(to: string, data: Hex): RpcCall {
@@ -68,27 +59,9 @@ export async function readGasPrice(): Promise<bigint> {
 export async function rpcBatchSettled(
   calls: RpcCall[],
 ): Promise<(Hex | null)[]> {
-  const res = await fetch(ETHEREUM_RPC_URL, {
-    method: "POST",
-    cache: "no-store",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(
-      calls.map((c, i) => ({ jsonrpc: "2.0", id: i, ...c })),
-    ),
-  });
-  if (!res.ok) throw new Error(`Ethereum RPC ${res.status}`);
-  const json = (await res.json()) as
-    | { id: number; result?: Hex; error?: { message: string } }[]
-    | { error?: { message: string } };
-  if (!Array.isArray(json)) {
-    throw new Error(json.error?.message ?? "Ethereum RPC: unexpected response");
-  }
-  const byId = new Map(json.map((r) => [r.id, r]));
-  return calls.map((_, i) => {
-    const entry = byId.get(i);
-    if (!entry || entry.error || !entry.result || entry.result === "0x") {
-      return null;
-    }
-    return entry.result;
+  const outcomes = await jsonRpcBatchSettled(ETHEREUM, calls);
+  return outcomes.map((o) => {
+    if (o.error || o.result == null || o.result === "0x") return null;
+    return o.result as Hex;
   });
 }

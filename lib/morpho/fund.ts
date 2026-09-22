@@ -86,11 +86,13 @@ const MAX_BUFFER_BPS = 300;
 // Exported for the shMON venue, which keeps the same reserve back from the
 // MON it delivers rather than running a separate gas leg.
 export const GAS_FLOOR_WEI = 100_000_000_000_000_000n; // 0.1 MON
-const GAS_TOPUP_USDC_ATOMIC = 500_000n; // 0.5 USDC
+// Both exported for the Aeras Vault I withdrawal, which tops up MON the same
+// way before an owner transaction on Monad (lib/blend/gas.ts).
+export const GAS_TOPUP_USDC_ATOMIC = 500_000n; // 0.5 USDC
 // If 0.5 USDC quotes to less than this, MON has repriced dramatically and the
 // fixed top-up no longer makes sense; stop and say so instead of delivering
 // gas dust.
-const GAS_MIN_DELIVERED_WEI = 1_000_000_000_000_000_000n; // 1 MON
+export const GAS_MIN_DELIVERED_WEI = 1_000_000_000_000_000_000n; // 1 MON
 
 // How long to wait for delivered funds to become readable on Monad after
 // Trustware reports success. The destination transactions have already mined
@@ -149,15 +151,20 @@ export function maxFundableDepositAtomic(
 // Exported, with quoteFunding and broadcastFundingLeg below, for the shMON
 // venue (lib/shmonad/fund.ts): its stake is this module's gas leg sized to
 // the whole deposit, and it must not grow a second copy of the request shape.
+//
+// `toChain` defaults to Monad and is a parameter for the Uniswap liquidity
+// pools venue (lib/uniswap/fund.ts), which delivers the same Solana USDC to
+// Robinhood Chain, Ethereum and Base with the same request shape.
 export function fundingRequest(
   fromAmountAtomic: string,
   solanaAddress: string,
   evmAddress: string,
   toToken: string = MONAD_USDC.address,
+  toChain: number = MONAD_CHAIN_ID,
 ): TrustwareQuoteRequest {
   return {
     fromChain: TRUSTWARE_SOLANA_CHAIN,
-    toChain: String(MONAD_CHAIN_ID),
+    toChain: String(toChain),
     fromToken: USDC_MINT,
     toToken,
     fromAmount: fromAmountAtomic,

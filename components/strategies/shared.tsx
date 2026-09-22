@@ -209,6 +209,46 @@ export function PreviewBlock({ children }: { children: React.ReactNode }) {
   return <div className={`space-y-2 ${INSET_PANEL} px-3 py-3`}>{children}</div>;
 }
 
+// A note reduced to a mark and a few words, for a surface that draws the
+// mechanics instead of describing them. The full Note carries the same
+// point in prose where there is room for it.
+export function MarkNote({
+  logos,
+  children,
+  tone = "warn",
+}: {
+  logos: (string | undefined)[];
+  children: React.ReactNode;
+  tone?: "neutral" | "warn";
+}) {
+  const marks = logos.filter((l): l is string => Boolean(l));
+  return (
+    <div
+      className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs ${
+        tone === "warn"
+          ? "border border-aeras-warning/30 bg-aeras-warning/10 text-white/75"
+          : "border border-aeras-blue/30 bg-aeras-blue/15 text-white/70"
+      }`}
+    >
+      <span className="flex shrink-0 items-center">
+        {marks.map((src, i) => (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={src}
+            src={src}
+            alt=""
+            width={18}
+            height={18}
+            className="size-[18px] rounded-full ring-2 ring-[#0d0f11]"
+            style={{ marginLeft: i === 0 ? 0 : -6 }}
+          />
+        ))}
+      </span>
+      {children}
+    </div>
+  );
+}
+
 export function Note({
   children,
   tone = "neutral",

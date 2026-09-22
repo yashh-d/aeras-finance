@@ -310,6 +310,40 @@ export async function buildKaminoVaultTx({
   amountAtomic: string;
   connection: Connection;
 }): Promise<BuiltTransaction> {
+  const { instructions, lutsByAddress } = await fetchKvaultInstructions({
+    action,
+    walletAddress,
+    vault,
+    amountAtomic,
+  });
+  return composeKvaultTx({
+    instructions,
+    lutsByAddress,
+    walletAddress,
+    connection,
+  });
+}
+
+export interface KvaultInstructions {
+  instructions: KtxInstruction[];
+  lutsByAddress: Record<string, string[]>;
+}
+
+// Ask KTX for the raw instructions of a deposit or withdrawal. Shared by the
+// build above and by the deposit-cost estimate in ./vault-deposit-cost.ts,
+// which reads what a deposit will allocate off these same instructions rather
+// than deriving it from seeds.
+export async function fetchKvaultInstructions({
+  action,
+  walletAddress,
+  vault,
+  amountAtomic,
+}: {
+  action: KaminoVaultAction;
+  walletAddress: string;
+  vault: KaminoVaultMeta;
+  amountAtomic: string;
+}): Promise<KvaultInstructions> {
   const res = await fetch("/api/kamino/kvaults/ktx", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -328,13 +362,10 @@ export async function buildKaminoVaultTx({
   if (!res.ok || !payload.instructions?.length) {
     throw new Error(payload.error ?? `Kamino ${action} failed (${res.status})`);
   }
-
-  return composeKvaultTx({
+  return {
     instructions: payload.instructions,
     lutsByAddress: payload.lutsByAddress ?? {},
-    walletAddress,
-    connection,
-  });
+  };
 }
 
 // The composition half of the above, split out so scripts/kamino-deposit-check

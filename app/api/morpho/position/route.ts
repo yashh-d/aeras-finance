@@ -6,7 +6,12 @@ import {
   type Hex,
 } from "viem";
 
-import { MONAD_RPC_URL, MONAD_USDC } from "@/lib/morpho/constants";
+import { jsonRpcBatch } from "@/lib/ethereum/json-rpc";
+import {
+  MONAD_PUBLIC_RPC_URL,
+  MONAD_RPC_URL,
+  MONAD_USDC,
+} from "@/lib/morpho/constants";
 import { MONAD_USDC_VAULTS } from "@/lib/morpho/vaults";
 
 export const dynamic = "force-dynamic";
@@ -41,22 +46,18 @@ const ABI = [
 ] as const;
 
 // One JSON-RPC request against Monad RPC. Kept to a plain POST rather than a
-// viem public client so this stays a read, not an app-owned EVM provider.
+// viem public client so this stays a read, not an app-owned EVM provider. The
+// transport retries a throttle and falls back to the public node
+// (lib/ethereum/json-rpc.ts).
+const MONAD = {
+  label: "Monad",
+  url: MONAD_RPC_URL,
+  fallbackUrl: MONAD_RPC_URL === MONAD_PUBLIC_RPC_URL ? undefined : MONAD_PUBLIC_RPC_URL,
+};
+
 async function rpc(method: string, params: unknown[]): Promise<Hex> {
-  const res = await fetch(MONAD_RPC_URL, {
-    method: "POST",
-    cache: "no-store",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
-  });
-  if (!res.ok) throw new Error(`Monad RPC ${res.status}`);
-  const json = (await res.json()) as {
-    result?: Hex;
-    error?: { message: string };
-  };
-  if (json.error) throw new Error(json.error.message);
-  if (!json.result) throw new Error("Monad RPC: empty result");
-  return json.result;
+  const [result] = await jsonRpcBatch(MONAD, [{ method, params }]);
+  return result as Hex;
 }
 
 function ethCall(to: string, data: Hex): Promise<Hex> {

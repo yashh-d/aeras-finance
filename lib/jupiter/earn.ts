@@ -479,3 +479,49 @@ function appendUnwrap(
     createCloseAccountInstruction(wsolAta, signer, signer, [], TOKEN_PROGRAM_ID),
   ];
 }
+
+// The deposit asset's balance as the chain holds it right now, in atomic units.
+//
+// The form's balance is a snapshot from the last poll. Between it and the
+// signature the setup sheet can sell a sliver of this very asset for SOL, so a
+// deposit sized against the snapshot asks for tokens the wallet no longer holds
+// and fails simulation. Read at "processed", which is what simulation sees.
+// Falls back to the snapshot the caller passes when the read fails, rather than
+// blocking a deposit over an RPC hiccup.
+export async function readFreshDepositableAtomic(
+  meta: EarnAssetMeta,
+  walletAddress: string,
+  connection: Connection,
+  fallbackAtomic: string,
+): Promise<string> {
+  try {
+    const owner = new PublicKey(walletAddress);
+    if (meta.isNativeSol) {
+      const lamports = new BN(await connection.getBalance(owner, "processed"));
+      const reserve = new BN(SOL_RESERVE_LAMPORTS);
+      return lamports.gt(reserve) ? lamports.sub(reserve).toString() : "0";
+    }
+    const mint = new PublicKey(meta.assetMint);
+    // Filtering by mint finds the account under either token program; pinning
+    // to the canonical ATA is the same rule fetchEarnWalletBalances applies.
+    const canonical = new Set(
+      [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) =>
+        getAssociatedTokenAddressSync(
+          mint,
+          owner,
+          ALLOW_OWNER_OFF_CURVE,
+          programId,
+        ).toBase58(),
+      ),
+    );
+    const { value } = await connection.getParsedTokenAccountsByOwner(
+      owner,
+      { mint },
+      "processed",
+    );
+    const account = value.find((a) => canonical.has(a.pubkey.toBase58()));
+    return account?.account.data.parsed.info.tokenAmount.amount ?? "0";
+  } catch {
+    return fallbackAtomic;
+  }
+}

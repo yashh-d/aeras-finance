@@ -21,11 +21,13 @@ export interface TrustwareQuoteRequest {
   // what was sent, because for every other shape the destination is the user's
   // own embedded wallet. See validateTrustwareRequest in ./server.ts.
   toAddress: string;
-  // Names the two shapes whose destination is NOT the user's own wallet, and
+  // Names the shapes whose destination is NOT the user's own wallet, and
   // which therefore keep the caller's toAddress: an Ondo-provisioned deposit
-  // address, or a Lighter intent address. Omitting it is the safe default,
-  // since the destination then resolves to the user's own wallet.
-  intent?: "ondo-margin" | "lighter-margin";
+  // address, a Lighter intent address, or the Glider smart account behind a
+  // Bitwise Mag7X portfolio (which the route handler verifies against Glider
+  // before building). Omitting it is the safe default, since the destination
+  // then resolves to the user's own wallet.
+  intent?: "ondo-margin" | "lighter-margin" | "glider-deposit";
   // Percent (1 = 1%). Optional; defaults applied server-side.
   slippage?: number;
 }

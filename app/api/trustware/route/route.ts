@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { verifyGliderSmartAccount } from "@/lib/glider/server";
 import { authenticate } from "@/lib/privy/auth";
 import {
   destinationForShape,
@@ -32,11 +33,14 @@ export const dynamic = "force-dynamic";
 // worst that same script achieves is moving the user's funds between the user's
 // own wallets.
 //
-// The two shapes that genuinely deliver elsewhere (Ondo margin, Lighter margin)
-// keep their caller-supplied address and have to ask for it by name through
-// `intent`. Verifying those two against Ondo and Lighter is not done here yet;
-// today the guarantee is that the address came from our own server routes, and
-// lib/ondo/fund.ts checks it against Ondo before planning.
+// The three shapes that genuinely deliver elsewhere (Ondo margin, Lighter
+// margin, a Glider deposit) keep their caller-supplied address and have to ask
+// for it by name through `intent`. The Glider one is verified here: the
+// address must be the Base smart account of a Mag7X portfolio Glider says
+// this identity's embedded EVM wallet owns. Verifying the other two against
+// Ondo and Lighter is not done here yet; today the guarantee is that the
+// address came from our own server routes, and lib/ondo/fund.ts checks it
+// against Ondo before planning.
 export async function POST(request: Request) {
   const identity = await authenticate(request);
   if (!identity) {
@@ -62,6 +66,25 @@ export async function POST(request: Request) {
   );
   if ("error" in destination) {
     return NextResponse.json({ error: destination.error }, { status: 409 });
+  }
+
+  if (validation.shape === "glider-deposit") {
+    let owned = false;
+    try {
+      owned = await verifyGliderSmartAccount(identity.embedded.evm, req.toAddress!);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return NextResponse.json(
+        { error: `Could not confirm the Mag7X deposit address with Glider. ${msg}` },
+        { status: 502 },
+      );
+    }
+    if (!owned) {
+      return NextResponse.json(
+        { error: "That address is not the Base smart account of your Bitwise Mag7X portfolio." },
+        { status: 409 },
+      );
+    }
   }
 
   const built: TrustwareQuoteRequest = {

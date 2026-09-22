@@ -20,6 +20,9 @@ import {
   EARN_ASSETS,
   type EarnVaultState,
 } from "@/lib/jupiter/earn";
+import { fetchGliderPortfolio } from "@/lib/glider/client";
+import { GLIDER_STRATEGY_NAME } from "@/lib/glider/constants";
+import type { GliderPortfolioView } from "@/lib/glider/types";
 import { assetIdentity } from "@/lib/jupiter/xstocks";
 import {
   atomicToDecimalString,
@@ -44,6 +47,8 @@ import {
   type ShmonPosition,
 } from "@/lib/shmonad/client";
 import { SHMON_SYMBOL } from "@/lib/shmonad/constants";
+import { fetchUniswapPositions, type UniswapPositionsPayload } from "@/lib/uniswap/client";
+import { UNISWAP_CHAINS, baseToken, uniswapPoolById } from "@/lib/uniswap/pools";
 import { getConnection } from "@/lib/solana/balances";
 import { VENUE_LOGOS, tokenLogoBySymbol } from "@/lib/tokens/logos";
 import type { PositionRow } from "@/lib/positions/types";
@@ -67,6 +72,13 @@ export interface EarnSnapshot {
   // shMON staking on Monad. Optional so the older snapshot shapes (and the
   // tests built on them) stay valid; null when the wallet holds none.
   shmon?: ShmonEarnRead | null;
+  // The Bitwise Mag7X portfolio on Glider, on Base. Optional for the same
+  // reason; null when the user has none or the server has no Glider key.
+  glider?: GliderPortfolioView | null;
+  // Uniswap liquidity positions on the four chains lib/uniswap lists. Read
+  // through the positions route off the Privy token; null when there is no
+  // EVM wallet or the read failed.
+  uniswap?: UniswapPositionsPayload | null;
 }
 
 // The shMON position with what prices it: the rate and APY from the metrics
@@ -106,7 +118,7 @@ export async function readEarnVenues(
   walletAddress: string | undefined,
   evmAddress: string | undefined,
 ): Promise<EarnSnapshot> {
-  const [earn, kamino, morpho, shmon] = await Promise.all([
+  const [earn, kamino, morpho, shmon, glider, uniswap] = await Promise.all([
     settled(
       (async () => {
         if (!walletAddress) return { vaults: [], shares: {} };
@@ -176,6 +188,26 @@ export async function readEarnVenues(
       "shmon monad",
       null,
     ),
+    settled(
+      (async (): Promise<GliderPortfolioView | null> => {
+        // Read through our own route, which resolves the portfolio from the
+        // signed-in identity; the EVM address only says whether there can
+        // be one. Null is the ordinary answer.
+        if (!evmAddress) return null;
+        const read = await fetchGliderPortfolio();
+        return read.portfolio;
+      })(),
+      "glider base",
+      null,
+    ),
+    settled(
+      (async (): Promise<UniswapPositionsPayload | null> => {
+        if (!evmAddress) return null;
+        return fetchUniswapPositions();
+      })(),
+      "uniswap",
+      null,
+    ),
   ]);
 
   return {
@@ -186,6 +218,8 @@ export async function readEarnVenues(
     morphoPositions: morpho.positions,
     morphoMetrics: morpho.metrics,
     shmon,
+    glider,
+    uniswap,
   };
 }
 
@@ -317,6 +351,64 @@ export function earnRows(snapshot: EarnSnapshot): PositionRow[] {
         tone: "positive",
       });
     }
+  }
+
+  // Bitwise Mag7X on Glider. Eight Coinbase tokenized stocks in a smart
+  // account on Base, valued by Glider. The chain is named because it is the
+  // one earn position whose holdings are equities rather than a stable.
+  const glider = snapshot.glider;
+  if (glider && glider.totalValueUsd > 0) {
+    const held = glider.assets.filter((a) => a.holding && a.balance > 0).length;
+    const all = glider.performance?.windows.find((w) => w.window === "all");
+    rows.push({
+      key: "earn:glider",
+      kind: "earn",
+      earnKind: "vault",
+      symbol: GLIDER_STRATEGY_NAME,
+      venue: "Glider · Base",
+      venueLogo: VENUE_LOGOS.glider,
+      asset: { symbol: "MAG7X", name: GLIDER_STRATEGY_NAME, logo: VENUE_LOGOS.glider },
+      usd: glider.totalValueUsd,
+      detail:
+        held > 0
+          ? `${held} of ${glider.assets.filter((a) => a.holding).length || 8} holdings`
+          : glider.idleUsdc > 0
+            ? `${glider.idleUsdc.toFixed(2)} USDC waiting for the next rebalance`
+            : "Mag7X",
+      note: all
+        ? `${all.percentChange >= 0 ? "+" : ""}${all.percentChange.toFixed(2)}% since deposit`
+        : null,
+      tone: all && all.percentChange < 0 ? "negative" : "positive",
+    });
+  }
+
+  // Uniswap liquidity positions. Each is two tokens in a pool on one of four
+  // chains, valued at the pool's own price; the amount is left unset because
+  // the row is not a quantity of one asset. The note is the one thing worth
+  // reading next to the value: whether the price is still inside the range.
+  for (const position of snapshot.uniswap?.positions ?? []) {
+    const pool = uniswapPoolById(position.chainId, position.poolId);
+    if (!pool) continue;
+    const chain = UNISWAP_CHAINS[pool.chainId];
+    const base = baseToken(pool) ?? pool.token0;
+    const a0 = Number(position.amount0) / 10 ** pool.token0.decimals;
+    const a1 = Number(position.amount1) / 10 ** pool.token1.decimals;
+    rows.push({
+      key: `earn:uniswap:${position.key}`,
+      kind: "earn",
+      symbol: pool.label,
+      venue: `Uniswap · ${chain.label}`,
+      venueLogo: VENUE_LOGOS.uniswap,
+      asset: { symbol: base.symbol, name: base.name, logo: base.logo },
+      usd: position.valueUsd ?? 0,
+      detail: `${a0.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${pool.token0.symbol} + ${a1.toLocaleString(undefined, { maximumFractionDigits: 4 })} ${pool.token1.symbol}`,
+      note: position.inRange
+        ? position.feesUsd != null && position.feesUsd > 0
+          ? `in range, $${position.feesUsd.toFixed(2)} fees to claim`
+          : "in range"
+        : "out of range, earning nothing",
+      tone: position.inRange ? "positive" : "warning",
+    });
   }
 
   return rows.sort((a, b) => b.usd - a.usd);
