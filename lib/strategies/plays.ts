@@ -122,13 +122,13 @@ export const PLAYS: readonly Play[] = [
     id: "aapl-qqq",
     name: "Apple funds the Nasdaq",
     thesis:
-      "One stock as collateral, an index with the loan. AAPLx is lent against on Kamino and QQQx on Jupiter, so the two positions sit at two venues and each is closable on its own.",
+      "One stock as collateral, an index with the loan. The two positions sit at two lending markets, so each is closable on its own.",
     tag: "Diversify",
     symbol: "AAPLx",
     preset: { kind: "ladder", nextSymbol: "QQQx" },
     steps: [
       "Buy AAPLx with your USDC",
-      "Post it on Kamino and borrow USDC",
+      "Post it and borrow USDC",
       "Buy QQQx with the loan, and choose whether to continue",
     ],
     risk: "Two loans if the ladder continues, each liquidated on its own collateral.",

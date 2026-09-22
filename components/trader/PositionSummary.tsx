@@ -134,7 +134,7 @@ export function PositionSummary({
   return (
     <DetailCard title="Your position">
       {live === undefined && !saved ? (
-        <p className="text-sm text-white/45">Reading {route.venueLabel}…</p>
+        <p className="text-sm text-white/45">Reading the position…</p>
       ) : nothing ? (
         <div className="space-y-2">
           <p className="text-sm text-white/60">No position on {xstock.symbol} yet.</p>
@@ -172,7 +172,7 @@ export function PositionSummary({
               sub={collateralUsd != null && collateralUsd > 0 ? fmtUsd(collateralUsd) : undefined}
             />
             <Figure
-              label={`Owed on ${route.venueLabel}`}
+              label="Owed"
               value={debtUsd > 0 ? fmtUsd(debtUsd) : "—"}
               sub={row.borrowApr != null ? `${fmtPct(row.borrowApr)} a year` : undefined}
             />

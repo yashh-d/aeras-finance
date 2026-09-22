@@ -242,6 +242,20 @@ each holds; the UI does not call the portfolio tier "safest", because it
 is equity exposure, and the risk line on each tier says what it is.
 `tiers.test.ts` pins the ranking, the pricing, the states and the copy.
 
+**D13. Trader mode names no lending venue.** Asked for on 2026-09-22: the
+Trader cards, details and position column do not say Jupiter Lend or
+Kamino, and the shared tickets drop the venue from their step labels,
+previews and notes when rendered under `VenueNames.Provider value={false}`,
+which `TraderShell` provides. The context lives in
+`components/strategies/shared.tsx` with a default of `true`, so Investor
+copy is unchanged to the character. The venue still decides the route,
+the rates and the signatures; only the words are gone. A step label is
+saved with the run, so a run opened in Trader mode reads without the
+venue on the Investor Strategies page too, which is the record of what
+the user saw. The Portfolio section's positions view is the Investor
+component and still names venues there, because on that surface the
+venue is the answer to where the money is; say the word to hide it.
+
 ## Status (2026-09-22)
 
 Slices 0 to 2 are built and verified on a preview route against the live

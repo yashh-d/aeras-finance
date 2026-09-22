@@ -6,6 +6,7 @@
 // come from one read. See docs/trader-mode-plan.md.
 
 import { PositionsPanel } from "@/components/PositionsPanel";
+import { VenueNames } from "@/components/strategies/shared";
 import { WalletPanel } from "@/components/WalletPanel";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { EarnPositionsView } from "@/lib/positions/use-earn-positions";
@@ -28,7 +29,18 @@ export const TRADER_SECTIONS: readonly { id: TraderSection; label: string }[] = 
   { id: "portfolio", label: "Portfolio" },
 ];
 
-export function TraderShell({
+// Trader mode names no lending venue: the tickets it mounts read this
+// context and drop "on Jupiter Lend" and "on Kamino" from their copy
+// (docs/trader-mode-plan.md, D13). The venue still decides the route.
+export function TraderShell(props: Parameters<typeof TraderBody>[0]) {
+  return (
+    <VenueNames.Provider value={false}>
+      <TraderBody {...props} />
+    </VenueNames.Provider>
+  );
+}
+
+function TraderBody({
   section,
   walletAddress,
   balances,

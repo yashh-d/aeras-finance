@@ -4,7 +4,7 @@
 // ratio slider, the preview rows, and the step list that shows a run landing
 // one signature at a time.
 
-import type { CSSProperties } from "react";
+import { createContext, useContext, type CSSProperties } from "react";
 import { Check, Loader2, X } from "lucide-react";
 
 import { AmountField } from "@/components/AmountField";
@@ -14,6 +14,18 @@ import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
 import { INSET_PANEL } from "@/lib/ui/surface";
 import type { StrategyRun } from "@/lib/strategies/run";
 import { leverageForRatio } from "@/lib/strategies/math";
+
+// Whether copy names the lending venue ("borrow USDC on Jupiter Lend").
+// Investor mode does, which is the default. Trader mode renders its
+// surfaces under a `false` provider (components/trader/TraderShell.tsx) so
+// the tickets drop the venue from their step labels and previews; the venue
+// still decides the route, the rates and the signatures. See
+// docs/trader-mode-plan.md, D13.
+export const VenueNames = createContext(true);
+
+export function useVenueNames(): boolean {
+  return useContext(VenueNames);
+}
 
 export function fmtPct(decimal: number | null | undefined, digits = 2): string {
   if (decimal == null || !Number.isFinite(decimal)) return "—";

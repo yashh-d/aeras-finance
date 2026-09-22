@@ -304,7 +304,6 @@ function PlayDetail({
               <Pill>{play.tag}</Pill>
               <Pill>{STRATEGY_NAME[kind]}</Pill>
               <Pill>{xstock.symbol}</Pill>
-              {row && <Pill>{row.route.venueLabel}</Pill>}
             </div>
           </div>
         </div>

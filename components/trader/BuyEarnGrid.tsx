@@ -89,8 +89,7 @@ export function BuyEarnGrid({
       (r) =>
         q === "" ||
         r.xstock.symbol.toLowerCase().includes(q) ||
-        r.xstock.name.toLowerCase().includes(q) ||
-        r.route.venueLabel.toLowerCase().includes(q),
+        r.xstock.name.toLowerCase().includes(q),
     );
     const best = (r: StrategyRates) => bestTier(r, rates.earnOptions)?.net ?? -Infinity;
     return [...rows].sort((a, b) => {
@@ -235,15 +234,15 @@ function AssetCard({
             </div>
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-          {saved ? (
+        {/* No venue pill: Trader mode names no lending venue (D13). The
+            route still decides the rates and the signatures. */}
+        {saved && (
+          <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
             <Pill tone={saved.status === "running" ? "warn" : "positive"}>
               {saved.status === "running" ? "Resume" : "Open"}
             </Pill>
-          ) : (
-            <Pill>{route.venueLabel}</Pill>
-          )}
-        </div>
+          </div>
+        )}
       </div>
 
       <div className="flex items-end justify-between gap-4">
@@ -281,7 +280,7 @@ function AssetCard({
 
       <div className="flex items-center justify-between gap-3 text-[11px] text-white/40">
         <span>
-          Borrow up to {Math.round(route.collateralFactor * 100)}% on {route.venueLabel}
+          Borrow up to {Math.round(route.collateralFactor * 100)}%
           {row.borrowApr != null && ` at ${fmtPct(row.borrowApr)}`}
         </span>
         <span className="text-white/60">{saved ? "Manage" : "Open"}</span>
@@ -349,10 +348,7 @@ function BuyEarnDetail({
           <AssetLogo xstock={xstock} size={40} />
           <div>
             <div className="text-lg font-light tracking-tight text-white">Buy {xstock.name}</div>
-            <div className="flex items-center gap-2 text-xs text-white/50">
-              <span>{xstock.symbol}</span>
-              <Pill>{route.venueLabel}</Pill>
-            </div>
+            <div className="text-xs text-white/50">{xstock.symbol}</div>
           </div>
         </div>
         <div className="flex items-center gap-6">
