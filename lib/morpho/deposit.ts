@@ -121,7 +121,9 @@ async function ethCall(
 // fails loudly here rather than signing on the wrong network. The chainId
 // read-back is the final guard: if the fresh provider is not on Monad, nothing
 // gets signed.
-async function connectMonad(signer: EvmSigner): Promise<EIP1193Provider> {
+// Exported for the shMON venue (lib/shmonad/stake.ts), which signs on Monad
+// through the same signer shape and must not grow a second copy of this.
+export async function connectMonad(signer: EvmSigner): Promise<EIP1193Provider> {
   try {
     await signer.switchChain(MONAD_CHAIN_ID);
   } catch {
@@ -157,7 +159,7 @@ async function connectMonad(signer: EvmSigner): Promise<EIP1193Provider> {
   }
 }
 
-async function waitForReceipt(provider: EIP1193Provider, hash: string) {
+export async function waitForReceipt(provider: EIP1193Provider, hash: string) {
   const deadline = Date.now() + 5 * 60_000;
   while (Date.now() < deadline) {
     const receipt = (await provider.request({
@@ -175,15 +177,20 @@ async function waitForReceipt(provider: EIP1193Provider, hash: string) {
   throw new Error("The transaction did not confirm on Monad in time.");
 }
 
-async function sendTx(
+// `value` is for the shMON venue's payable deposit, which carries native MON.
+// Every Morpho call here sends none.
+export async function sendTx(
   provider: EIP1193Provider,
   from: string,
   to: string,
   data: Hex,
+  value?: bigint,
 ): Promise<string> {
+  const params: Record<string, string> = { from, to, data };
+  if (value != null && value > 0n) params.value = `0x${value.toString(16)}`;
   return (await provider.request({
     method: "eth_sendTransaction",
-    params: [{ from, to, data }],
+    params: [params],
   })) as string;
 }
 

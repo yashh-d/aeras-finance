@@ -21,10 +21,19 @@
 // the choice between them in the expanded row (AaveVenuePanel). Its two vaults
 // differ in kind rather than curator, and the Umbrella one leaves through a
 // cooldown, which is why that panel carries a state machine the others lack.
+// Aeras Vault I (Blend) is the third: one strategy across several USDC vaults
+// that Blend allocates, so its cell shows the strategy's rate and the expanded
+// row lists the vaults rather than offering a choice (BlendVenuePanel).
 //
 // Looping (multiply / unwind) lives in LoopingPanel.
 
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import BN from "bn.js";
 import {
   Area,
@@ -35,7 +44,12 @@ import {
   YAxis,
 } from "recharts";
 
-import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
+import {
+  SOLSCAN_TX_BASE,
+  SOL_MINT,
+  USDC_DECIMALS,
+  USDC_MINT,
+} from "@/lib/jupiter/constants";
 import {
   EARN_ASSETS,
   buildEarnDepositTx,
@@ -45,6 +59,7 @@ import {
   fetchEarnVaultsViaProxy,
   fetchEarnWalletBalances,
   positionAssetsAtomic,
+  readFreshDepositableAtomic,
   sharesAtomic,
   uiToAtomic,
   type EarnAssetMeta,
@@ -64,6 +79,15 @@ import {
   type KaminoVaultState,
 } from "@/lib/kamino/kvaults";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
+import { FirstPositionSheet } from "@/components/FirstPositionSheet";
+import {
+  isBlocked,
+  isLamportShortfall,
+  needsSetup,
+  type SetupCost,
+} from "@/lib/borrow/setup-cost";
+import { estimateJupiterEarnDepositCost } from "@/lib/jupiter/earn-deposit-cost";
+import { estimateKaminoVaultDepositCost } from "@/lib/kamino/vault-deposit-cost";
 import {
   MorphoVenuePanel,
   morphoBestVault,
@@ -84,6 +108,7 @@ import {
 } from "@/components/AaveVaultsCard";
 import { aaveVaultsForAsset, type AaveVault } from "@/lib/aave/vaults";
 import {
+  BlendVenuePanel,
   blendAcceptsAsset,
   useBlendEarn,
   type BlendEarn,
@@ -107,6 +132,7 @@ import { ChevronDown } from "lucide-react";
 import { AssetLogo, VenueMark } from "@/components/AssetLogo";
 import { LoopingCard } from "@/components/LoopingPanel";
 import { RyskOptionsCard } from "@/components/RyskOptionsPanel";
+import { ShMonadCard } from "@/components/ShMonadCard";
 
 interface Props {
   walletAddress: string | undefined;
@@ -143,6 +169,7 @@ export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props)
           kaminoVaults={kaminoVaults}
           kaminoPositions={kaminoPositions}
           vaultsError={vaultsError}
+          prices={prices}
           balances={earnBalances}
           solanaBalances={balances}
           walletAddress={walletAddress}
@@ -157,6 +184,16 @@ export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props)
           onRefresh={handleSettled}
         />
       </div>
+      {/* shMON staking on Monad: a card, not a Vaults column. The position is
+          denominated in MON, has two exit paths with different costs, and
+          carries MON price exposure, none of which fits a USDC-keyed row. It
+          stakes from the wallet's Solana USDC the way the Morpho venue funds
+          a deposit. See docs/shmonad-plan.md. */}
+      <ShMonadCard
+        walletAddress={walletAddress}
+        solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+        onRefresh={handleSettled}
+      />
       <RyskOptionsCard />
     </div>
   );
@@ -172,8 +209,8 @@ function PageHeader() {
         Put idle capital to work
       </h2>
       <p className="text-sm text-white/45">
-        Three ways to earn yield on assets you already hold: vault deposits,
-        leveraged looping, and selling options.
+        Four ways to earn yield on assets you already hold: vault deposits,
+        staking, leveraged looping, and selling options.
       </p>
     </div>
   );
@@ -341,6 +378,7 @@ function VaultsCard({
   kaminoVaults,
   kaminoPositions,
   vaultsError,
+  prices,
   balances,
   solanaBalances,
   walletAddress,
@@ -355,6 +393,9 @@ function VaultsCard({
   kaminoVaults: Map<string, KaminoVaultState>;
   kaminoPositions: Map<string, KaminoPosition>;
   vaultsError: string | null;
+  // Live USD prices. A first deposit into a Solana vault pays account rent in
+  // SOL, and the setup sheet sizes a SOL purchase off these.
+  prices: JupiterPriceMap | null;
   balances: EarnWalletBalances | null;
   walletAddress: string | undefined;
   onSettled: () => Promise<void>;
@@ -369,7 +410,7 @@ function VaultsCard({
   const morpho = useMorphoEarn(walletAddress);
   const aave = useAaveEarn(walletAddress);
   // Same reason: the Blend column needs its rate on every row.
-  const blend = useBlendEarn();
+  const blend = useBlendEarn(walletAddress);
 
   const handleMorphoSettled = useCallback(async () => {
     await morpho.refresh();
@@ -380,6 +421,14 @@ function VaultsCard({
     await aave.refresh();
     await onRefresh();
   }, [aave, onRefresh]);
+
+  // A Blend deposit spends the Monad wallet the Morpho hook reads, so both
+  // refresh.
+  const handleBlendSettled = useCallback(async () => {
+    await blend.refresh();
+    await morpho.refresh();
+    await onRefresh();
+  }, [blend, morpho, onRefresh]);
 
   return (
     <div className={`${GLASS_SURFACE} p-5 lg:p-6 ${className ?? ""}`}>
@@ -446,8 +495,10 @@ function VaultsCard({
               aave={aave}
               onAaveSettled={handleAaveSettled}
               blend={blend}
+              onBlendSettled={handleBlendSettled}
               solanaUsdcAtomic={solanaBalances?.usdcAtomic ?? "0"}
               onMorphoSettled={handleMorphoSettled}
+              prices={prices}
               balances={balances}
               walletAddress={walletAddress}
               open={openMint === meta.assetMint}
@@ -495,8 +546,10 @@ function VaultRow({
   aave,
   onAaveSettled,
   blend,
+  onBlendSettled,
   solanaUsdcAtomic,
   onMorphoSettled,
+  prices,
   balances,
   walletAddress,
   open,
@@ -518,8 +571,10 @@ function VaultRow({
   aave: AaveEarn;
   onAaveSettled: () => Promise<void>;
   blend: BlendEarn;
+  onBlendSettled: () => Promise<void>;
   solanaUsdcAtomic: string;
   onMorphoSettled: () => Promise<void>;
+  prices: JupiterPriceMap | null;
   balances: EarnWalletBalances | null;
   walletAddress: string | undefined;
   open: boolean;
@@ -559,10 +614,13 @@ function VaultRow({
     atomicToUiString(aaveTotalPositionAtomic(aaveVaults, aave.positions).toString(), 6),
   );
   // Blend is one strategy across several vaults, so the column carries the
-  // strategy's rate (BlendVaultsCard). The position read is not built yet.
+  // strategy's rate, and the position is the account's balance summed over
+  // every chain the strategy holds on (BlendVaultsCard).
   const blendUsable = blendAcceptsAsset(meta.symbol) && blend.vaults.length > 0;
   const blendApy = blendUsable ? blend.apy : null;
-  const blendPositionUi = 0;
+  const blendPositionUi = blendUsable
+    ? Number(atomicToUiString(blend.positionAtomic, 6))
+    : 0;
 
   // Whichever venue pays more gets the green rate. This falls out of the data
   // rather than being asserted anywhere, so the USDT row correctly shows
@@ -596,6 +654,25 @@ function VaultRow({
   const heldVenues = positionByVenue.filter(([, p]) => p > 0);
   const decimalsShown = meta.decimals === 9 ? 4 : 2;
 
+  // What the setup sheet needs to size a SOL purchase when a first deposit has
+  // rent to pay: the SOL price, the row asset's price for selling a sliver of
+  // the deposit, and the wallet's USDC for the route that leaves the deposit
+  // alone. Jupiter reports the asset price with its vault state; the Kamino
+  // state implies one; the price map is the fallback.
+  const solPriceUsd = prices?.[SOL_MINT]?.usdPrice ?? null;
+  const kaminoTokensPerShare = kaminoVault
+    ? Number(kaminoVault.tokensPerShareScaled) / 10 ** RATIO_PRECISION
+    : 0;
+  const assetPriceUsd =
+    vault && vault.assetPriceUsd > 0
+      ? vault.assetPriceUsd
+      : kaminoVault && kaminoTokensPerShare > 0
+        ? kaminoVault.sharePriceUsd / kaminoTokensPerShare
+        : (prices?.[meta.assetMint]?.usdPrice ?? null);
+  const walletUsdc = Number(
+    atomicToUiString(balances?.byMint[USDC_MINT] ?? "0", USDC_DECIMALS),
+  );
+
   const kaminoUsable = Boolean(kaminoMeta && kaminoVault);
   const morphoUsable = morphoVaults.length > 0;
   const aaveUsable = aaveVaults.length > 0;
@@ -604,8 +681,7 @@ function VaultRow({
     kamino: kaminoUsable,
     morpho: morphoUsable,
     aave: aaveUsable,
-    // Rate shown, form not built yet: Blend cannot be the expanded venue.
-    blend: false,
+    blend: blendUsable,
   };
 
   // Default the expanded form to the venue the user already has money in, then
@@ -657,7 +733,7 @@ function VaultRow({
     : 0;
 
   const canOpen = Boolean(
-    (vault || kaminoUsable || morphoUsable || aaveUsable) && walletAddress,
+    (vault || kaminoUsable || morphoUsable || aaveUsable || blendUsable) && walletAddress,
   );
 
   // Withdraw falls back to deposit when the selected venue holds nothing, so
@@ -844,6 +920,9 @@ function VaultRow({
               vault={vault}
               balances={balances}
               walletAddress={walletAddress}
+              solPriceUsd={solPriceUsd}
+              assetPriceUsd={assetPriceUsd}
+              walletUsdc={walletUsdc}
               onSettled={onSettled}
             />
           )}
@@ -857,6 +936,9 @@ function VaultRow({
               sharesAtomic={kaminoShares}
               balances={balances}
               walletAddress={walletAddress}
+              solPriceUsd={solPriceUsd}
+              assetPriceUsd={assetPriceUsd}
+              walletUsdc={walletUsdc}
               onSettled={onSettled}
             />
           )}
@@ -881,6 +963,16 @@ function VaultRow({
               solanaUsdcAtomic={solanaUsdcAtomic}
               solanaAddress={walletAddress}
               onSettled={onAaveSettled}
+            />
+          )}
+          {venue === "blend" && (
+            <BlendVenuePanel
+              earn={blend}
+              mode={mode}
+              monadUsdcAtomic={morpho.usdcBalanceAtomic}
+              monBalanceAtomic={morpho.monBalanceAtomic}
+              solanaUsdcAtomic={solanaUsdcAtomic}
+              onSettled={onBlendSettled}
             />
           )}
         </div>
@@ -1139,6 +1231,9 @@ function VaultForm({
   vault,
   balances,
   walletAddress,
+  solPriceUsd,
+  assetPriceUsd,
+  walletUsdc,
   onSettled,
 }: {
   mode: EarnMode;
@@ -1146,6 +1241,11 @@ function VaultForm({
   vault: EarnVaultState;
   balances: EarnWalletBalances | null;
   walletAddress: string;
+  // For the setup sheet: sizing a SOL purchase, selling a sliver of the
+  // deposit, and the USDC route. See VaultRow.
+  solPriceUsd: number | null;
+  assetPriceUsd: number | null;
+  walletUsdc: number;
   onSettled: () => Promise<void>;
 }) {
   const signTxBase64 = useSignSolanaTxBase64();
@@ -1154,6 +1254,16 @@ function VaultForm({
   // share balance instead of an asset amount that rounds against them.
   const [redeemAll, setRedeemAll] = useState(false);
   const [state, setState] = useState<FormState>({ kind: "idle" });
+  // The priced rent of a first deposit and the amount it interrupted, held
+  // while the setup sheet is open so the deposit resumes with the same figure
+  // once the SOL is there.
+  const [setupGate, setSetupGate] = useState<{
+    cost: SetupCost;
+    amountAtomic: BN;
+  } | null>(null);
+  // Set once a funding round has spent something, so a deposit that then
+  // fails still refreshes the balances the sale changed.
+  const fundedRef = useRef(false);
 
   const walletAtomic = depositableAtomic(meta, balances);
   const shares = sharesAtomic(meta, balances);
@@ -1184,48 +1294,149 @@ function VaultForm({
     if (state.kind !== "idle") setState({ kind: "idle" });
   }
 
+  // The deposit asset as a funding source for the sheet: sell a sliver of it
+  // for SOL. Not offered for USDC, which the sheet's own USDC route already
+  // covers, nor for SOL, where a shortfall is the amount rather than the gas.
+  const sellableDeposit =
+    meta.assetMint !== USDC_MINT &&
+    !meta.isNativeSol &&
+    assetPriceUsd != null &&
+    assetPriceUsd > 0
+      ? {
+          symbol: meta.symbol,
+          mint: meta.assetMint,
+          decimals: meta.decimals,
+          balanceUi: Number(atomicToUiString(walletAtomic, meta.decimals)),
+          priceUsd: assetPriceUsd,
+        }
+      : undefined;
+
+  // A first deposit allocates a token account for the vault's shares, and the
+  // wallet pays rent for it. Price that before asking for a signature and open
+  // the setup sheet when there is something to pay: it offers to buy the SOL
+  // out of the wallet's USDC or a sliver of the deposit itself, the same way
+  // the borrow tab does. Advisory: a preflight that cannot read the chain
+  // steps aside rather than blocking a deposit that would have worked.
   async function handleSubmit() {
+    if (mode !== "deposit") {
+      await runWithdraw();
+      return;
+    }
+    setState({ kind: "submitting" });
+    try {
+      const cost = await estimateDepositCost(amountAtomic);
+      if (needsSetup(cost)) {
+        setSetupGate({ cost, amountAtomic });
+        setState({ kind: "idle" });
+        return;
+      }
+    } catch (err) {
+      console.error("[earn deposit cost]", err);
+    }
+    await runDeposit(amountAtomic);
+  }
+
+  function estimateDepositCost(requestedAtomic: BN): Promise<SetupCost> {
+    return estimateJupiterEarnDepositCost({
+      connection: getConnection(),
+      walletAddress,
+      meta,
+      amountAtomic: requestedAtomic.toString(),
+    });
+  }
+
+  async function runDeposit(requestedAtomic: BN) {
     setState({ kind: "submitting" });
     try {
       const connection = getConnection();
-      let built: BuiltTransaction;
-      if (mode === "deposit") {
-        built = await buildEarnDepositTx({
+      // Clamp to the balance on chain right now. The sheet can have just sold
+      // part of this very asset for SOL, and a deposit sized against the
+      // form's snapshot would ask for tokens the wallet no longer holds.
+      const fresh = new BN(
+        await readFreshDepositableAtomic(
           meta,
-          amountAtomic,
-          signerAddress: walletAddress,
+          walletAddress,
           connection,
-        });
-      } else if (redeemAll) {
-        built = await buildEarnRedeemAllTx({
-          meta,
-          sharesAtomicAmount: new BN(shares),
-          signerAddress: walletAddress,
-          connection,
-        });
-      } else {
-        built = await buildEarnWithdrawTx({
-          meta,
-          amountAtomic,
-          signerAddress: walletAddress,
-          connection,
-        });
-      }
-
-      const signed = await signTxBase64(built.transaction);
-      const sig = await sendAndConfirm(
-        connection,
-        base64ToBytes(signed),
-        built,
+          walletAtomic,
+        ),
       );
-      setState({ kind: "done", signature: sig });
-      setInput("");
-      setRedeemAll(false);
-      await onSettled();
+      const depositAtomic = BN.min(requestedAtomic, fresh);
+      if (depositAtomic.lten(0)) {
+        throw new Error(`No ${meta.symbol} left in this wallet to deposit.`);
+      }
+      const built = await buildEarnDepositTx({
+        meta,
+        amountAtomic: depositAtomic,
+        signerAddress: walletAddress,
+        connection,
+      });
+      await signAndSettle(built);
+    } catch (err) {
+      console.error("[earn submit]", err);
+      await failDeposit(err, requestedAtomic);
+    }
+  }
+
+  // The chain refused the deposit for want of SOL. The preflight normally
+  // catches this, but a balance can move between the check and the
+  // signature, and the raw simulation dump must not reach the screen.
+  // Re-price and reopen the sheet when it agrees; otherwise fall through to
+  // the ordinary message.
+  async function failDeposit(err: unknown, requestedAtomic: BN) {
+    if (isLamportShortfall(err)) {
+      try {
+        const cost = await estimateDepositCost(requestedAtomic);
+        if (isBlocked(cost)) {
+          setSetupGate({ cost, amountAtomic: requestedAtomic });
+          setState({ kind: "idle" });
+          return;
+        }
+      } catch (costErr) {
+        console.error("[earn deposit cost]", costErr);
+      }
+    }
+    // A funding round already changed what the wallet holds; refresh so the
+    // form does not keep drawing the balances from before the sale.
+    if (fundedRef.current) void onSettled();
+    setState({ kind: "error", message: readableError(err) });
+  }
+
+  async function runWithdraw() {
+    setState({ kind: "submitting" });
+    try {
+      const connection = getConnection();
+      const built = redeemAll
+        ? await buildEarnRedeemAllTx({
+            meta,
+            sharesAtomicAmount: new BN(shares),
+            signerAddress: walletAddress,
+            connection,
+          })
+        : await buildEarnWithdrawTx({
+            meta,
+            amountAtomic,
+            signerAddress: walletAddress,
+            connection,
+          });
+      await signAndSettle(built);
     } catch (err) {
       console.error("[earn submit]", err);
       setState({ kind: "error", message: readableError(err) });
     }
+  }
+
+  async function signAndSettle(built: BuiltTransaction) {
+    const signed = await signTxBase64(built.transaction);
+    const sig = await sendAndConfirm(
+      getConnection(),
+      base64ToBytes(signed),
+      built,
+    );
+    setState({ kind: "done", signature: sig });
+    setInput("");
+    setRedeemAll(false);
+    fundedRef.current = false;
+    await onSettled();
   }
 
   const balanceLabel =
@@ -1393,6 +1604,41 @@ function VaultForm({
             : `Withdraw ${meta.symbol}`}
       </button>
       </div>
+
+      {setupGate && (
+        <FirstPositionSheet
+          purpose="deposit"
+          depositSymbol={meta.symbol}
+          cost={setupGate.cost}
+          walletAddress={walletAddress}
+          walletUsdc={walletUsdc}
+          collateral={sellableDeposit}
+          solPriceUsd={solPriceUsd}
+          signTxBase64={signTxBase64}
+          onCancel={() => setSetupGate(null)}
+          onProceed={() => {
+            const { amountAtomic: requested } = setupGate;
+            setSetupGate(null);
+            void runDeposit(requested);
+          }}
+          onFunded={async () => {
+            fundedRef.current = true;
+            // Re-price rather than trusting the swap's own estimate: the
+            // deposit that follows reads the same balance this does.
+            const fresh = await estimateDepositCost(setupGate.amountAtomic);
+            if (isBlocked(fresh)) {
+              setSetupGate({
+                cost: fresh,
+                amountAtomic: setupGate.amountAtomic,
+              });
+              return;
+            }
+            const { amountAtomic: requested } = setupGate;
+            setSetupGate(null);
+            await runDeposit(requested);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1415,6 +1661,9 @@ function KaminoVaultForm({
   sharesAtomic: positionSharesAtomic,
   balances,
   walletAddress,
+  solPriceUsd,
+  assetPriceUsd,
+  walletUsdc,
   onSettled,
 }: {
   mode: EarnMode;
@@ -1424,6 +1673,10 @@ function KaminoVaultForm({
   sharesAtomic: string;
   balances: EarnWalletBalances | null;
   walletAddress: string;
+  // For the setup sheet. See VaultRow.
+  solPriceUsd: number | null;
+  assetPriceUsd: number | null;
+  walletUsdc: number;
   onSettled: () => Promise<void>;
 }) {
   const signTxBase64 = useSignSolanaTxBase64();
@@ -1433,6 +1686,13 @@ function KaminoVaultForm({
   // trip through tokens would leave share dust behind.
   const [withdrawAll, setWithdrawAll] = useState(false);
   const [state, setState] = useState<FormState>({ kind: "idle" });
+  // See VaultForm: the priced rent of a first deposit and the amount it
+  // interrupted, and whether a funding round has spent something.
+  const [setupGate, setSetupGate] = useState<{
+    cost: SetupCost;
+    amountAtomic: string;
+  } | null>(null);
+  const fundedRef = useRef(false);
 
   const walletAtomic = depositableAtomic(asset, balances);
   const positionAtomic = sharesToTokensAtomic(
@@ -1464,50 +1724,144 @@ function KaminoVaultForm({
     if (state.kind !== "idle") setState({ kind: "idle" });
   }
 
+  // See VaultForm for the shape. A first K-Vault deposit allocates two
+  // accounts rather than one: the share account and the farm's per-user
+  // state, because the deposit auto-stakes its shares.
+  const sellableDeposit =
+    asset.assetMint !== USDC_MINT &&
+    !asset.isNativeSol &&
+    assetPriceUsd != null &&
+    assetPriceUsd > 0
+      ? {
+          symbol: asset.symbol,
+          mint: asset.assetMint,
+          decimals: asset.decimals,
+          balanceUi: Number(atomicToUiString(walletAtomic, asset.decimals)),
+          priceUsd: assetPriceUsd,
+        }
+      : undefined;
+
   async function handleSubmit() {
+    if (mode !== "deposit") {
+      await runWithdraw();
+      return;
+    }
     setState({ kind: "submitting" });
     try {
-      // Deposits are priced in the underlying token. Withdrawals are priced in
-      // shares, so the typed token amount is converted, and a full exit uses
-      // the exact share balance.
-      const sendAtomic =
-        mode === "deposit"
-          ? amountAtomic.toString()
-          : withdrawAll
-            ? positionSharesAtomic
-            : tokensToSharesAtomic(
-                amountAtomic.toString(),
-                vault,
-                vaultMeta,
-              );
+      const cost = await estimateDepositCost(amountAtomic.toString());
+      if (needsSetup(cost)) {
+        setSetupGate({ cost, amountAtomic: amountAtomic.toString() });
+        setState({ kind: "idle" });
+        return;
+      }
+    } catch (err) {
+      console.error("[kamino deposit cost]", err);
+    }
+    await runDeposit(amountAtomic.toString());
+  }
 
+  function estimateDepositCost(requestedAtomic: string): Promise<SetupCost> {
+    return estimateKaminoVaultDepositCost({
+      connection: getConnection(),
+      walletAddress,
+      vault: vaultMeta,
+      amountAtomic: requestedAtomic,
+    });
+  }
+
+  async function runDeposit(requestedAtomic: string) {
+    setState({ kind: "submitting" });
+    try {
+      const connection = getConnection();
+      // Clamp to the balance on chain right now; the sheet can have just sold
+      // part of this asset for SOL. See VaultForm.
+      const fresh = await readFreshDepositableAtomic(
+        asset,
+        walletAddress,
+        connection,
+        walletAtomic,
+      );
+      const depositAtomic = BN.min(new BN(requestedAtomic), new BN(fresh));
+      if (depositAtomic.lten(0)) {
+        throw new Error(`No ${asset.symbol} left in this wallet to deposit.`);
+      }
+      // The vault's floor still applies after the clamp: selling part of a
+      // deposit that was only just above it can push it under.
+      if (depositAtomic.lt(new BN(vaultMeta.minDepositAtomic))) {
+        throw new Error(
+          `${atomicToUiString(depositAtomic.toString(), asset.decimals)} ${asset.symbol} is left to deposit, which is below the vault minimum of ${atomicToUiString(vaultMeta.minDepositAtomic, asset.decimals)} ${asset.symbol}.`,
+        );
+      }
+      const built = await buildKaminoVaultTx({
+        action: "deposit",
+        walletAddress,
+        vault: vaultMeta,
+        amountAtomic: depositAtomic.toString(),
+        connection,
+      });
+      await signAndSettle(built);
+    } catch (err) {
+      console.error("[kamino vault submit]", err);
+      await failDeposit(err, requestedAtomic);
+    }
+  }
+
+  // The chain refused the deposit for want of SOL. See VaultForm.
+  async function failDeposit(err: unknown, requestedAtomic: string) {
+    if (isLamportShortfall(err)) {
+      try {
+        const cost = await estimateDepositCost(requestedAtomic);
+        if (isBlocked(cost)) {
+          setSetupGate({ cost, amountAtomic: requestedAtomic });
+          setState({ kind: "idle" });
+          return;
+        }
+      } catch (costErr) {
+        console.error("[kamino deposit cost]", costErr);
+      }
+    }
+    if (fundedRef.current) void onSettled();
+    setState({ kind: "error", message: readableError(err) });
+  }
+
+  async function runWithdraw() {
+    setState({ kind: "submitting" });
+    try {
+      // Withdrawals are priced in shares, so the typed token amount is
+      // converted, and a full exit uses the exact share balance.
+      const sendAtomic = withdrawAll
+        ? positionSharesAtomic
+        : tokensToSharesAtomic(amountAtomic.toString(), vault, vaultMeta);
       if (sendAtomic === "0") {
         throw new Error("Amount rounds to zero shares.");
       }
-
       const connection = getConnection();
       const built = await buildKaminoVaultTx({
-        action: mode,
+        action: "withdraw",
         walletAddress,
         vault: vaultMeta,
         amountAtomic: sendAtomic,
         connection,
       });
-
-      const signed = await signTxBase64(built.transaction);
-      const sig = await sendAndConfirm(
-        connection,
-        base64ToBytes(signed),
-        built,
-      );
-      setState({ kind: "done", signature: sig });
-      setInput("");
-      setWithdrawAll(false);
-      await onSettled();
+      await signAndSettle(built);
     } catch (err) {
       console.error("[kamino vault submit]", err);
       setState({ kind: "error", message: readableError(err) });
     }
+  }
+
+  async function signAndSettle(built: BuiltTransaction) {
+    const signed = await signTxBase64(built.transaction);
+    const sig = await sendAndConfirm(
+      getConnection(),
+      base64ToBytes(signed),
+      built,
+    );
+    setState({ kind: "done", signature: sig });
+    setInput("");
+    setWithdrawAll(false);
+    fundedRef.current = false;
+    await onSettled();
   }
 
   const balanceLabel =
@@ -1682,6 +2036,39 @@ function KaminoVaultForm({
           that fee.
         </p>
       </div>
+
+      {setupGate && (
+        <FirstPositionSheet
+          purpose="deposit"
+          depositSymbol={asset.symbol}
+          cost={setupGate.cost}
+          walletAddress={walletAddress}
+          walletUsdc={walletUsdc}
+          collateral={sellableDeposit}
+          solPriceUsd={solPriceUsd}
+          signTxBase64={signTxBase64}
+          onCancel={() => setSetupGate(null)}
+          onProceed={() => {
+            const { amountAtomic: requested } = setupGate;
+            setSetupGate(null);
+            void runDeposit(requested);
+          }}
+          onFunded={async () => {
+            fundedRef.current = true;
+            const fresh = await estimateDepositCost(setupGate.amountAtomic);
+            if (isBlocked(fresh)) {
+              setSetupGate({
+                cost: fresh,
+                amountAtomic: setupGate.amountAtomic,
+              });
+              return;
+            }
+            const { amountAtomic: requested } = setupGate;
+            setSetupGate(null);
+            await runDeposit(requested);
+          }}
+        />
+      )}
     </div>
   );
 }

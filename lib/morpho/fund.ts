@@ -83,7 +83,9 @@ const MAX_BUFFER_BPS = 300;
 // a wallet above it never strands mid-flow. The top-up is a fixed 0.5 USDC,
 // which delivered ~17 MON when measured, so one top-up covers hundreds of
 // transactions and never needs repeating at today's prices.
-const GAS_FLOOR_WEI = 100_000_000_000_000_000n; // 0.1 MON
+// Exported for the shMON venue, which keeps the same reserve back from the
+// MON it delivers rather than running a separate gas leg.
+export const GAS_FLOOR_WEI = 100_000_000_000_000_000n; // 0.1 MON
 const GAS_TOPUP_USDC_ATOMIC = 500_000n; // 0.5 USDC
 // If 0.5 USDC quotes to less than this, MON has repriced dramatically and the
 // fixed top-up no longer makes sense; stop and say so instead of delivering
@@ -144,7 +146,10 @@ export function maxFundableDepositAtomic(
   return (onMonad + usable).toString();
 }
 
-function fundingRequest(
+// Exported, with quoteFunding and broadcastFundingLeg below, for the shMON
+// venue (lib/shmonad/fund.ts): its stake is this module's gas leg sized to
+// the whole deposit, and it must not grow a second copy of the request shape.
+export function fundingRequest(
   fromAmountAtomic: string,
   solanaAddress: string,
   evmAddress: string,
@@ -164,9 +169,9 @@ function fundingRequest(
   };
 }
 
-type QuoteFn = (req: TrustwareQuoteRequest) => Promise<TrustwareQuoteResponse>;
+export type QuoteFn = (req: TrustwareQuoteRequest) => Promise<TrustwareQuoteResponse>;
 
-async function quoteFunding(
+export async function quoteFunding(
   req: TrustwareQuoteRequest,
   fetchQuote: QuoteFn,
 ): Promise<{
@@ -361,7 +366,7 @@ export async function planMorphoDeposit(args: {
 
 type Report = (p: MorphoTxProgress) => void;
 
-interface BroadcastedLeg {
+export interface BroadcastedLeg {
   intentId: string;
   sourceTxHash: string;
 }
@@ -369,7 +374,7 @@ interface BroadcastedLeg {
 // Route one priced leg, sign its Solana source transaction, and hand Trustware
 // the hash. Settlement tracking is separate so several legs can bridge at
 // once.
-async function broadcastFundingLeg(args: {
+export async function broadcastFundingLeg(args: {
   funding: MorphoFundingLeg;
   // The delivery floor the fresh route must still guarantee before the user
   // commits funds. Pass 0n to skip (the plan already validated the leg).
@@ -555,6 +560,60 @@ async function awaitMonadFunds(args: {
   }
 }
 
+// Make sure the Monad wallet holds at least `usdcAtLeastAtomic` USDC and
+// enough MON to spend it, delivering whatever is missing from the user's
+// Solana USDC. Signs nothing when the wallet already has both. Shared by the
+// Morpho vault deposit below and the Aeras Vault I deposit
+// (lib/blend/deposit.ts), which spend Monad USDC the same way and differ only
+// in what they do with it once it is there.
+export async function ensureMonadUsdc(args: {
+  // USDC the wallet must hold on Monad afterwards, 6-decimal atomic.
+  usdcAtLeastAtomic: bigint;
+  monadUsdcAtomic: string;
+  solanaUsdcAtomic: string;
+  monBalanceAtomic: string;
+  evmAddress: string;
+  // Required only when funding is needed; the plan reports a readable reason
+  // when it is missing.
+  solana: SolanaSigner | undefined;
+  onProgress?: Report;
+  signal?: AbortSignal;
+}): Promise<{ funded: boolean }> {
+  const report: Report = (p) => args.onProgress?.(p);
+
+  // UI state can lag the chain: a retry once re-bought a gas top-up the first
+  // attempt had already delivered, because the card's MON balance still read
+  // zero. Plan against a fresh read whenever one is available; the passed-in
+  // values are only the fallback for a transient read failure.
+  const fresh = await readMonadBalances(args.evmAddress);
+  const monadUsdcAtomic = fresh?.usdcAtomic ?? args.monadUsdcAtomic;
+  const monBalanceAtomic = fresh?.monAtomic ?? args.monBalanceAtomic;
+
+  const plan = await planMorphoDeposit({
+    depositAtomic: args.usdcAtLeastAtomic,
+    monadUsdcAtomic,
+    solanaUsdcAtomic: args.solanaUsdcAtomic,
+    monBalanceAtomic,
+    solanaAddress: args.solana?.address,
+    evmAddress: args.evmAddress,
+  });
+  if (plan.kind === "blocked") throw new Error(plan.reason);
+  if (plan.kind === "direct") return { funded: false };
+
+  if (!args.solana) {
+    throw new Error("No Solana wallet is available to fund this deposit.");
+  }
+  await executeFundingPlan({
+    plan,
+    evmAddress: args.evmAddress,
+    usdcAtLeastAtomic: args.usdcAtLeastAtomic,
+    solana: args.solana,
+    report,
+    signal: args.signal,
+  });
+  return { funded: true };
+}
+
 // Deposit USDC into a Monad Morpho vault, first delivering whatever the Monad
 // wallet is missing (USDC, gas, or both) from the user's Solana USDC. One
 // call, every stage reported. Returns the deposit tx hash.
@@ -571,41 +630,16 @@ export async function depositUsdcWithFunding(args: {
   onProgress?: Report;
   signal?: AbortSignal;
 }): Promise<{ txHash: string; funded: boolean }> {
-  const report: Report = (p) => args.onProgress?.(p);
-
-  // UI state can lag the chain: a retry once re-bought a gas top-up the first
-  // attempt had already delivered, because the card's MON balance still read
-  // zero. Plan against a fresh read whenever one is available; the passed-in
-  // values are only the fallback for a transient read failure.
-  const fresh = await readMonadBalances(args.signer.address);
-  const monadUsdcAtomic = fresh?.usdcAtomic ?? args.monadUsdcAtomic;
-  const monBalanceAtomic = fresh?.monAtomic ?? args.monBalanceAtomic;
-
-  const plan = await planMorphoDeposit({
-    depositAtomic: args.amountAtomic,
-    monadUsdcAtomic,
+  const { funded } = await ensureMonadUsdc({
+    usdcAtLeastAtomic: args.amountAtomic,
+    monadUsdcAtomic: args.monadUsdcAtomic,
     solanaUsdcAtomic: args.solanaUsdcAtomic,
-    monBalanceAtomic,
-    solanaAddress: args.solana?.address,
+    monBalanceAtomic: args.monBalanceAtomic,
     evmAddress: args.signer.address,
+    solana: args.solana,
+    onProgress: args.onProgress,
+    signal: args.signal,
   });
-  if (plan.kind === "blocked") throw new Error(plan.reason);
-
-  let funded = false;
-  if (plan.kind === "fund-then-deposit") {
-    if (!args.solana) {
-      throw new Error("No Solana wallet is available to fund this deposit.");
-    }
-    await executeFundingPlan({
-      plan,
-      evmAddress: args.signer.address,
-      usdcAtLeastAtomic: args.amountAtomic,
-      solana: args.solana,
-      report,
-      signal: args.signal,
-    });
-    funded = true;
-  }
 
   const txHash = await depositToMorphoVault({
     vault: args.vault,
