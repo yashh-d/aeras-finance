@@ -1,13 +1,13 @@
 "use client";
 
 // Trader mode, Strategies: the plays in lib/strategies/plays.ts as cards,
-// each priced live, and a detail that puts the thesis beside the ticket the
-// play pre-fills. The ticket is the one the Strategies page opens; a play
+// each priced live and each showing its exposures as marks, and a detail
+// that puts the thesis beside the ticket the play pre-fills. The ticket is
+// the one the Strategies page opens, on the play's venue alone; a play
 // changes what it starts on, not what it signs.
 
 import { useMemo, useState } from "react";
 
-import { AssetLogo } from "@/components/AssetLogo";
 import { EarnTicket } from "@/components/strategies/EarnTicket";
 import { LadderTicket } from "@/components/strategies/LadderTicket";
 import { LeverageTicket } from "@/components/strategies/LeverageTicket";
@@ -22,10 +22,16 @@ import {
   maxLeverageForRoute,
 } from "@/lib/strategies/math";
 import { PLAYS, resolvePlay, type Play, type PlayTag, type ResolvedPlay } from "@/lib/strategies/plays";
-import { useStrategyRates, type StrategyRates, type StrategyRatesState } from "@/lib/strategies/rates";
-import { pickRun, STRATEGY_NAME, useStrategyRuns, type StrategyRun, type StrategyRunsStore } from "@/lib/strategies/runs-client";
-import { INSET_PANEL } from "@/lib/ui/surface";
+import {
+  useStrategyRates,
+  type StrategyRates,
+  type StrategyRatesState,
+  type UsdcEarnOption,
+} from "@/lib/strategies/rates";
+import { pickRun, useStrategyRuns, type StrategyRun, type StrategyRunsStore } from "@/lib/strategies/runs-client";
+import { assetMark, destinationMarks, type Mark } from "@/lib/trader/exposures";
 
+import { ExposureStrip } from "./ExposureStrip";
 import { PositionSummary } from "./PositionSummary";
 import {
   BackLink,
@@ -39,7 +45,6 @@ import {
   fmtSignedPct,
   GridCard,
   Pill,
-  SmallFigure,
   TraderHeader,
 } from "./shared";
 
@@ -54,6 +59,29 @@ const FILTERS: readonly { id: Filter; label: string }[] = [
   { id: "Crypto", label: "Crypto" },
   { id: "Rotation", label: "Rotation" },
 ];
+
+// The venue a play's loan goes to, when it is an earn play.
+function playOption(play: Play, rates: StrategyRatesState): UsdcEarnOption | null {
+  if (play.preset.kind !== "earn") return null;
+  const venue = play.preset.venue;
+  return (venue ? rates.earnOptions.find((o) => o.venue === venue) : null) ?? rates.defaultEarn;
+}
+
+// What the play ends up holding, as marks: the asset bought, then what the
+// loan becomes. Leverage is the same asset again; a ladder is its next pick.
+function playMarks(r: ResolvedPlay, rates: StrategyRatesState): { from: Mark; to: Mark[] } {
+  const from = assetMark(r.xstock);
+  const { play } = r;
+  if (play.preset.kind === "earn") {
+    const option = playOption(play, rates);
+    const venue = option?.venue ?? play.preset.venue;
+    return { from, to: venue ? destinationMarks(venue) : [] };
+  }
+  if (play.preset.kind === "leverage") {
+    return { from, to: [assetMark(r.xstock, `${r.xstock.mint}-again`)] };
+  }
+  return { from, to: [r.next ? assetMark(r.next) : assetMark(r.xstock, `${r.xstock.mint}-again`)] };
+}
 
 // A play's headline figure: the strategy's own figure from
 // lib/strategies/math.ts, at the play's preset, on the live rates. A play
@@ -71,9 +99,7 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
   const route = row?.route ?? borrowRouteFor(r.xstock.mint)!;
   if (r.blocked) return { label: "Not available", value: "—", tone: "muted", sub: r.blocked };
   if (play.preset.kind === "earn") {
-    const venue = play.preset.venue;
-    const option =
-      (venue ? rates.earnOptions.find((o) => o.venue === venue) : null) ?? rates.defaultEarn;
+    const option = playOption(play, rates);
     const borrowApr = row?.borrowApr ?? null;
     if (!option || borrowApr == null) {
       return { label: "Net on what you put in", value: "—", tone: "muted", sub: "reading rates" };
@@ -89,7 +115,7 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
       label: option.monDenominated ? "Net, in MON terms" : "Net on what you put in",
       value: fmtSignedPct(net),
       tone: net > 0 ? "positive" : "warn",
-      sub: `borrow ${fmtPct(borrowApr)}, earn ${fmtPct(option.apy)} in ${option.label}`,
+      sub: `${fmtPct(option.apy)} at ${option.label}, borrowing at ${fmtPct(borrowApr)}`,
     };
   }
   if (play.preset.kind === "leverage") {
@@ -99,10 +125,7 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
       label: "Exposure",
       value: `${lev.toFixed(1)}×`,
       tone: "plain",
-      sub:
-        row?.borrowApr != null
-          ? `one transaction, borrowing at ${fmtPct(row.borrowApr)}`
-          : "one transaction",
+      sub: row?.borrowApr != null ? `one transaction, borrowing at ${fmtPct(row.borrowApr)}` : "one transaction",
     };
   }
   const ratio = play.preset.ratio ?? maxBorrowRatio(route);
@@ -112,7 +135,7 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
       label: "Exposure",
       value: `${(1 + ratio).toFixed(2)}×`,
       tone: "plain",
-      sub: `${Math.round(ratio * 100)}% of the stock's value into ${r.next?.symbol}, one round`,
+      sub: `${Math.round(ratio * 100)}% of the stock's value into ${r.next?.symbol}`,
     };
   }
   const p = ladderProjection({ equityUsd: 100, borrowRatio: ratio });
@@ -162,10 +185,8 @@ export function PlaysGrid({
   return (
     <div className="space-y-6">
       <TraderHeader eyebrow="Strategies" title="Plays with a thesis">
-        Each one is a stock, a loan and a destination, chosen for a stated
-        reason. Open a play to read the reason and the numbers, then run it in
-        one press. Every step signs on its own and a refresh resumes where it
-        stopped.
+        A stock, a loan and a destination, chosen for a reason. Open one to
+        read it, then run it in one press.
       </TraderHeader>
 
       <ChoicePills options={FILTERS} value={filter} onChange={setFilter} label="Filter plays" />
@@ -190,8 +211,8 @@ export function PlaysGrid({
       <p className="text-xs text-white/40">
         xStocks are tokenized representations issued by Backed Finance. Holders
         do not have direct shareholder rights. Every play borrows against them
-        and can be liquidated if the price falls past the venue&apos;s
-        threshold.
+        and can be liquidated if the price falls past the threshold the ticket
+        shows.
       </p>
     </div>
   );
@@ -210,56 +231,32 @@ function PlayCard({
   saved: StrategyRun | null;
   onOpen: () => void;
 }) {
-  const { play, xstock, next } = resolved;
+  const { play } = resolved;
   const h = headline(resolved, row, rates);
+  const marks = playMarks(resolved, rates);
   return (
     <GridCard onClick={onOpen} muted={resolved.blocked != null}>
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-base font-medium tracking-tight text-white">{play.name}</div>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-            <Pill>{play.tag}</Pill>
-            <Pill>{STRATEGY_NAME[resolved.kind]}</Pill>
-            {saved && (
-              <Pill tone={saved.status === "running" ? "warn" : "positive"}>
-                {saved.status === "running" ? "Resume" : "Open"}
-              </Pill>
-            )}
-          </div>
+        <ExposureStrip from={marks.from} to={marks.to} size={32} max={8} />
+        <div className="flex shrink-0 gap-1.5">
+          {saved && (
+            <Pill tone={saved.status === "running" ? "warn" : "positive"}>
+              {saved.status === "running" ? "Resume" : "Open"}
+            </Pill>
+          )}
+          <Pill>{play.tag}</Pill>
         </div>
-        <AssetLogo xstock={xstock} size={36} />
       </div>
 
-      <p className="text-xs leading-relaxed text-white/60">{play.thesis}</p>
+      <div>
+        <div className="text-base font-medium tracking-tight text-white">{play.name}</div>
+        <p className="mt-1.5 text-xs leading-relaxed text-white/55">{play.thesis}</p>
+      </div>
 
-      <Composition resolved={resolved} rates={rates} />
-
-      <div className="mt-auto flex items-end justify-between gap-4 border-t border-white/[0.06] pt-4">
+      <div className="mt-auto pt-1">
         <BigFigure label={h.label} value={h.value} tone={h.tone} sub={h.sub} />
-        {next && <SmallFigure label="Then" value={next.symbol} />}
       </div>
     </GridCard>
-  );
-}
-
-// The play as a chain of marks: the stock, the loan, where it goes.
-function Composition({ resolved, rates }: { resolved: ResolvedPlay; rates: StrategyRatesState }) {
-  const { play, xstock, next } = resolved;
-  let end: string;
-  if (play.preset.kind === "earn") {
-    const venue = play.preset.venue;
-    const option = venue ? rates.earnOptions.find((o) => o.venue === venue) : rates.defaultEarn;
-    end = option?.label ?? (venue === "glider" ? "Mag7X on Base" : venue === "shmonad" ? "shMON on Monad" : "USDC vault");
-  } else if (play.preset.kind === "leverage") {
-    end = `more ${xstock.symbol}`;
-  } else {
-    end = next?.symbol ?? xstock.symbol;
-  }
-  return (
-    <div className="font-mono text-[11px] uppercase tracking-[0.08em] text-white/50">
-      {xstock.symbol} <span className="text-white/25">→</span> USDC{" "}
-      <span className="text-white/25">→</span> {end}
-    </div>
   );
 }
 
@@ -286,6 +283,7 @@ function PlayDetail({
   const row = rates.rows.find((r) => r.xstock.mint === xstock.mint) ?? null;
   const saved = pickRun(store.runs, kind, xstock.mint);
   const h = headline(resolved, row, rates);
+  const marks = playMarks(resolved, rates);
   const [tick, setTick] = useState(0);
   const settled = async () => {
     await onRefresh();
@@ -295,14 +293,13 @@ function PlayDetail({
   return (
     <div className="space-y-6">
       <BackLink label="All plays" onClick={onBack} />
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <AssetLogo xstock={xstock} size={40} />
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <ExposureStrip from={marks.from} to={marks.to} size={40} max={8} />
           <div>
-            <div className="text-lg font-light tracking-tight text-white">{play.name}</div>
-            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+            <div className="text-xl font-light tracking-tight text-white">{play.name}</div>
+            <div className="mt-1 flex items-center gap-1.5">
               <Pill>{play.tag}</Pill>
-              <Pill>{STRATEGY_NAME[kind]}</Pill>
               <Pill>{xstock.symbol}</Pill>
             </div>
           </div>
@@ -312,7 +309,7 @@ function PlayDetail({
 
       <DetailColumns
         left={
-          <DetailCard title={STRATEGY_NAME[kind]}>
+          <DetailCard title="Run it">
             {row ? (
               <PlayTicket
                 play={play}
@@ -336,18 +333,9 @@ function PlayDetail({
           <div className="space-y-6">
             <DetailCard title="The thesis">
               <p className="text-sm leading-relaxed text-white/75">{play.thesis}</p>
-              <ol className={`${INSET_PANEL} mt-4 space-y-2 px-3 py-3 text-xs`}>
-                {play.steps.map((s, i) => (
-                  <li key={s} className="flex gap-2.5">
-                    <span className="font-mono text-white/40">{String(i + 1).padStart(2, "0")}</span>
-                    <span className="text-white/70">{s}</span>
-                  </li>
-                ))}
-              </ol>
-              <div className="mt-4 rounded-xl border border-aeras-warning/30 bg-aeras-warning/10 px-4 py-3 text-xs leading-relaxed text-white/70">
-                <span className="font-medium text-aeras-warning">What loses money here.</span>{" "}
-                {play.risk}
-              </div>
+              <p className="mt-3 text-xs leading-relaxed text-white/50">
+                <span className="text-aeras-warning/90">Risk.</span> {play.risk}
+              </p>
             </DetailCard>
             {row && (
               <PositionSummary
@@ -366,8 +354,9 @@ function PlayDetail({
   );
 }
 
-// The strategy's own ticket, opened on the play's preset. Keyed by play so a
-// different play on the same asset mounts fresh.
+// The strategy's own ticket, opened on the play's preset and, for an earn
+// play, on the play's venue alone. Keyed by play so a different play on the
+// same asset mounts fresh.
 function PlayTicket({
   play,
   row,
@@ -391,13 +380,27 @@ function PlayTicket({
 }) {
   const common = { row, walletAddress, balances, prices, store, saved, onRefresh };
   if (play.preset.kind === "earn") {
+    const option = playOption(play, rates);
+    // A saved run's own venue always rides along, so its close path
+    // withdraws from the venue that holds the money.
+    const savedVenue = saved?.data.kind === "earn" ? saved.data.earnVenue : null;
+    const savedOption = savedVenue
+      ? (rates.earnOptions.find((o) => o.venue === savedVenue) ?? null)
+      : null;
+    const earnOptions =
+      option && savedOption && savedOption.venue !== option.venue
+        ? [option, savedOption]
+        : option
+          ? [option]
+          : savedOption
+            ? [savedOption]
+            : [];
     return (
       <EarnTicket
         key={play.id}
         {...common}
-        earn={rates.defaultEarn}
-        earnOptions={rates.earnOptions}
-        initialVenue={play.preset.venue}
+        earn={option ?? savedOption}
+        earnOptions={earnOptions}
         initialRatio={play.preset.ratio ?? maxBorrowRatio(row.route)}
       />
     );

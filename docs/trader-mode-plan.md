@@ -256,6 +256,25 @@ the user saw. The Portfolio section's positions view is the Investor
 component and still names venues there, because on that surface the
 venue is the answer to where the money is; say the word to hide it.
 
+**D14. Clean cards, exposures as marks.** Asked for on 2026-09-22 after
+seeing the surfaces live ("TMI, make it clean, add the logos to show most
+of the exposures"). A Buy + Earn card is now the asset, the "earn up to"
+figure with the venue it comes from, and an exposure strip: the asset's
+mark, an arrow, the marks of what the loan becomes (the eight Mag 7
+holdings as the xStocks that track them, shMON, and so on, from
+`lib/trader/exposures.ts` and `components/trader/ExposureStrip.tsx`).
+The tier list, the ratio and the "borrow up to" foot line are gone from
+the card; the tier picker in the detail is rank, name, marks and figure,
+with the chosen tier's risk as one line under the row. A play card is its
+strip, its name, its thesis and its figure. A play detail mounts the
+ticket on the play's venue alone, so no venue picker shows, and the thesis
+card is the thesis and the risk without the numbered steps. The shared
+`EarnTicket` gained a compact presentation through the same context as
+D13 (`TicketPresentationContext`, `compact: true` under `TraderShell`):
+no venue picker, no "Steps" row, and a short form of the Mag7X note. The
+attestation checkbox stays, because the enroll route refuses without it.
+Uniswap and BTC have no mark on disk yet and draw as letter badges.
+
 ## Status (2026-09-22)
 
 Slices 0 to 2 are built and verified on a preview route against the live

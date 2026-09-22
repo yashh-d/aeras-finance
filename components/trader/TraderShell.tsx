@@ -6,7 +6,10 @@
 // come from one read. See docs/trader-mode-plan.md.
 
 import { PositionsPanel } from "@/components/PositionsPanel";
-import { VenueNames } from "@/components/strategies/shared";
+import {
+  TicketPresentationContext,
+  type TicketPresentation,
+} from "@/components/strategies/shared";
 import { WalletPanel } from "@/components/WalletPanel";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { EarnPositionsView } from "@/lib/positions/use-earn-positions";
@@ -29,14 +32,16 @@ export const TRADER_SECTIONS: readonly { id: TraderSection; label: string }[] = 
   { id: "portfolio", label: "Portfolio" },
 ];
 
-// Trader mode names no lending venue: the tickets it mounts read this
-// context and drop "on Jupiter Lend" and "on Kamino" from their copy
-// (docs/trader-mode-plan.md, D13). The venue still decides the route.
+// How the shared tickets present under Trader mode: no venue names, and
+// compact (docs/trader-mode-plan.md, D13 and D14). One object, so the
+// provider value is stable across renders.
+const TRADER_TICKETS: TicketPresentation = { venueNames: false, compact: true };
+
 export function TraderShell(props: Parameters<typeof TraderBody>[0]) {
   return (
-    <VenueNames.Provider value={false}>
+    <TicketPresentationContext.Provider value={TRADER_TICKETS}>
       <TraderBody {...props} />
-    </VenueNames.Provider>
+    </TicketPresentationContext.Provider>
   );
 }
 

@@ -4,10 +4,10 @@
 // with a borrow market, headlined by the best net rate the borrowed USDC can
 // make across the three tiers in lib/trader/tiers.ts (a stock portfolio,
 // staking, liquidity pools), at the SAFE MAXIMUM borrow ratio
-// (docs/trader-mode-plan.md, D11 and D12). Opening a card shows the three
-// tiers, priced, and the existing Buy + Earn ticket on the chosen one beside
-// the position it opened. The five-venue picker Investor mode's ticket
-// carries is not here: the vault destinations are plays.
+// (docs/trader-mode-plan.md, D11 and D12). The card is the asset, the rate
+// and the exposures as marks, nothing else (D14). Opening it shows the
+// three tiers priced and the existing Buy + Earn ticket on the chosen one,
+// with that tier's venue alone, beside the position it opened.
 
 import { useMemo, useState } from "react";
 
@@ -30,6 +30,7 @@ import {
   type StrategyRun,
   type StrategyRunsStore,
 } from "@/lib/strategies/runs-client";
+import { assetMark, destinationMarks, type Mark } from "@/lib/trader/exposures";
 import {
   bestTier,
   EARN_TIERS,
@@ -40,6 +41,7 @@ import {
 } from "@/lib/trader/tiers";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 
+import { ExposureStrip } from "./ExposureStrip";
 import { PositionSummary } from "./PositionSummary";
 import {
   BackLink,
@@ -65,6 +67,13 @@ const SORTS: readonly { id: Sort; label: string }[] = [
   { id: "borrow", label: "Cheapest to borrow" },
   { id: "name", label: "A to Z" },
 ];
+
+// What a tier's loan becomes, for the strips. A live tier shows its venue's
+// marks; a planned one shows the mark of what it will hold.
+function tierMarks(tier: EarnTier, state: TierState): Mark[] {
+  if (state.kind === "ready") return destinationMarks(state.option.venue);
+  return destinationMarks(tier.venues[0].venue);
+}
 
 export function BuyEarnGrid({
   walletAddress,
@@ -123,10 +132,9 @@ export function BuyEarnGrid({
         title="Buy a stock. Earn on the loan."
         aside={<SearchBox value={query} onChange={setQuery} placeholder="Search assets" />}
       >
-        Buy a tokenized stock and borrow as much USDC against it as the venue
-        safely allows. The loan goes into one of three tiers: a stock
-        portfolio, staking, or a liquidity pool. Each card&apos;s figure is the
-        best tier&apos;s net rate on what you put in; open it to pick the tier.
+        Buy a tokenized stock, borrow against it, and put the loan into a
+        portfolio, staking or a liquidity pool. The figure is the best of the
+        three on what you put in.
       </TraderHeader>
 
       <ChoicePills options={SORTS} value={sort} onChange={setSort} label="Sort" />
@@ -158,29 +166,11 @@ export function BuyEarnGrid({
       <p className="text-xs text-white/40">
         xStocks are tokenized representations issued by Backed Finance. Holders
         do not have direct shareholder rights. A loan against them can be
-        liquidated if the price falls past the venue&apos;s threshold, and
-        every tier carries its own risk on top, stated on the tier.
+        liquidated if the price falls past the threshold the ticket shows.
       </p>
     </div>
   );
 }
-
-// The figure a tier shows on a card or in the picker: its net rate, or why
-// there is none.
-function tierFigure(s: TierState): { text: string; tone: "positive" | "warn" | "muted"; title?: string } {
-  if (s.kind === "ready") {
-    if (s.net == null) return { text: "—", tone: "muted" };
-    return { text: fmtSignedPct(s.net), tone: s.net > 0 ? "positive" : "warn" };
-  }
-  if (s.kind === "unavailable") return { text: "off", tone: "muted", title: s.reason };
-  return { text: "soon", tone: "muted", title: `${s.label}: not yet available` };
-}
-
-const TONE_TEXT = {
-  positive: "text-aeras-positive",
-  warn: "text-aeras-warning",
-  muted: "text-white/35",
-} as const;
 
 function AssetCard({
   row,
@@ -197,18 +187,17 @@ function AssetCard({
   saved: StrategyRun | null;
   onOpen: () => void;
 }) {
-  const { xstock, route } = row;
+  const { xstock } = row;
   const best = bestTier(row, rates.earnOptions);
-  const ratio = maxBorrowRatio(route);
   const positive = change == null ? null : change >= 0;
-  const states = EARN_TIERS.map((t) => [t, tierState(t, row, rates.earnOptions)] as const);
+  const to = best ? destinationMarks(best.option.venue) : [];
   return (
     <GridCard onClick={onOpen} muted={best != null && best.net <= 0}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <AssetLogo xstock={xstock} size={36} />
+          <AssetLogo xstock={xstock} size={40} />
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium tracking-tight text-white">
+            <div className="truncate text-base font-medium tracking-tight text-white">
               Buy {xstock.name}
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-white/45">
@@ -234,56 +223,21 @@ function AssetCard({
             </div>
           </div>
         </div>
-        {/* No venue pill: Trader mode names no lending venue (D13). The
-            route still decides the rates and the signatures. */}
         {saved && (
-          <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-            <Pill tone={saved.status === "running" ? "warn" : "positive"}>
-              {saved.status === "running" ? "Resume" : "Open"}
-            </Pill>
-          </div>
+          <Pill tone={saved.status === "running" ? "warn" : "positive"}>
+            {saved.status === "running" ? "Resume" : "Open"}
+          </Pill>
         )}
       </div>
 
-      <div className="flex items-end justify-between gap-4">
+      <div className="mt-auto flex items-end justify-between gap-4 pt-1">
         <BigFigure
           label="Earn up to"
           value={best ? fmtSignedPct(best.net) : rates.loading ? "…" : "—"}
           tone={best ? (best.net > 0 ? "positive" : "warn") : "muted"}
-          sub={
-            best
-              ? `in ${best.tier.name.toLowerCase()}, ${best.option.label}`
-              : rates.loading
-                ? "reading rates"
-                : "no tier can run right now"
-          }
+          sub={best ? best.option.label : rates.loading ? "reading rates" : "nothing can run right now"}
         />
-        <SmallFigure label="Borrows at max" value={`${Math.round(ratio * 100)}% of value`} />
-      </div>
-
-      {/* The three tiers, ranked, with what each would net. Planned slots
-          say so rather than showing a number nothing backs. */}
-      <div className="mt-auto space-y-1 border-t border-white/[0.06] pt-3">
-        {states.map(([t, s]) => {
-          const f = tierFigure(s);
-          return (
-            <div key={t.id} className="flex items-baseline justify-between gap-3 text-xs" title={f.title}>
-              <span className="flex items-baseline gap-2">
-                <span className="font-mono text-[10px] text-white/30">{t.rank}</span>
-                <span className="text-white/65">{t.name}</span>
-              </span>
-              <span className={`font-mono tabular-nums ${TONE_TEXT[f.tone]}`}>{f.text}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="flex items-center justify-between gap-3 text-[11px] text-white/40">
-        <span>
-          Borrow up to {Math.round(route.collateralFactor * 100)}%
-          {row.borrowApr != null && ` at ${fmtPct(row.borrowApr)}`}
-        </span>
-        <span className="text-white/60">{saved ? "Manage" : "Open"}</span>
+        <ExposureStrip from={assetMark(xstock)} to={to} size={26} max={6} />
       </div>
     </GridCard>
   );
@@ -321,9 +275,6 @@ function BuyEarnDetail({
 
   // The venue a saved run used, so its close path resolves to the venue
   // that holds the money even when that venue is not the chosen tier's.
-  // Passing it keeps the ticket's own lookup honest: with the option absent
-  // the close would fall back to the tier's venue and withdraw from the
-  // wrong place.
   const savedVenue = saved?.data.kind === "earn" ? saved.data.earnVenue : null;
   const savedOption = savedVenue
     ? (rates.earnOptions.find((o) => o.venue === savedVenue) ?? null)
@@ -345,16 +296,22 @@ function BuyEarnDetail({
       <BackLink label="All assets" onClick={onBack} />
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <AssetLogo xstock={xstock} size={40} />
+          <AssetLogo xstock={xstock} size={44} />
           <div>
-            <div className="text-lg font-light tracking-tight text-white">Buy {xstock.name}</div>
-            <div className="text-xs text-white/50">{xstock.symbol}</div>
+            <div className="text-xl font-light tracking-tight text-white">Buy {xstock.name}</div>
+            <div className="text-xs text-white/50">
+              {xstock.symbol}
+              {price != null && (
+                <span className="ml-2 font-mono tabular-nums text-white/70">
+                  ${formatUsdPrice(price)}
+                </span>
+              )}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-6">
-          <SmallFigure label="Price" value={price == null ? "—" : `$${formatUsdPrice(price)}`} />
           <SmallFigure label="Borrow rate" value={fmtPct(row.borrowApr)} />
-          <SmallFigure label="Borrows at max" value={`${Math.round(maxBorrowRatio(route) * 100)}%`} />
+          <SmallFigure label="Borrows" value={`${Math.round(maxBorrowRatio(route) * 100)}% of value`} />
           <BigFigure
             label="Earn up to"
             value={best ? fmtSignedPct(best.net) : "—"}
@@ -365,10 +322,13 @@ function BuyEarnDetail({
       </div>
 
       <TierPicker row={row} rates={rates} selected={tierId} onSelect={setChosen} />
+      <p className="text-xs text-white/45">
+        <span className="text-aeras-warning/90">Risk.</span> {tier.risk}
+      </p>
 
       <DetailColumns
         left={
-          <DetailCard title={`Buy + Earn · ${tier.name}`}>
+          <DetailCard title={tier.name}>
             {earn ? (
               <EarnTicket
                 key={`${xstock.mint}-${tierId}`}
@@ -384,14 +344,11 @@ function BuyEarnDetail({
                 initialRatio={maxBorrowRatio(route)}
               />
             ) : state.kind === "planned" ? (
-              <Note>
-                {state.label} is not built yet. This tier will take the borrowed
-                USDC once it is; the other two run today.
-              </Note>
+              <Note>{state.label} is not built yet. The other tiers run today.</Note>
             ) : (
               <Note tone="warn">
                 {state.kind === "unavailable" ? state.reason : "This tier cannot run right now."}
-                {" "}Pick another tier above.
+                {" "}Pick another tier.
               </Note>
             )}
           </DetailCard>
@@ -411,7 +368,9 @@ function BuyEarnDetail({
   );
 }
 
-// The three tiers as a row of choices, each priced for this asset.
+// The three tiers as a row of choices: rank, name, what the loan becomes as
+// marks, and the net for this asset. The mechanism and the risk are one line
+// each on the chosen tier, under the row.
 function TierPicker({
   row,
   rates,
@@ -425,69 +384,49 @@ function TierPicker({
 }) {
   return (
     <div role="group" aria-label="Where the loan goes" className="grid gap-3 md:grid-cols-3">
-      {EARN_TIERS.map((t) => (
-        <TierChoice
-          key={t.id}
-          tier={t}
-          state={tierState(t, row, rates.earnOptions)}
-          active={selected === t.id}
-          onClick={() => onSelect(t.id)}
-        />
-      ))}
+      {EARN_TIERS.map((t) => {
+        const state = tierState(t, row, rates.earnOptions);
+        const ready = state.kind === "ready";
+        const active = selected === t.id;
+        const figure =
+          state.kind === "ready"
+            ? state.net == null
+              ? { text: "—", cls: "text-white/40" }
+              : { text: fmtSignedPct(state.net), cls: state.net > 0 ? "text-aeras-positive" : "text-aeras-warning" }
+            : state.kind === "unavailable"
+              ? { text: "off", cls: "text-white/35" }
+              : { text: "soon", cls: "text-white/35" };
+        return (
+          <button
+            key={t.id}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onSelect(t.id)}
+            title={state.kind === "unavailable" ? state.reason : state.kind === "planned" ? "Not yet available" : undefined}
+            className={`${GLASS_SURFACE} flex flex-col gap-3 p-4 text-left transition-colors ${
+              active ? "border-white/40 bg-white/[0.10]" : "hover:border-white/20 hover:bg-white/[0.08]"
+            } ${ready ? "" : "opacity-60"}`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
+                  Tier {t.rank}
+                </div>
+                <div className="mt-0.5 text-sm font-medium tracking-tight text-white">{t.name}</div>
+              </div>
+              <div className={`font-mono text-xl font-light tabular-nums ${figure.cls}`}>
+                {figure.text}
+              </div>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <ExposureStrip from={assetMark(row.xstock)} to={tierMarks(t, state)} size={24} max={6} />
+              <span className="truncate text-[11px] text-white/45">
+                {state.kind === "ready" ? state.option.label : t.holds}
+              </span>
+            </div>
+          </button>
+        );
+      })}
     </div>
-  );
-}
-
-function TierChoice({
-  tier,
-  state,
-  active,
-  onClick,
-}: {
-  tier: EarnTier;
-  state: TierState;
-  active: boolean;
-  onClick: () => void;
-}) {
-  const f = tierFigure(state);
-  const ready = state.kind === "ready";
-  return (
-    <button
-      type="button"
-      aria-pressed={active}
-      onClick={onClick}
-      className={`${GLASS_SURFACE} flex flex-col gap-3 p-4 text-left transition-colors ${
-        active ? "border-white/40 bg-white/[0.10]" : "hover:border-white/20 hover:bg-white/[0.08]"
-      } ${ready ? "" : "opacity-70"}`}
-    >
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
-            Tier {tier.rank}
-          </div>
-          <div className="mt-0.5 text-sm font-medium tracking-tight text-white">{tier.name}</div>
-          <div className="text-[11px] text-white/50">
-            {state.kind === "ready" ? state.option.label : tier.holds}
-          </div>
-        </div>
-        <div className="text-right">
-          <div className={`font-mono text-xl font-light tabular-nums ${TONE_TEXT[f.tone]}`}>
-            {f.text}
-          </div>
-          {state.kind === "ready" && (
-            <div className="text-[10px] text-white/40">pays {fmtPct(state.option.apy)}</div>
-          )}
-        </div>
-      </div>
-      <p className="text-[11px] leading-relaxed text-white/55">{tier.summary}</p>
-      <p className="text-[11px] leading-relaxed text-white/45">
-        <span className="text-aeras-warning/90">Risk.</span> {tier.risk}
-      </p>
-      {state.kind !== "ready" && (
-        <p className="text-[11px] text-white/45">
-          {state.kind === "unavailable" ? state.reason : "Not yet available."}
-        </p>
-      )}
-    </button>
   );
 }

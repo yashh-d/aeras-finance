@@ -15,16 +15,29 @@ import { INSET_PANEL } from "@/lib/ui/surface";
 import type { StrategyRun } from "@/lib/strategies/run";
 import { leverageForRatio } from "@/lib/strategies/math";
 
-// Whether copy names the lending venue ("borrow USDC on Jupiter Lend").
-// Investor mode does, which is the default. Trader mode renders its
-// surfaces under a `false` provider (components/trader/TraderShell.tsx) so
-// the tickets drop the venue from their step labels and previews; the venue
+// How a ticket presents itself. Investor mode is the default: copy names the
+// lending venue ("borrow USDC on Jupiter Lend") and every row shows. Trader
+// mode (components/trader/TraderShell.tsx) provides the other setting: no
+// venue names, and compact, which hides the venue picker and the rows and
+// notes that explain mechanics the Trader surface already states. The venue
 // still decides the route, the rates and the signatures. See
-// docs/trader-mode-plan.md, D13.
-export const VenueNames = createContext(true);
+// docs/trader-mode-plan.md, D13 and D14.
+export interface TicketPresentation {
+  venueNames: boolean;
+  compact: boolean;
+}
+
+export const TicketPresentationContext = createContext<TicketPresentation>({
+  venueNames: true,
+  compact: false,
+});
 
 export function useVenueNames(): boolean {
-  return useContext(VenueNames);
+  return useContext(TicketPresentationContext).venueNames;
+}
+
+export function useCompactTicket(): boolean {
+  return useContext(TicketPresentationContext).compact;
 }
 
 export function fmtPct(decimal: number | null | undefined, digits = 2): string {
