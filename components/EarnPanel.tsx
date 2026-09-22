@@ -133,6 +133,7 @@ import { AssetLogo, VenueMark } from "@/components/AssetLogo";
 import { LoopingCard } from "@/components/LoopingPanel";
 import { RyskOptionsCard } from "@/components/RyskOptionsPanel";
 import { ShMonadCard } from "@/components/ShMonadCard";
+import { UniswapPoolsCard } from "@/components/UniswapPoolsCard";
 
 interface Props {
   walletAddress: string | undefined;
@@ -194,6 +195,16 @@ export function EarnPanel({ walletAddress, balances, prices, onRefresh }: Props)
         solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
         onRefresh={handleSettled}
       />
+      {/* Uniswap liquidity pools: also a card, for the reasons its header
+          states: a position is two tokens with price exposure and
+          impermanent loss, and its rate is a trailing fee rate. Twelve pools
+          on four chains, funded from Solana USDC the way the venues above
+          are. See docs/uniswap-lp-plan.md. */}
+      <UniswapPoolsCard
+        walletAddress={walletAddress}
+        solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+        onRefresh={handleSettled}
+      />
       <RyskOptionsCard />
     </div>
   );
@@ -209,8 +220,8 @@ function PageHeader() {
         Put idle capital to work
       </h2>
       <p className="text-sm text-white/45">
-        Four ways to earn yield on assets you already hold: vault deposits,
-        staking, leveraged looping, and selling options.
+        Five ways to earn yield on assets you already hold: vault deposits,
+        staking, liquidity pools, leveraged looping, and selling options.
       </p>
     </div>
   );
