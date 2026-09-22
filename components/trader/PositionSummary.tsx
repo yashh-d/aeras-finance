@@ -20,7 +20,10 @@ import { earnNetApy } from "@/lib/strategies/math";
 import type { StrategyRates, UsdcEarnOption } from "@/lib/strategies/rates";
 import { STRATEGY_NAME, type StrategyRun } from "@/lib/strategies/runs-client";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
+import { assetMark, destinationMarks, USDC_MARK, type Mark } from "@/lib/trader/exposures";
 import { INSET_PANEL } from "@/lib/ui/surface";
+
+import { AssetLogo } from "@/components/AssetLogo";
 
 import { DetailCard, fmtPct, fmtSignedPct, fmtUsd } from "./shared";
 
@@ -170,11 +173,13 @@ export function PositionSummary({
               label={`${xstock.symbol} posted`}
               value={collateralUi > 0 ? collateralUi.toFixed(4) : "—"}
               sub={collateralUsd != null && collateralUsd > 0 ? fmtUsd(collateralUsd) : undefined}
+              marks={[assetMark(xstock)]}
             />
             <Figure
               label="Owed"
               value={debtUsd > 0 ? fmtUsd(debtUsd) : "—"}
               sub={row.borrowApr != null ? `${fmtPct(row.borrowApr)} a year` : undefined}
+              marks={[USDC_MARK]}
             />
             <Figure
               label="Health"
@@ -194,8 +199,11 @@ export function PositionSummary({
 
           {earnData && (
             <div className={`${INSET_PANEL} space-y-2 px-3 py-3 text-xs`}>
-              <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
-                The loan is earning
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/40">
+                  The loan is earning
+                </div>
+                <MarkStack marks={destinationMarks(earnData.earnVenue)} />
               </div>
               <Row label="In" value={option?.label ?? earnData.earnLabel} />
               <Row label="Deposited" value={fmtUsd(earnData.borrowedUsd)} />
@@ -242,19 +250,46 @@ function Figure({
   value,
   sub,
   className,
+  marks,
 }: {
   label: string;
   value: string;
   sub?: string;
   className?: string;
+  // What the figure is denominated in, as marks in the corner.
+  marks?: Mark[];
 }) {
   return (
     <div className="rounded-lg border border-white/10 bg-white/5 px-3 py-2">
-      <div className="text-[11px] text-white/50">{label}</div>
+      <div className="flex items-start justify-between gap-2">
+        <div className="text-[11px] text-white/50">{label}</div>
+        {marks && marks.length > 0 && <MarkStack marks={marks} size={18} />}
+      </div>
       <div className={`mt-0.5 font-mono text-sm tabular-nums ${className ?? "text-white"}`}>
         {value}
       </div>
       {sub && <div className="text-[10px] text-white/40">{sub}</div>}
+    </div>
+  );
+}
+
+// A few marks overlapping, for a corner.
+function MarkStack({ marks, size = 20, max = 4 }: { marks: Mark[]; size?: number; max?: number }) {
+  const shown = marks.slice(0, max);
+  const rest = marks.length - shown.length;
+  return (
+    <div className="flex shrink-0 items-center">
+      {shown.map((m, i) => (
+        <span
+          key={m.key}
+          title={m.name}
+          className="rounded-full ring-2 ring-[#0d0f11]"
+          style={{ marginLeft: i === 0 ? 0 : -Math.round(size * 0.3) }}
+        >
+          <AssetLogo xstock={m} size={size} />
+        </span>
+      ))}
+      {rest > 0 && <span className="ml-1 font-mono text-[10px] text-white/40">+{rest}</span>}
     </div>
   );
 }

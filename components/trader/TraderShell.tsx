@@ -11,6 +11,8 @@ import {
   type TicketPresentation,
 } from "@/components/strategies/shared";
 import { WalletPanel } from "@/components/WalletPanel";
+
+import { StrategyFlow } from "./StrategyFlow";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { EarnPositionsView } from "@/lib/positions/use-earn-positions";
 import type { AccountBalances } from "@/lib/solana/balances";
@@ -32,10 +34,15 @@ export const TRADER_SECTIONS: readonly { id: TraderSection; label: string }[] = 
   { id: "portfolio", label: "Portfolio" },
 ];
 
-// How the shared tickets present under Trader mode: no venue names, and
-// compact (docs/trader-mode-plan.md, D13 and D14). One object, so the
-// provider value is stable across renders.
-const TRADER_TICKETS: TicketPresentation = { venueNames: false, compact: true };
+// How the shared tickets present under Trader mode: no venue names,
+// compact, and the run drawn as marks and arrows above the preview
+// (docs/trader-mode-plan.md, D13 to D15). One object, so the provider
+// value is stable across renders.
+const TRADER_TICKETS: TicketPresentation = {
+  venueNames: false,
+  compact: true,
+  flow: (inputs) => <StrategyFlow inputs={inputs} />,
+};
 
 export function TraderShell(props: Parameters<typeof TraderBody>[0]) {
   return (

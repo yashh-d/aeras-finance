@@ -275,6 +275,23 @@ no venue picker, no "Steps" row, and a short form of the Mag7X note. The
 attestation checkbox stays, because the enroll route refuses without it.
 Uniswap and BTC have no mark on disk yet and draw as letter badges.
 
+**D15. The run drawn, with the borrow as created money.** Asked for on
+2026-09-22 ("add logos for the assets and use something to show borrow /
+creation of more funds"). Every ticket opened in Trader mode draws its
+run above the preview as marks joined by arrows: the USDC put in, the
+stock bought, a dashed green "borrow" edge carrying the money it creates
+("+$58.00", or "+58% of its value" before an amount is typed), the new
+USDC, and where it goes (the Mag 7 marks, shMON, a USDC vault). Leverage
+draws the borrow first and one buy of the whole exposure; a ladder draws
+two rounds and folds the rest into a "n rounds" node with the total. The
+figures are the ticket's own, handed through a `flow` slot on the
+presentation context (`lib/strategies/ticket-flow.ts` is the contract,
+`lib/trader/flow.ts` the builder, `components/trader/StrategyFlow.tsx`
+the drawing), so Investor mode, which sets no slot, is unchanged. The
+position column carries marks too: the asset on "posted", USDC on
+"owed", the destination on "the loan is earning". `flow.test.ts` pins
+the arithmetic and the shape.
+
 ## Status (2026-09-22)
 
 Slices 0 to 2 are built and verified on a preview route against the live

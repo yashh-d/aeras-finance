@@ -4,7 +4,7 @@
 // ratio slider, the preview rows, and the step list that shows a run landing
 // one signature at a time.
 
-import { createContext, useContext, type CSSProperties } from "react";
+import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
 import { Check, Loader2, X } from "lucide-react";
 
 import { AmountField } from "@/components/AmountField";
@@ -14,6 +14,7 @@ import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
 import { INSET_PANEL } from "@/lib/ui/surface";
 import type { StrategyRun } from "@/lib/strategies/run";
 import { leverageForRatio } from "@/lib/strategies/math";
+import type { TicketFlowInputs } from "@/lib/strategies/ticket-flow";
 
 // How a ticket presents itself. Investor mode is the default: copy names the
 // lending venue ("borrow USDC on Jupiter Lend") and every row shows. Trader
@@ -25,6 +26,10 @@ import { leverageForRatio } from "@/lib/strategies/math";
 export interface TicketPresentation {
   venueNames: boolean;
   compact: boolean;
+  // A surface that wants the run drawn rather than listed fills this with a
+  // renderer; the ticket calls it above its preview with what it is about
+  // to do (lib/strategies/ticket-flow.ts). Unset in Investor mode.
+  flow?: (inputs: TicketFlowInputs) => ReactNode;
 }
 
 export const TicketPresentationContext = createContext<TicketPresentation>({
@@ -38,6 +43,10 @@ export function useVenueNames(): boolean {
 
 export function useCompactTicket(): boolean {
   return useContext(TicketPresentationContext).compact;
+}
+
+export function useTicketFlow(): TicketPresentation["flow"] {
+  return useContext(TicketPresentationContext).flow;
 }
 
 export function fmtPct(decimal: number | null | undefined, digits = 2): string {
