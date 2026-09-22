@@ -13,14 +13,23 @@
 // deposit from the wallet's Solana USDC through Trustware, and signs on the
 // pool's chain with the embedded EVM wallet. See docs/uniswap-lp-plan.md.
 
-import { useState } from "react";
-import { formatUnits } from "viem";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { formatUnits, parseUnits } from "viem";
 
 import { AssetLogo, VenueMark } from "@/components/AssetLogo";
+import { USDC_DECIMALS } from "@/lib/jupiter/constants";
+import type { EvmSigner, MorphoTxProgress } from "@/lib/morpho/deposit";
 import { GLASS_SURFACE } from "@/lib/ui/surface";
 import { VENUE_LOGOS } from "@/lib/tokens/logos";
-import { BAND_BPS } from "@/lib/uniswap/constants";
-import type { UniswapPoolMetric, UniswapPositionView } from "@/lib/uniswap/client";
+import { BAND_BPS, MIN_DEPOSIT_USDC_ATOMIC } from "@/lib/uniswap/constants";
+import type { UniswapPoolMetric, UniswapPositionView, WalletBalances } from "@/lib/uniswap/client";
+import {
+  depositFromSolana,
+  gasFloorWei,
+  maxDepositUsdcAtomic,
+  planDeposit,
+  type DepositPlan,
+} from "@/lib/uniswap/fund";
 import { bandTicks, getSqrtRatioAtTick, priceToken1PerToken0 } from "@/lib/uniswap/math";
 import {
   POOL_GROUP_LABELS,
@@ -30,9 +39,11 @@ import {
   isDepositable,
   quoteToken,
   type PoolGroup,
+  type PoolToken,
   type UniswapPool,
 } from "@/lib/uniswap/pools";
 import { useUniswapEarn, type UniswapEarn } from "@/lib/uniswap/use-uniswap";
+import { claimFees, moveTokenToSolana, reopenPosition, withdrawPosition } from "@/lib/uniswap/withdraw";
 
 const GROUP_ORDER: PoolGroup[] = ["stocks", "monad", "ethereum", "base"];
 
@@ -297,9 +308,11 @@ function PoolDetail({
       ? `${fmtPrice(band.lower)} to ${fmtPrice(band.upper)} ${quote.symbol}`
       : `${fmtPrice(band.lower)} to ${fmtPrice(band.upper)} ${pool.token1.symbol} per ${pool.token0.symbol}`
     : "—";
-  void earn;
-  void solanaUsdcAtomic;
-  void onSettled;
+  const signer: EvmSigner | null = earn.evm.address
+    ? { address: earn.evm.address, switchChain: earn.evm.switchChain, getProvider: earn.evm.getProvider }
+    : null;
+  const prices = earn.positions?.prices ?? earn.pools?.prices ?? {};
+  const balances = earn.positions?.balances[pool.chainId] ?? null;
 
   return (
     <div className="space-y-4 pb-4 pt-1">
@@ -322,7 +335,11 @@ function PoolDetail({
         <div className="space-y-2">
           <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">Your positions</div>
           {positions.map((p) => (
-            <PositionBlock key={p.key} pool={pool} position={p} />
+            <PositionBlock key={p.key} pool={pool} position={p}>
+              {signer && (
+                <PositionActions pool={pool} position={p} signer={signer} prices={prices} onSettled={onSettled} />
+              )}
+            </PositionBlock>
           ))}
         </div>
       )}
@@ -332,6 +349,384 @@ function PoolDetail({
           No route delivers {pool.token0.source === "none" ? pool.token0.symbol : pool.token1.symbol} to {chain.label} today, so deposits into this pool are not offered. Positions here can still be claimed and withdrawn.
         </p>
       )}
+
+      {!signer || !earn.solanaSigner ? (
+        <p className="text-[11px] text-white/50">Waiting for the embedded wallets.</p>
+      ) : (
+        <>
+          {isDepositable(pool) && (
+            <DepositForm
+              pool={pool}
+              signer={signer}
+              solana={earn.solanaSigner}
+              solanaUsdcAtomic={solanaUsdcAtomic}
+              balances={balances}
+              prices={prices}
+              onSettled={onSettled}
+            />
+          )}
+          <MoveHome pool={pool} signer={signer} solanaAddress={earn.solanaSigner.address} balances={balances} prices={prices} onSettled={onSettled} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── shared form state ───────────────────────────────────────────────────────
+
+type FormState =
+  | { kind: "idle" }
+  | { kind: "busy"; message: string; txHash?: string }
+  | { kind: "done"; message: string; txHash?: string }
+  | { kind: "error"; message: string };
+
+const INPUT_CLASS =
+  "block w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2.5 pr-20 font-mono text-sm tabular-nums text-white placeholder:text-white/30 focus:border-aeras-blue focus:outline-none focus:ring-2 focus:ring-aeras-blue-soft";
+const BUTTON_CLASS =
+  "rounded-xl bg-aeras-blue px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-50";
+const SMALL_BUTTON_CLASS =
+  "rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-[11px] font-medium text-white/80 transition-colors hover:border-white/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-40";
+
+function readableError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/user rejected|denied|cancelled/i.test(msg)) return "The signature was declined. Nothing moved.";
+  return msg.length > 240 ? `${msg.slice(0, 240)}…` : msg;
+}
+
+function StateLine({ state, chainId }: { state: FormState; chainId: UniswapPool["chainId"] }) {
+  const chain = UNISWAP_CHAINS[chainId];
+  if (state.kind === "idle") return null;
+  const tone = state.kind === "error" ? "text-aeras-negative" : state.kind === "done" ? "text-aeras-positive" : "text-white/60";
+  const txHash = "txHash" in state ? state.txHash : undefined;
+  return (
+    <p className={`text-[11px] ${tone}`}>
+      {state.message}
+      {txHash && (
+        <>
+          {" "}
+          <a href={`${chain.explorerTxBase}${txHash}`} target="_blank" rel="noreferrer" className="underline-offset-2 hover:underline">
+            View transaction
+          </a>
+        </>
+      )}
+    </p>
+  );
+}
+
+function progressToState(p: MorphoTxProgress): FormState {
+  return p.stage === "done" ? { kind: "done", message: p.message, txHash: p.txHash } : { kind: "busy", message: p.message, txHash: p.txHash };
+}
+
+// ── deposit ─────────────────────────────────────────────────────────────────
+
+function DepositForm({
+  pool,
+  signer,
+  solana,
+  solanaUsdcAtomic,
+  balances,
+  prices,
+  onSettled,
+}: {
+  pool: UniswapPool;
+  signer: EvmSigner;
+  solana: { address: string; signAndSendBase64: (tx: string) => Promise<string> };
+  solanaUsdcAtomic: string;
+  balances: WalletBalances | null;
+  prices: Record<string, number>;
+  onSettled: () => Promise<void>;
+}) {
+  const [input, setInput] = useState("");
+  const [state, setState] = useState<FormState>({ kind: "idle" });
+  const [plan, setPlan] = useState<DepositPlan | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const chain = UNISWAP_CHAINS[pool.chainId];
+  const maxAtomic = BigInt(maxDepositUsdcAtomic(solanaUsdcAtomic));
+  const amountAtomic = useMemo(() => {
+    try {
+      return input ? parseUnits(input, USDC_DECIMALS) : 0n;
+    } catch {
+      return 0n;
+    }
+  }, [input]);
+  const busy = state.kind === "busy";
+
+  // Price the legs as the amount settles, so the fees and the gas top-up
+  // are on screen before the button is pressed.
+  useEffect(() => {
+    if (amountAtomic < MIN_DEPOSIT_USDC_ATOMIC || busy) {
+      const clear = setTimeout(() => setPlan(null), 0);
+      return () => clearTimeout(clear);
+    }
+    let cancelled = false;
+    const id = setTimeout(async () => {
+      setPlanning(true);
+      try {
+        const p = await planDeposit({
+          pool,
+          usdcAtomic: amountAtomic,
+          balances,
+          prices,
+          solanaUsdcAtomic,
+          solanaAddress: solana.address,
+          evmAddress: signer.address,
+        });
+        if (!cancelled) setPlan(p);
+      } catch (err) {
+        if (!cancelled) setPlan({ kind: "blocked", reason: readableError(err) });
+      } finally {
+        if (!cancelled) setPlanning(false);
+      }
+    }, 600);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [amountAtomic, pool, balances, prices, solanaUsdcAtomic, solana.address, signer.address, busy]);
+
+  async function submit() {
+    setState({ kind: "busy", message: "Starting." });
+    try {
+      const result = await depositFromSolana({
+        pool,
+        usdcAtomic: amountAtomic,
+        solanaUsdcAtomic,
+        prices,
+        signer,
+        solana,
+        onProgress: (p) => setState(progressToState(p)),
+      });
+      setState({ kind: "done", message: `Position opened in ${pool.label}.`, txHash: result.txHash });
+      setInput("");
+      await onSettled();
+    } catch (err) {
+      console.error("[uniswap deposit]", err);
+      setState({ kind: "error", message: readableError(err) });
+    }
+  }
+
+  const disabled = busy || planning || amountAtomic < MIN_DEPOSIT_USDC_ATOMIC || amountAtomic > maxAtomic || plan?.kind !== "ok";
+
+  return (
+    <div className="space-y-3 rounded-xl border border-white/10 bg-white/5 p-4">
+      <div>
+        <div className="mb-1 flex items-baseline justify-between">
+          <label className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">
+            Deposit into {pool.label}
+          </label>
+          <span className="font-mono text-[11px] text-white/50">
+            {fmtAmount(solanaUsdcAtomic, USDC_DECIMALS, 2)} USDC on Solana
+            <button
+              type="button"
+              onClick={() => {
+                setInput(formatUnits(maxAtomic, USDC_DECIMALS));
+                if (state.kind !== "idle" && state.kind !== "busy") setState({ kind: "idle" });
+              }}
+              className="ml-1 text-white/70 underline-offset-2 hover:text-white hover:underline"
+            >
+              Max
+            </button>
+          </span>
+        </div>
+        <div className="relative">
+          <input
+            type="number"
+            inputMode="decimal"
+            step="any"
+            min={0}
+            value={input}
+            disabled={busy}
+            onChange={(e) => {
+              setInput(e.target.value);
+              if (state.kind !== "idle" && state.kind !== "busy") setState({ kind: "idle" });
+            }}
+            className={INPUT_CLASS}
+            style={{ "--range-progress": 0 } as CSSProperties}
+          />
+          <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-[11px] font-medium text-white/50">
+            USDC
+          </span>
+        </div>
+      </div>
+
+      {plan?.kind === "ok" && (
+        <div className="space-y-1 text-[11px] text-white/60">
+          {plan.legs.map((l, i) => (
+            <div key={i} className="flex justify-between">
+              <span>
+                {fmtAmount(l.leg.sourceAmountAtomic, USDC_DECIMALS, 2)} USDC → {l.token ? l.token.symbol : `${chain.nativeSymbol} for gas`} on {chain.label}
+              </span>
+              <span className="font-mono tabular-nums">
+                {l.token ? `≥ ${fmtAmount(l.leg.toAmountMinAtomic, l.token.decimals, l.token.decimals > 8 ? 5 : 6)} ${l.token.symbol}` : "one-time"}
+              </span>
+            </div>
+          ))}
+          {plan.swap && (
+            <div className="flex justify-between">
+              <span>Then swap half the {plan.swap.from.symbol} for {plan.swap.to.symbol} on {chain.label}</span>
+            </div>
+          )}
+          {(plan.counted[0] > 0n || plan.counted[1] > 0n) && (
+            <div>
+              Uses {plan.counted[0] > 0n ? `${fmtAmount(plan.counted[0], pool.token0.decimals)} ${pool.token0.symbol}` : ""}
+              {plan.counted[0] > 0n && plan.counted[1] > 0n ? " and " : ""}
+              {plan.counted[1] > 0n ? `${fmtAmount(plan.counted[1], pool.token1.decimals)} ${pool.token1.symbol}` : ""} already in the wallet.
+            </div>
+          )}
+          <div className="flex justify-between">
+            <span>Bridge fees</span>
+            <span className="font-mono tabular-nums">{plan.totalFeesUsd == null ? "—" : fmtUsd(plan.totalFeesUsd, 3)}</span>
+          </div>
+          <div>Range ±{(pool.bandBps ?? BAND_BPS) / 100}% around the price at the mint; keeps {UNISWAP_CHAINS[pool.chainId].nativeSymbol} back for gas.</div>
+          {plan.warn && <div className="text-aeras-warning">{plan.warn}</div>}
+        </div>
+      )}
+      {plan?.kind === "blocked" && <p className="text-[11px] text-aeras-warning">{plan.reason}</p>}
+      {planning && <p className="text-[11px] text-white/40">Pricing the legs.</p>}
+
+      <button type="button" onClick={submit} disabled={disabled} className={`${BUTTON_CLASS} w-full`}>
+        {busy ? state.message : "Deposit"}
+      </button>
+      <StateLine state={state} chainId={pool.chainId} />
+    </div>
+  );
+}
+
+// ── position actions ────────────────────────────────────────────────────────
+
+function PositionActions({
+  pool,
+  position,
+  signer,
+  prices,
+  onSettled,
+}: {
+  pool: UniswapPool;
+  position: UniswapPositionView;
+  signer: EvmSigner;
+  prices: Record<string, number>;
+  onSettled: () => Promise<void>;
+}) {
+  const [state, setState] = useState<FormState>({ kind: "idle" });
+  const busy = state.kind === "busy";
+  const canClaim = position.feesUsd != null ? position.feesUsd >= 0.01 : BigInt(position.fees0) > 0n || BigInt(position.fees1) > 0n;
+
+  async function run(work: () => Promise<unknown>, doneMessage: string) {
+    setState({ kind: "busy", message: "Starting." });
+    try {
+      const result = await work();
+      const txHash = typeof result === "string" ? result : (result as { txHash?: string })?.txHash;
+      setState({ kind: "done", message: doneMessage, txHash });
+      await onSettled();
+    } catch (err) {
+      console.error("[uniswap position action]", err);
+      setState({ kind: "error", message: readableError(err) });
+    }
+  }
+  const report = (p: MorphoTxProgress) => setState(progressToState(p));
+
+  return (
+    <div className="mt-2 space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={busy || !canClaim}
+          className={SMALL_BUTTON_CLASS}
+          onClick={() => run(() => claimFees({ pool, position, signer, onProgress: report }), "Fees claimed into your wallet.")}
+        >
+          Claim fees
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          className={SMALL_BUTTON_CLASS}
+          onClick={() => run(() => withdrawPosition({ pool, position, signer, onProgress: report }), "Withdrawn into your wallet. Move to Solana below.")}
+        >
+          Withdraw
+        </button>
+        {!position.inRange && (
+          <button
+            type="button"
+            disabled={busy}
+            className={SMALL_BUTTON_CLASS}
+            onClick={() => run(() => reopenPosition({ pool, position, signer, prices, onProgress: report }), "Reopened around the current price.")}
+          >
+            Reopen around the current price
+          </button>
+        )}
+      </div>
+      <StateLine state={state} chainId={pool.chainId} />
+    </div>
+  );
+}
+
+// ── the way home ────────────────────────────────────────────────────────────
+
+function MoveHome({
+  pool,
+  signer,
+  solanaAddress,
+  balances,
+  prices,
+  onSettled,
+}: {
+  pool: UniswapPool;
+  signer: EvmSigner;
+  solanaAddress: string;
+  balances: WalletBalances | null;
+  prices: Record<string, number>;
+  onSettled: () => Promise<void>;
+}) {
+  const [state, setState] = useState<FormState>({ kind: "idle" });
+  const chain = UNISWAP_CHAINS[pool.chainId];
+  const tokens: PoolToken[] = [pool.token0, pool.token1];
+  if (!tokens.some((t) => t.address.toLowerCase() === chain.dollar.address.toLowerCase())) tokens.push(chain.dollar);
+  const rows = tokens
+    .map((t) => {
+      const native = Boolean(t.native) || t.address.toLowerCase() === "0x0000000000000000000000000000000000000000";
+      let atomic = BigInt((native ? balances?.native : balances?.[t.address.toLowerCase()]) ?? "0");
+      if (native) atomic = atomic > gasFloorWei(pool.chainId) ? atomic - gasFloorWei(pool.chainId) : 0n;
+      const usd = (Number(formatUnits(atomic, t.decimals)) || 0) * (prices[`${pool.chainId}:${t.address.toLowerCase()}`] ?? 0);
+      return { t, atomic, usd };
+    })
+    .filter((r) => r.atomic > 0n && r.usd >= 0.5);
+  if (rows.length === 0) return null;
+  const busy = state.kind === "busy";
+
+  async function move(t: PoolToken, atomic: bigint) {
+    setState({ kind: "busy", message: `Moving ${t.symbol} to Solana.` });
+    try {
+      await moveTokenToSolana({
+        chainId: pool.chainId,
+        token: t,
+        amountAtomic: atomic,
+        balances,
+        evm: signer,
+        solanaAddress,
+        onProgress: (p) => setState(progressToState(p)),
+      });
+      setState({ kind: "done", message: `${t.symbol} arrived on Solana as USDC.` });
+      await onSettled();
+    } catch (err) {
+      console.error("[uniswap move home]", err);
+      setState({ kind: "error", message: readableError(err) });
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded-xl border border-white/10 bg-white/5 p-3">
+      <div className="text-[10px] font-medium uppercase tracking-[0.12em] text-white/50">In your {chain.label} wallet</div>
+      {rows.map(({ t, atomic, usd }) => (
+        <div key={t.address} className="flex items-center justify-between gap-2 text-[11px] text-white/70">
+          <span>
+            {fmtAmount(atomic, t.decimals, t.decimals > 8 ? 5 : 6)} {t.symbol} ({fmtUsd(usd)})
+          </span>
+          <button type="button" disabled={busy} className={SMALL_BUTTON_CLASS} onClick={() => move(t, atomic)}>
+            Move to Solana
+          </button>
+        </div>
+      ))}
+      <StateLine state={state} chainId={pool.chainId} />
     </div>
   );
 }
@@ -346,7 +741,15 @@ function Stat({ label, value, hint }: { label: string; value: string; hint?: Rea
   );
 }
 
-export function PositionBlock({ pool, position }: { pool: UniswapPool; position: UniswapPositionView }) {
+export function PositionBlock({
+  pool,
+  position,
+  children,
+}: {
+  pool: UniswapPool;
+  position: UniswapPositionView;
+  children?: React.ReactNode;
+}) {
   const chain = UNISWAP_CHAINS[pool.chainId];
   const base = baseToken(pool);
   const quote = quoteToken(pool);
@@ -391,6 +794,7 @@ export function PositionBlock({ pool, position }: { pool: UniswapPool; position:
           )}
         </div>
       </div>
+      {children}
     </div>
   );
 }

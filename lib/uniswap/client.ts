@@ -32,6 +32,49 @@ export async function fetchUniswapPositions(): Promise<UniswapPositionsPayload> 
   return body;
 }
 
+// One Liquidity Provisioning API operation through our proxy, which pins the
+// wallet and the pool and returns the transaction(s) to sign.
+export type LpProxyOp = "check_approval" | "create" | "decrease" | "claim_fees";
+
+export interface LpProxyTransaction {
+  to: string;
+  from?: string;
+  data: string;
+  value?: string;
+  chainId?: number;
+  gasLimit?: string;
+  maxFeePerGas?: string;
+  maxPriorityFeePerGas?: string;
+  gasPrice?: string;
+}
+
+export interface LpProxyResponse {
+  op: LpProxyOp;
+  transaction: LpProxyTransaction | null;
+  approvals: LpProxyTransaction[];
+  token0?: { tokenAddress: string; amount: string };
+  token1?: { tokenAddress: string; amount: string };
+  tickLower?: number;
+  tickUpper?: number;
+}
+
+export async function callLpProxy(
+  op: LpProxyOp,
+  chainId: UniswapChainId,
+  poolId: string,
+  params: Record<string, unknown>,
+): Promise<LpProxyResponse> {
+  const res = await fetch("/api/uniswap/lp", {
+    method: "POST",
+    cache: "no-store",
+    headers: { "content-type": "application/json", ...(await privyAuthHeaders()) },
+    body: JSON.stringify({ op, chainId, poolId, params }),
+  });
+  const body = (await res.json()) as LpProxyResponse & { error?: string };
+  if (!res.ok) throw new Error(body.error ?? `Uniswap transaction build failed: ${res.status}`);
+  return body;
+}
+
 // Record the position a mint created. Resolves false while the transaction
 // is still pending, so a caller can retry; throws when the chain says the
 // mint failed or minted nothing for this wallet.

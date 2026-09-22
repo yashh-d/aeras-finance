@@ -18,6 +18,7 @@ import {
   type UniswapPoolsPayload,
   type UniswapPositionsPayload,
 } from "./client";
+import { reconcilePendingMints } from "./deposit";
 
 const POLL_MS = 60_000;
 
@@ -47,7 +48,18 @@ export function useUniswapEarn(walletAddress: string | undefined): UniswapEarn {
   );
 
   const evmAddress = evm.address;
+  // A mint whose record call failed is retried from its stored hash once
+  // per wallet per session, before the first positions read (D8).
+  const reconciled = useRef<string | null>(null);
   const refresh = useCallback(async () => {
+    if (evmAddress && reconciled.current !== evmAddress) {
+      reconciled.current = evmAddress;
+      try {
+        await reconcilePendingMints(evmAddress);
+      } catch (err) {
+        console.error("[uniswap reconcile]", err);
+      }
+    }
     const [p, q] = await Promise.allSettled([
       fetchUniswapPools(),
       evmAddress ? fetchUniswapPositions() : Promise.resolve(null),
