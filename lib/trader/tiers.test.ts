@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import type { BorrowRoute } from "@/lib/borrow/route";
 import { maxBorrowRatio } from "@/lib/strategies/math";
-import type { StrategyRates, UsdcEarnOption } from "@/lib/strategies/rates";
+import { uniswapOption, type StrategyRates, type UsdcEarnOption } from "@/lib/strategies/rates";
 import { xstockBySymbol } from "@/lib/jupiter/xstocks";
+import { uniswapPoolById } from "@/lib/uniswap/pools";
 
 import { bestTier, EARN_TIERS, tierState } from "./tiers";
 
@@ -34,6 +35,10 @@ const shmon: UsdcEarnOption = {
   monDenominated: true,
 };
 const morpho: UsdcEarnOption = { venue: "morpho", label: "Hyperithm on Monad", apy: 0.085 };
+const uniswap: UsdcEarnOption = uniswapOption(
+  uniswapPoolById(4663, "0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3")!,
+  0.14,
+);
 
 const [portfolio, staking, pools] = EARN_TIERS;
 
@@ -64,11 +69,26 @@ describe("tiers", () => {
       kind: "unavailable",
       reason: "Rate unavailable right now",
     });
+    expect(tierState(pools, row, [glider, shmon])).toEqual({
+      kind: "unavailable",
+      reason: "No pool has a measured fee rate right now",
+    });
   });
 
-  it("marks a tier with nothing built as planned", () => {
-    const s = tierState(pools, row, [glider, shmon, morpho]);
-    expect(s.kind).toBe("planned");
+  it("prices the pools tier from the Uniswap venue", () => {
+    const s = tierState(pools, row, [glider, shmon, uniswap]);
+    expect(s.kind).toBe("ready");
+    if (s.kind !== "ready") return;
+    expect(s.option.uniswapPool?.label).toBe("USDG / NVDA");
+    // ratio * (fees - borrow): 0.58 * (0.14 - 0.05)
+    expect(s.net).toBeCloseTo(maxBorrowRatio(route) * 0.09, 6);
+  });
+
+  it("keeps the unbuilt staking venues out of the tier's pricing", () => {
+    // ETH and BTC staking are named in the tier and have no venue; the
+    // tier still prices off shMON alone rather than reading as planned.
+    expect(staking.venues.filter((v) => v.status === "planned")).toHaveLength(2);
+    expect(tierState(staking, row, [shmon]).kind).toBe("ready");
   });
 
   it("ignores venues that are not in any tier", () => {

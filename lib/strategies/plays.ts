@@ -16,14 +16,25 @@
 
 import { borrowRouteFor } from "@/lib/borrow/route";
 import { xstockBySymbol, type XStock } from "@/lib/jupiter/xstocks";
+import { isDepositable, UNISWAP_POOLS, type UniswapPool } from "@/lib/uniswap/pools";
 
 import type { EarnVenue, StrategyRatesState } from "./rates";
 import type { StrategyKind } from "./runs-client";
 
-export type PlayTag = "Carry" | "Leverage" | "Conviction" | "Diversify" | "Crypto" | "Rotation";
+export type PlayTag =
+  | "Carry"
+  | "Leverage"
+  | "Conviction"
+  | "Diversify"
+  | "Crypto"
+  | "Rotation"
+  | "Fees";
 
 export type PlayPreset =
-  | { kind: "earn"; venue?: EarnVenue; ratio?: number }
+  // `poolId` names a Uniswap pool from lib/uniswap/pools.ts, for a play
+  // whose venue is "uniswap". Without one the venue's best-paying pool is
+  // used, which is what the Buy + Earn tier does.
+  | { kind: "earn"; venue?: EarnVenue; ratio?: number; poolId?: string }
   | { kind: "leverage"; leverage: number | "max" }
   | { kind: "ladder"; nextSymbol?: string; ratio?: number };
 
@@ -149,6 +160,40 @@ export const PLAYS: readonly Play[] = [
     risk: "MON falling. The stake may then not cover the loan, and the instant exit charges a fee.",
   },
   {
+    id: "nvda-lp",
+    name: "Own Nvidia, charge the traders",
+    thesis:
+      "Hold NVDAx and lend the loan to the market that trades it. The Uniswap pool pays a share of every swap between NVDA and dollars.",
+    tag: "Fees",
+    symbol: "NVDAx",
+    preset: { kind: "earn", venue: "uniswap", poolId: "0xd4EB21209C4D6093f80B5b84f5C45cc093EA14a3" },
+    steps: [
+      "Buy NVDAx with your USDC",
+      "Post it and borrow USDC",
+      "Put the loan into the NVDA pool as both of its sides",
+    ],
+    risk: "The pool sells whichever side rises, so it can be worth less than the loan even while fees accrue.",
+  },
+  {
+    id: "spy-lp",
+    name: "The index pays its own rent",
+    thesis:
+      "SPYx is the collateral and the loan becomes liquidity in the SPY pool. Every trade through it pays a fee, and the stock is still yours.",
+    tag: "Fees",
+    symbol: "SPYx",
+    preset: {
+      kind: "earn",
+      venue: "uniswap",
+      poolId: "0xfe2a80bb5618fd14984b92ca6d45bf5ba67443ddb1435e28b2e48df2fc1526cd",
+    },
+    steps: [
+      "Buy SPYx with your USDC",
+      "Post it and borrow USDC",
+      "Put the loan into the SPY pool as both of its sides",
+    ],
+    risk: "Two helpings of the same index, one of them being rebalanced against you as the price moves.",
+  },
+  {
     id: "qqq-mag7",
     name: "Mag 7, paid to wait",
     thesis:
@@ -171,14 +216,28 @@ export interface ResolvedPlay {
   xstock: XStock;
   // The asset the ladder buys next, when the play names one.
   next: XStock | null;
+  // The Uniswap pool the loan goes into, when the play names one.
+  pool: UniswapPool | null;
   // Why the play cannot run right now, or null when it can.
   blocked: string | null;
+}
+
+// The pool a play names, by id. Case-insensitive, because a v3 pool id is a
+// checksummed address and a v4 one is a 32-byte hash.
+export function playPool(play: Play): UniswapPool | null {
+  if (play.preset.kind !== "earn" || !play.preset.poolId) return null;
+  const key = play.preset.poolId.toLowerCase();
+  return UNISWAP_POOLS.find((p) => p.id.toLowerCase() === key) ?? null;
 }
 
 // Every catalog fact a play depends on, checked at load. A play naming an
 // asset the catalog does not carry, or one with no borrow market, is a
 // mistake in this file, and plays.test.ts fails on it.
-export function resolvePlayStatic(play: Play): { xstock: XStock; next: XStock | null } {
+export function resolvePlayStatic(play: Play): {
+  xstock: XStock;
+  next: XStock | null;
+  pool: UniswapPool | null;
+} {
   const xstock = xstockBySymbol(play.symbol);
   if (!xstock) throw new Error(`Play ${play.id}: no catalog asset ${play.symbol}`);
   if (!borrowRouteFor(xstock.mint)) {
@@ -195,29 +254,50 @@ export function resolvePlayStatic(play: Play): { xstock: XStock; next: XStock | 
       throw new Error(`Play ${play.id}: ${play.symbol} has no flashloan venue for leverage`);
     }
   }
-  return { xstock, next };
+  const pool = playPool(play);
+  if (play.preset.kind === "earn" && play.preset.poolId) {
+    if (!pool) throw new Error(`Play ${play.id}: no Uniswap pool ${play.preset.poolId}`);
+    if (!isDepositable(pool)) {
+      throw new Error(`Play ${play.id}: the ${pool.label} pool cannot be deposited into`);
+    }
+    if (play.preset.venue !== "uniswap") {
+      throw new Error(`Play ${play.id}: names a pool but its venue is not uniswap`);
+    }
+  }
+  return { xstock, next, pool };
 }
 
 // The play against what is live. Blocked when the market or the venue it
 // needs is not answering, with the reason for the card.
 export function resolvePlay(play: Play, rates: StrategyRatesState): ResolvedPlay {
-  const { xstock, next } = resolvePlayStatic(play);
+  const { xstock, next, pool } = resolvePlayStatic(play);
   const row = rates.rows.find((r) => r.xstock.mint === xstock.mint) ?? null;
   let blocked: string | null = null;
   if (!rates.loading && row?.borrowApr == null) {
     blocked = `${xstock.symbol} market unavailable`;
   } else if (play.preset.kind === "earn" && play.preset.venue && !rates.loading) {
     const venue = play.preset.venue;
-    if (!rates.earnOptions.some((o) => o.venue === venue)) {
+    // A play that names a pool needs that pool priced, not just the venue:
+    // the venue's entry is whichever pool pays most, which is usually a
+    // different one.
+    const ok =
+      pool != null
+        ? rates.uniswapOptions.some(
+            (o) => o.uniswapPool?.id.toLowerCase() === pool.id.toLowerCase(),
+          )
+        : rates.earnOptions.some((o) => o.venue === venue);
+    if (!ok) {
       blocked =
         venue === "glider"
           ? "Bitwise boost has ended"
           : venue === "shmonad"
             ? "shMON rate unavailable"
-            : "Vault rate unavailable";
+            : venue === "uniswap"
+              ? `No fee rate for the ${pool?.label ?? "pool"} yet`
+              : "Vault rate unavailable";
     }
   }
-  return { play, kind: play.preset.kind, xstock, next, blocked };
+  return { play, kind: play.preset.kind, xstock, next, pool, blocked };
 }
 
 export function playById(id: string): Play | undefined {

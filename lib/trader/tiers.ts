@@ -20,7 +20,7 @@ export type TierVenue =
   | { status: "live"; venue: EarnVenue; label: string }
   | {
       status: "planned";
-      venue: "eth-staking" | "btc-staking" | "uniswap-lp";
+      venue: "eth-staking" | "btc-staking";
       label: string;
     };
 
@@ -66,13 +66,11 @@ export const EARN_TIERS: readonly EarnTier[] = [
     id: "pools",
     rank: 3,
     name: "Liquidity pools",
-    holds: "A Uniswap stock pool position",
+    holds: "A Uniswap position",
     summary:
-      "The loan provides liquidity to a tokenized stock pool and earns its trading fees.",
+      "The loan becomes both sides of a Uniswap pair and earns the pool's trading fees.",
     risk: "Impermanent loss: the pool sells the side that rises. Fees may not cover it.",
-    venues: [
-      { status: "planned", venue: "uniswap-lp", label: "Uniswap stock pools on Robinhood Chain" },
-    ],
+    venues: [{ status: "live", venue: "uniswap", label: "Uniswap pools" }],
   },
 ];
 
@@ -120,7 +118,12 @@ export function tierState(
   if (live.length > 0) {
     return {
       kind: "unavailable",
-      reason: live[0].venue === "glider" ? "Bitwise boost has ended" : "Rate unavailable right now",
+      reason:
+        live[0].venue === "glider"
+          ? "Bitwise boost has ended"
+          : live[0].venue === "uniswap"
+            ? "No pool has a measured fee rate right now"
+            : "Rate unavailable right now",
     };
   }
   return { kind: "planned", label: tier.venues[0].label };

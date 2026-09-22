@@ -134,6 +134,72 @@ export async function reopenPosition(args: {
   return balanceAndMint({ pool, signer: args.signer, use, prices: args.prices, onProgress: args.onProgress, signal: args.signal });
 }
 
+// The whole way out, for a caller that wants the money back on Solana: take
+// the position's liquidity and fees into the wallet, then send both sides
+// home as USDC. Used by the Buy + Earn close path, where the USDC has to be
+// on Solana to repay the loan (lib/strategies/execute.ts).
+//
+// Both sides are sent, not just the dollar one: a range that has moved is
+// mostly the volatile token, and leaving it on the chain would strand the
+// larger half. A side whose leg fails does not fail the exit; what did
+// arrive still repays what it can, and the rest stays in the wallet with a
+// route home on the venue's own card.
+export async function exitPositionToSolana(args: {
+  pool: UniswapPool;
+  position: UniswapPositionView;
+  evm: EvmSigner;
+  solanaAddress: string;
+  onProgress?: Report;
+  signal?: AbortSignal;
+}): Promise<{ txHash: string; deliveredAtomic: bigint }> {
+  const { pool } = args;
+  const chain = UNISWAP_CHAINS[pool.chainId];
+  const before = await readBalances(pool.chainId);
+  const txHash = await withdrawPosition({
+    pool,
+    position: args.position,
+    signer: args.evm,
+    onProgress: args.onProgress,
+  });
+  const after = await readBalances(pool.chainId);
+
+  let delivered = 0n;
+  for (const token of [pool.token0, pool.token1]) {
+    // What this exit put in the wallet, not the whole balance: an unrelated
+    // holding on the same chain is not this position's to send home.
+    let amount = heldOf(after, token) - heldOf(before, token);
+    // The gas token keeps its reserve back, or the return leg cannot be
+    // signed at all.
+    if (isNative(token)) amount -= gasFloorWei(pool.chainId);
+    if (amount <= 0n) continue;
+    try {
+      args.onProgress?.({
+        stage: "funding",
+        message: `Sending ${token.symbol} home from ${chain.label}.`,
+      });
+      const r = await moveTokenToSolana({
+        chainId: pool.chainId,
+        token,
+        amountAtomic: amount,
+        balances: after,
+        evm: args.evm,
+        solanaAddress: args.solanaAddress,
+        onProgress: args.onProgress,
+        signal: args.signal,
+      });
+      delivered += BigInt(r.deliveredAtomic ?? "0");
+    } catch (err) {
+      args.onProgress?.({
+        stage: "funding",
+        message: `${token.symbol} could not be sent home: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+    }
+  }
+  return { txHash, deliveredAtomic: delivered };
+}
+
 // Send a pool token from the EVM wallet home to Solana as USDC.
 export async function moveTokenToSolana(args: {
   chainId: UniswapChainId;

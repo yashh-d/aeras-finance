@@ -306,6 +306,47 @@ USDC: Morpho with the Hyperithm mark beside it, Jupiter Lend and Kamino
 as their own marks, so "the Morpho sign" is what a vault deposit shows
 and the curator is still there, as a mark.
 
+**D17. Uniswap liquidity pools are a live destination.** The venue landed
+on 2026-09-22 (`lib/uniswap`, `docs/uniswap-lp-plan.md`) and is now wired
+into all three Trader surfaces, which supersedes that plan's note that it
+would never be a Buy + Earn option.
+
+- **Rates.** `EarnVenue` gains `"uniswap"`. `useStrategyRates` prices every
+  *depositable* pool at its own fee APR (`feeApr7d ?? feeApr24h`) into
+  `uniswapOptions`, best first, and puts the best-paying one in
+  `earnOptions` as the venue's entry, since those are keyed by venue. A
+  pool with no measured volume has no rate and is dropped, never shown as
+  zero. `pickDefaultEarn` excludes it: a pool's fee rate is not a spread
+  against a dollar loan, for the same reason a MON stake is not.
+- **Tier 3** of Buy + Earn is now live on it, and `bestTier` will pick it
+  when its fees beat the other two, which on the thin Robinhood Chain
+  pools they usually do by a wide margin.
+- **Two plays**, tagged `Fees`: "Own Nvidia, charge the traders"
+  (NVDA/USDG) and "The index pays its own rent" (SPY/USDG). A play may
+  name a `poolId`, which resolves against `lib/uniswap/pools.ts` and must
+  be depositable; `resolvePlay` blocks it when *that* pool has no rate,
+  not merely when the venue has one.
+- **The Earn grid** gets a second card for the venue, opening onto
+  `UniswapPoolsCard`. Its `positionKey` is a prefix, because the venue has
+  a position row per pool and the card sums them.
+- **Marks.** A pool draws as its own pair (`poolMarks`), not as the
+  Uniswap logo, because the money really is in both tokens. The flow's
+  verb for it is "pool".
+- **Execution** reuses the venue's own path: `depositFromSolana` for the
+  deposit, and a new `exitPositionToSolana` in `lib/uniswap/withdraw.ts`
+  for the close, which takes the whole position out and sends both sides
+  home as USDC. Whole positions only: a range is not a balance, so a
+  partial withdrawal cannot be sized to a repayment.
+
+**Two things this venue does not share with the others, and both are
+stated in the ticket.** Its rate is trading fees, not a deposit rate, and
+the impermanent loss taken to earn it is not netted off the headline. And
+its position is two assets, so it can be worth less than the loan while
+still earning. **The fee APRs on the thin pools are very large** (193% on
+USDG/META when first measured) and move with a week of volume against a
+small TVL; they are the venue's own measured figures, the same ones the
+Investor card shows, and nothing caps or smooths them today.
+
 ## Status (2026-09-22)
 
 Slices 0 to 2 are built and verified on a preview route against the live

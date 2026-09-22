@@ -69,9 +69,12 @@ const SORTS: readonly { id: Sort; label: string }[] = [
 ];
 
 // What a tier's loan becomes, for the strips. A live tier shows its venue's
-// marks; a planned one shows the mark of what it will hold.
+// marks, a Uniswap one the chosen pool's pair; a planned one shows the mark
+// of what it will hold.
 function tierMarks(tier: EarnTier, state: TierState): Mark[] {
-  if (state.kind === "ready") return destinationMarks(state.option.venue);
+  if (state.kind === "ready") {
+    return destinationMarks(state.option.venue, state.option.uniswapPool);
+  }
   return destinationMarks(tier.venues[0].venue);
 }
 
@@ -190,7 +193,7 @@ function AssetCard({
   const { xstock } = row;
   const best = bestTier(row, rates.earnOptions);
   const positive = change == null ? null : change >= 0;
-  const to = best ? destinationMarks(best.option.venue) : [];
+  const to = best ? destinationMarks(best.option.venue, best.option.uniswapPool) : [];
   return (
     <GridCard onClick={onOpen} muted={best != null && best.net <= 0}>
       <div className="flex items-start justify-between gap-3">

@@ -9,6 +9,7 @@ import { useMemo, useState } from "react";
 
 import { AssetLogo } from "@/components/AssetLogo";
 import { ShMonadCard } from "@/components/ShMonadCard";
+import { UniswapPoolsCard } from "@/components/UniswapPoolsCard";
 import type { EarnPositionsView } from "@/lib/positions/use-earn-positions";
 import type { AccountBalances } from "@/lib/solana/balances";
 import { EARN_VENUES, type EarnVenueCard, type EarnVenueId } from "@/lib/trader/earn-venues";
@@ -89,17 +90,30 @@ export function EarnGrid({
         <EmptyState>No venue matches that search.</EmptyState>
       ) : (
         <div className={CARD_GRID}>
-          {cards.map((v) => (
-            <VenueCard
-              key={v.id}
-              venue={v}
-              quote={quotes[v.id]}
-              loading={loading}
-              positionUsd={earn.rows.find((r) => r.key === v.positionKey)?.usd ?? null}
-              positionDetail={earn.rows.find((r) => r.key === v.positionKey)?.detail ?? null}
-              onOpen={() => setOpen(v.id)}
-            />
-          ))}
+          {cards.map((v) => {
+            // A venue can hold several positions (one per pool), so the
+            // card sums every row whose key it owns.
+            const mine = earn.rows.filter((r) => r.key.startsWith(v.positionKey));
+            return (
+              <VenueCard
+                key={v.id}
+                venue={v}
+                quote={quotes[v.id]}
+                loading={loading}
+                positionUsd={
+                  mine.length > 0 ? mine.reduce((s, r) => s + r.usd, 0) : null
+                }
+                positionDetail={
+                  mine.length === 1
+                    ? mine[0].detail
+                    : mine.length > 1
+                      ? `${mine.length} positions`
+                      : null
+                }
+                onOpen={() => setOpen(v.id)}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -144,6 +158,7 @@ function VenueCard({
         <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
           <Pill>{venue.kind}</Pill>
           {chain && <Pill logo={chain.logo}>{chain.label}</Pill>}
+          {venue.chain == null && <Pill>4 chains</Pill>}
         </div>
       </div>
 
@@ -201,12 +216,21 @@ function VenueDetail({
   balances: AccountBalances | null;
   onSettled: () => Promise<void> | void;
 }) {
+  // Each venue's own card, header and forms and disclosure, as the Investor
+  // Earn tab draws it. They carry their own position block, their deposit
+  // and withdraw forms and the way home, so the detail is the card.
   if (venue.id === "shmonad") {
-    // The whole card, header and forms and disclosure, as the Investor Earn
-    // tab draws it. It carries its own position block, its own stake and
-    // withdraw modes and the way home, so the detail is the card.
     return (
       <ShMonadCard
+        walletAddress={walletAddress}
+        solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+        onRefresh={onSettled}
+      />
+    );
+  }
+  if (venue.id === "uniswap") {
+    return (
+      <UniswapPoolsCard
         walletAddress={walletAddress}
         solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
         onRefresh={onSettled}

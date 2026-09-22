@@ -12,6 +12,8 @@
 import { useEffect, useState } from "react";
 
 import { fetchMonUsd, fetchShmonMetrics } from "@/lib/shmonad/client";
+import { fetchUniswapPools } from "@/lib/uniswap/client";
+import { isDepositable, uniswapPoolById } from "@/lib/uniswap/pools";
 
 import type { EarnVenueId } from "./earn-venues";
 
@@ -43,8 +45,35 @@ async function readShmon(): Promise<EarnVenueQuote> {
   };
 }
 
+// The venue's headline is its best-paying depositable pool, since that is
+// what a deposit can actually reach, and its size is every listed pool's
+// liquidity. A pool with no measured volume has no rate and is skipped
+// rather than counted as zero.
+async function readUniswap(): Promise<EarnVenueQuote> {
+  const payload = await fetchUniswapPools();
+  let best: number | null = null;
+  let tvl = 0;
+  let priced = 0;
+  for (const m of payload.pools) {
+    if (m.tvlUsd != null) tvl += m.tvlUsd;
+    const pool = uniswapPoolById(m.chainId, m.id);
+    if (!pool || !isDepositable(pool)) continue;
+    const apr = m.feeApr7d ?? m.feeApr24h ?? null;
+    if (apr == null || apr <= 0) continue;
+    priced += 1;
+    if (best == null || apr > best) best = apr;
+  }
+  return {
+    apy: best,
+    tvlUsd: tvl > 0 ? tvl : null,
+    tvlNative: null,
+    basis: priced > 0 ? `best of ${priced} pools` : null,
+  };
+}
+
 const READERS: Record<EarnVenueId, () => Promise<EarnVenueQuote>> = {
   shmonad: readShmon,
+  uniswap: readUniswap,
 };
 
 export function useEarnVenueQuotes(): { quotes: EarnVenueQuotes; loading: boolean } {

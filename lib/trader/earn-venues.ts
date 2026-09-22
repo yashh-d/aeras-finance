@@ -13,14 +13,16 @@ import { SHMON_SYMBOL } from "@/lib/shmonad/constants";
 import { VENUE_LOGOS } from "@/lib/tokens/logos";
 import type { WalletChain } from "@/lib/ui/chains";
 
-export type EarnVenueId = "shmonad";
+export type EarnVenueId = "shmonad" | "uniswap";
 
 export interface EarnVenueCard {
   id: EarnVenueId;
   // The card's title and the product behind it.
   name: string;
   operator: string;
-  chain: WalletChain["id"];
+  // The chain the position settles on, or null for a venue that spans
+  // several and names them on its own card.
+  chain: WalletChain["id"] | null;
   // The mark for the position token and the operator's mark.
   logo: string;
   operatorLogo: string;
@@ -33,7 +35,9 @@ export interface EarnVenueCard {
   summary: string;
   // How the position leaves, for the card's foot.
   exit: string;
-  // PositionRow.key from lib/positions/earn.ts for this venue.
+  // Prefix of the PositionRow.key values lib/positions/earn.ts gives this
+  // venue. A venue with one position matches exactly; one with a row per
+  // pool matches them all, and the card sums them.
   positionKey: string;
   // Words the search box matches on top of the name and operator.
   search: string[];
@@ -55,6 +59,24 @@ export const EARN_VENUES: readonly EarnVenueCard[] = [
     exit: "Instant with a fee, or free after about a day",
     positionKey: "earn:shmonad",
     search: ["mon", "monad", "stake", "staking", "fastlane"],
+  },
+  {
+    id: "uniswap",
+    name: "Liquidity pools",
+    operator: "Uniswap",
+    // Twelve pools across four chains; the card lists them by group.
+    chain: null,
+    logo: VENUE_LOGOS.uniswap,
+    operatorLogo: VENUE_LOGOS.uniswap,
+    put: "USDC",
+    hold: "LP",
+    kind: "Liquidity pool",
+    summary:
+      "USDC becomes both sides of a pair and earns a share of every trade through the pool.",
+    exit: "Withdraw any time; the position comes back as both tokens",
+    // Positions are one row per pool, so the grid sums them itself.
+    positionKey: "earn:uniswap:",
+    search: ["uniswap", "lp", "liquidity", "pool", "fees", "robinhood", "monad", "base", "ethereum"],
   },
 ];
 

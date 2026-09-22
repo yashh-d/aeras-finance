@@ -21,7 +21,14 @@ import {
   maxBorrowRatio,
   maxLeverageForRoute,
 } from "@/lib/strategies/math";
-import { PLAYS, resolvePlay, type Play, type PlayTag, type ResolvedPlay } from "@/lib/strategies/plays";
+import {
+  PLAYS,
+  playPool,
+  resolvePlay,
+  type Play,
+  type PlayTag,
+  type ResolvedPlay,
+} from "@/lib/strategies/plays";
 import {
   useStrategyRates,
   type StrategyRates,
@@ -57,11 +64,22 @@ const FILTERS: readonly { id: Filter; label: string }[] = [
   { id: "Diversify", label: "Diversify" },
   { id: "Crypto", label: "Crypto" },
   { id: "Rotation", label: "Rotation" },
+  { id: "Fees", label: "Fees" },
 ];
 
-// The venue a play's loan goes to, when it is an earn play.
+// The venue a play's loan goes to, when it is an earn play. A play naming a
+// Uniswap pool resolves to that pool's option, not to the venue's
+// best-paying one.
 function playOption(play: Play, rates: StrategyRatesState): UsdcEarnOption | null {
   if (play.preset.kind !== "earn") return null;
+  const pool = playPool(play);
+  if (pool) {
+    return (
+      rates.uniswapOptions.find(
+        (o) => o.uniswapPool?.id.toLowerCase() === pool.id.toLowerCase(),
+      ) ?? null
+    );
+  }
   const venue = play.preset.venue;
   return (venue ? rates.earnOptions.find((o) => o.venue === venue) : null) ?? rates.defaultEarn;
 }
@@ -74,7 +92,10 @@ function playMarks(r: ResolvedPlay, rates: StrategyRatesState): { from: Mark; to
   if (play.preset.kind === "earn") {
     const option = playOption(play, rates);
     const venue = option?.venue ?? play.preset.venue;
-    return { from, to: venue ? destinationMarks(venue) : [] };
+    // A pool draws as its pair. The play's own pool stands in before the
+    // rates land, so the marks do not change under the reader.
+    const pool = option?.uniswapPool ?? r.pool;
+    return { from, to: venue ? destinationMarks(venue, pool) : [] };
   }
   if (play.preset.kind === "leverage") {
     return { from, to: [assetMark(r.xstock, `${r.xstock.mint}-again`)] };

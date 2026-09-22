@@ -7,6 +7,7 @@
 import { MAG7X_HOLDINGS } from "@/lib/glider/constants";
 import { xstockBySymbol, type XStock } from "@/lib/jupiter/xstocks";
 import type { EarnVenue } from "@/lib/strategies/rates";
+import type { UniswapPool } from "@/lib/uniswap/pools";
 import { curatorLogo, tokenLogoBySymbol, VENUE_LOGOS } from "@/lib/tokens/logos";
 
 import type { TierVenue } from "./tiers";
@@ -37,7 +38,24 @@ export const JUPITER_MARK: Mark = { key: "jupiter", symbol: "JUP", name: "Jupite
 export const KAMINO_MARK: Mark = { key: "kamino", symbol: "KMNO", name: "Kamino", logo: VENUE_LOGOS.kamino };
 // No marks on disk for these two yet; AssetLogo draws the monogram.
 export const BTC_MARK: Mark = { key: "btc", symbol: "BTC", name: "Bitcoin" };
-export const UNISWAP_MARK: Mark = { key: "uniswap", symbol: "UNI", name: "Uniswap pool" };
+export const UNISWAP_MARK: Mark = {
+  key: "uniswap",
+  symbol: "UNI",
+  name: "Uniswap pool",
+  logo: VENUE_LOGOS.uniswap,
+};
+
+// A liquidity position is both sides of the pair, so a pool draws as its two
+// tokens rather than as one venue mark: the money is in NVDA and USDG, not
+// in "Uniswap". The pool's own tokens carry the logos.
+export function poolMarks(pool: UniswapPool): Mark[] {
+  return [pool.token0, pool.token1].map((t) => ({
+    key: `${pool.chainId}:${t.address.toLowerCase()}`,
+    symbol: t.symbol,
+    name: t.name,
+    logo: t.logo,
+  }));
+}
 
 // The eight Mag7X holdings, as the xStocks that track the same shares, so
 // they wear the catalog's logos.
@@ -50,8 +68,13 @@ export function mag7xMarks(): Mark[] {
   });
 }
 
-// What the loan becomes at a venue.
-export function destinationMarks(venue: EarnVenue | TierVenue["venue"]): Mark[] {
+// What the loan becomes at a venue. A Uniswap pool draws as its own pair
+// when the caller knows which pool; without one it falls back to the venue
+// mark, which is what a tier with no pool chosen yet shows.
+export function destinationMarks(
+  venue: EarnVenue | TierVenue["venue"],
+  pool?: UniswapPool | null,
+): Mark[] {
   switch (venue) {
     case "glider":
       return mag7xMarks();
@@ -61,13 +84,15 @@ export function destinationMarks(venue: EarnVenue | TierVenue["venue"]): Mark[] 
       return [ETH_MARK];
     case "btc-staking":
       return [BTC_MARK];
-    case "uniswap-lp":
-      return [UNISWAP_MARK];
+    case "uniswap":
+      return pool ? poolMarks(pool) : [UNISWAP_MARK];
     case "morpho":
       return [MORPHO_MARK, HYPERITHM_MARK];
     case "jupiter":
       return [JUPITER_MARK];
     case "kamino":
       return [KAMINO_MARK];
+    default:
+      return [];
   }
 }

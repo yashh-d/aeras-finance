@@ -53,6 +53,7 @@ function units(amountUsd: number | null, price: number | null, symbol: string): 
 function destinationVerb(venue: string | undefined): string {
   if (venue === "glider") return "buy";
   if (venue === "shmonad") return "stake";
+  if (venue === "uniswap") return "pool";
   return "deposit";
 }
 
@@ -68,7 +69,11 @@ export function buildFlow(f: TicketFlowInputs): FlowStep[] {
       borrow("borrow", f.borrowUsd != null ? `+${fmtUsd(f.borrowUsd)}` : null),
       node("loan", [USDC_MARK], f.borrowUsd != null ? fmtUsd(f.borrowUsd) : null),
       edge("earn", destinationVerb(option?.venue)),
-      node("dest", option ? destinationMarks(option.venue) : [], option ? fmtPct(option.apy) : null),
+      node(
+        "dest",
+        option ? destinationMarks(option.venue, option.uniswapPool) : [],
+        option ? fmtPct(option.apy) : null,
+      ),
     ];
   }
   if (f.kind === "leverage") {
