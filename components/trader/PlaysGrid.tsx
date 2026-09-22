@@ -16,9 +16,9 @@ import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { xstockBySymbol } from "@/lib/jupiter/xstocks";
 import type { AccountBalances } from "@/lib/solana/balances";
 import {
-  defaultBorrowRatio,
   earnNetApy,
   ladderProjection,
+  maxBorrowRatio,
   maxLeverageForRoute,
 } from "@/lib/strategies/math";
 import { PLAYS, resolvePlay, type Play, type PlayTag, type ResolvedPlay } from "@/lib/strategies/plays";
@@ -56,7 +56,9 @@ const FILTERS: readonly { id: Filter; label: string }[] = [
 ];
 
 // A play's headline figure: the strategy's own figure from
-// lib/strategies/math.ts, at the play's preset, on the live rates.
+// lib/strategies/math.ts, at the play's preset, on the live rates. A play
+// that names no ratio borrows at the safe maximum, as every Trader borrow
+// does (docs/trader-mode-plan.md, D11).
 interface Headline {
   label: string;
   value: string;
@@ -76,7 +78,7 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
     if (!option || borrowApr == null) {
       return { label: "Net on what you put in", value: "—", tone: "muted", sub: "reading rates" };
     }
-    const ratio = play.preset.ratio ?? defaultBorrowRatio(route);
+    const ratio = play.preset.ratio ?? maxBorrowRatio(route);
     const net = earnNetApy({
       borrowRatio: ratio,
       earnApy: option.apy,
@@ -103,7 +105,7 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
           : "one transaction",
     };
   }
-  const ratio = play.preset.ratio ?? defaultBorrowRatio(route);
+  const ratio = play.preset.ratio ?? maxBorrowRatio(route);
   const nextHasMarket = r.next ? borrowRouteFor(r.next.mint) != null : true;
   if (!nextHasMarket) {
     return {
@@ -397,7 +399,7 @@ function PlayTicket({
         earn={rates.defaultEarn}
         earnOptions={rates.earnOptions}
         initialVenue={play.preset.venue}
-        initialRatio={play.preset.ratio}
+        initialRatio={play.preset.ratio ?? maxBorrowRatio(row.route)}
       />
     );
   }
@@ -413,7 +415,7 @@ function PlayTicket({
       key={play.id}
       {...common}
       rows={rates.rows}
-      initialRatio={play.preset.ratio}
+      initialRatio={play.preset.ratio ?? maxBorrowRatio(row.route)}
       initialNextMint={next}
     />
   );

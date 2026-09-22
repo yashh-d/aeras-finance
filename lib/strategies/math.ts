@@ -31,6 +31,16 @@ export function defaultBorrowRatio(route: BorrowRoute): number {
   );
 }
 
+// The ratio Trader mode borrows at: the safe ceiling the borrow forms and the
+// ratio slider already enforce (90% of the collateral factor), floored to the
+// slider's hundredth so the card, the slider and the run agree to the digit.
+// The biggest net rate a Buy + Earn can show, and the smallest cushion: on
+// the September 2026 Jupiter numbers health lands near 1.3 and the price can
+// fall about 21 to 23% before liquidation. See docs/trader-mode-plan.md, D11.
+export function maxBorrowRatio(route: BorrowRoute): number {
+  return Math.floor(safeMaxBorrowRatio(route) * 100) / 100;
+}
+
 // Leverage reached when debt is `ratio` of the collateral value, and back.
 // exposure = equity / (1 - ratio), debt = exposure - equity.
 export function leverageForRatio(ratio: number): number {

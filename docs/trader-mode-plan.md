@@ -95,9 +95,10 @@ of `EarnPanel.tsx` and need exporting; about half a day for the pair.
 **D4. Buy + Earn cards are `useStrategyRates().rows`, one per asset.** The
 same fourteen assets the Strategies page lists, in the same order, priced by
 the same hook. Card: logo, name, symbol and venue pills, the net rate on
-equity at the default ratio (`earnNetApy` with `defaultBorrowRatio`) as the
-headline, then "Borrow x%" and "Earn y% in <venue>" under it, and "Borrow up
-to z%" from the route's collateral factor. A card whose spread is at or
+equity at the safe maximum ratio (`earnNetApy` with `maxBorrowRatio`, see
+D11) as the headline, then "Borrow x%" and "Earn y% in <venue>" under it,
+the ratio it borrows at, and "Borrow up to z%" from the route's collateral
+factor. A card whose spread is at or
 below zero stays on the grid, greyed, with both numbers, per the rule in
 `docs/buy-strategies-plan.md`: never hide the strategy, never show a rate
 without its components. A saved run on the asset badges the card "Open" or
@@ -201,6 +202,45 @@ when it lands.
 
 **D10. Feature freeze is 2026-09-25.** Slices 0 to 2 below are the freeze
 target; slice 3 is polish that can land after. Each slice is one session.
+
+**D11. Trader borrows at the safe maximum.** Asked for on 2026-09-22, after
+the build: every Buy + Earn card, every earn and ladder play, and every
+ticket opened from Trader mode sizes the loan at `maxBorrowRatio` in
+`lib/strategies/math.ts`, which is 90% of the collateral factor, the same
+ceiling the borrow forms and the ratio slider already enforce, floored to
+the slider's hundredth so the card, the slider and the run agree. That is
+the biggest net rate the position can show, and the smallest cushion: on
+the Jupiter markets health lands near 1.3 and the price can fall about 21
+to 23% before liquidation. The card states the ratio it borrows at, the
+ticket states health and the drop before signing, and the slider still
+moves. A play names a `ratio` only to borrow less on purpose. Investor
+mode keeps its half-of-CF default, per D8.
+
+**D12. Buy + Earn is three tiers, and the venue picker goes to the plays.**
+Asked for on 2026-09-22, after D11: a Buy + Earn card reads "Buy Tesla,
+earn up to Y%", and the borrowed USDC goes into one of three tiers, ranked
+in the order given, in `lib/trader/tiers.ts`: **1, Portfolio**, the
+Bitwise Mag7X basket on Base with its boost; **2, Staking**, the loan
+converted to a chain's own token and staked, MON today; **3, Liquidity
+pools**, the loan into a Uniswap stock pool for its fees. Y is the best
+tier's net rate at the safe maximum borrow (`bestTier`), and a tier with
+nothing built or nothing answering never contributes to it. The detail
+shows the three tiers priced, with each one's mechanism and risk, and the
+existing `EarnTicket` on the chosen tier with that tier's option as its
+only venue, so the five-venue picker Investor mode's ticket carries does
+not appear here: the vault destinations (Hyperithm, Jupiter Lend, Kamino)
+are plays, not Buy + Earn. A saved run's own venue is always passed through
+so its close path withdraws from the venue that holds the money.
+
+What is built into the tiers today and what is a slot: tier 1 runs
+(Glider, while the boost is live and once its live test is done); tier 2
+runs on shMON, with ETH staking and BTC staking as planned slots, since no
+ETH or BTC staking venue exists in the repo; tier 3 is a planned slot
+until the Uniswap LP venue is built (D9), and the grid says "soon" rather
+than showing a rate nothing backs. The tier labels are the ranks and what
+each holds; the UI does not call the portfolio tier "safest", because it
+is equity exposure, and the risk line on each tier says what it is.
+`tiers.test.ts` pins the ranking, the pricing, the states and the copy.
 
 ## Status (2026-09-22)
 

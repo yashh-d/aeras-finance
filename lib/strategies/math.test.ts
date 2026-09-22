@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { BorrowRoute } from "@/lib/borrow/route";
+import { safeMaxBorrowRatio, type BorrowRoute } from "@/lib/borrow/route";
 import {
   defaultBorrowRatio,
+  maxBorrowRatio,
   earnNetApy,
   ladderProjection,
   leverageForRatio,
@@ -52,6 +53,18 @@ describe("leverage", () => {
 describe("borrow ratio", () => {
   it("defaults to half the collateral factor", () => {
     expect(defaultBorrowRatio(tsla)).toBeCloseTo(0.325);
+  });
+
+  it("borrows at the safe ceiling in Trader mode, floored to the slider's hundredth", () => {
+    // 0.65 * 0.9 = 0.585 -> 0.58; 0.75 * 0.9 = 0.675 -> 0.67.
+    expect(maxBorrowRatio(tsla)).toBeCloseTo(0.58);
+    expect(maxBorrowRatio(spy)).toBeCloseTo(0.67);
+    expect(maxBorrowRatio(tsla)).toBeLessThanOrEqual(safeMaxBorrowRatio(tsla));
+    expect(maxBorrowRatio(spy)).toBeLessThanOrEqual(safeMaxBorrowRatio(spy));
+    // Health and the liquidation drop at that ratio, so nobody reads the
+    // figure as riskless: LT / ratio, and 1 - ratio / LT.
+    expect(tsla.liquidationThreshold / maxBorrowRatio(tsla)).toBeCloseTo(1.293, 2);
+    expect(1 - maxBorrowRatio(tsla) / tsla.liquidationThreshold).toBeCloseTo(0.227, 2);
   });
 });
 

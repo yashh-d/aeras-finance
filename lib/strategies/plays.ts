@@ -9,6 +9,10 @@
 // Copy rules apply here more than anywhere: the name can carry the idea, the
 // thesis states the mechanism, the risk names what loses money. No numbers
 // in the prose; the live figure beside it carries the number.
+//
+// A play that names no `ratio` borrows at the safe maximum
+// (maxBorrowRatio), as every Trader borrow does. Name one only to borrow
+// LESS on purpose.
 
 import { borrowRouteFor } from "@/lib/borrow/route";
 import { xstockBySymbol, type XStock } from "@/lib/jupiter/xstocks";
@@ -43,13 +47,13 @@ export const PLAYS: readonly Play[] = [
     id: "nvda-carry",
     name: "Nvidia pays its own carry",
     thesis:
-      "Hold NVDAx. Borrow USDC against half of it and put the loan where it earns more than it costs. The stock stays yours and the spread is the yield.",
+      "Hold NVDAx. Borrow as much USDC against it as the vault safely allows and put the loan where it earns more than it costs. The stock stays yours and the spread is the yield.",
     tag: "Carry",
     symbol: "NVDAx",
     preset: { kind: "earn", venue: "morpho" },
     steps: [
       "Buy NVDAx with your USDC",
-      "Post it and borrow USDC at the default ratio",
+      "Post it and borrow USDC at the maximum safe ratio",
       "Deposit the loan into the USDC vault on Monad",
     ],
     risk: "NVDAx falling past the liquidation line. The ticket prices that line before you sign.",
