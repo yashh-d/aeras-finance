@@ -174,7 +174,9 @@ export function EarnTicket({
       earnOptions.find((o) => o.venue === d.earnVenue) ?? earn,
     [earnOptions, earn],
   );
-  const needsMonad = (o: UsdcEarnOption | null) => o?.venue === "morpho";
+  // Both Monad venues need the embedded EVM wallet and the Trustware leg.
+  const needsMonad = (o: UsdcEarnOption | null) =>
+    o?.venue === "morpho" || o?.venue === "shmonad";
 
   // The three opening steps, from data that may be fresh or restored.
   function openSteps(d: EarnRunData, option: UsdcEarnOption): StepDef[] {
@@ -267,7 +269,9 @@ export function EarnTicket({
         label:
           option.venue === "morpho"
             ? `Move the borrowed USDC to Monad and deposit it into ${option.morphoVault?.name ?? option.label}`
-            : `Deposit the borrowed USDC into ${option.label}`,
+            : option.venue === "shmonad"
+              ? "Move the borrowed USDC to Monad as MON and stake it in shMON"
+              : `Deposit the borrowed USDC into ${option.label}`,
         run: async (report) => {
           if (!d.borrowedUsd || d.borrowedUsd <= 0) throw new Error("Nothing was borrowed.");
           const r = await depositUsdcToEarn({
@@ -279,7 +283,7 @@ export function EarnTicket({
             onProgress: report,
           });
           // A Monad deposit ends in an EVM hash, which Solscan cannot show.
-          return { signatures: option.venue === "morpho" ? [] : [r.signature] };
+          return { signatures: needsMonad(option) ? [] : [r.signature] };
         },
         // Landed if the borrowed USDC is no longer sitting in the wallet.
         reconcile: async () => {
@@ -363,14 +367,19 @@ export function EarnTicket({
         label:
           option.venue === "morpho"
             ? `Withdraw the USDC from ${option.morphoVault?.name ?? option.label} and bring it back to Solana`
-            : `Withdraw the USDC from ${option.label}`,
+            : option.venue === "shmonad"
+              ? "Unstake from shMON instantly and bring the MON back to Solana as USDC"
+              : `Withdraw the USDC from ${option.label}`,
         run: async (report) => {
           const held = balances?.usdc ?? 0;
           // Whatever the wallet does not already cover, up to the whole
           // position: a debt that has grown past the deposit takes the
           // yield too. The Monad leg home costs about 0.3%, so it asks for
-          // a little more than the loan.
-          const need = Math.max(0, borrowed * CLOSE_REPAY_PAD * (option.venue === "morpho" ? 1.01 : 1) - held);
+          // a little more than the loan; shMON's instant exit adds up to
+          // another 1%.
+          const homePad =
+            option.venue === "morpho" ? 1.01 : option.venue === "shmonad" ? 1.02 : 1;
+          const need = Math.max(0, borrowed * CLOSE_REPAY_PAD * homePad - held);
           const r = await withdrawUsdcFromEarn({
             option,
             walletAddress,
@@ -539,6 +548,15 @@ export function EarnTicket({
 
       {needsMonad(earn) && !monad && (
         <Note>Waiting for the embedded Ethereum wallet to provision.</Note>
+      )}
+
+      {earn?.monDenominated && (
+        <Note tone="warn">
+          Earns in MON, not USDC. The loan is USDC. If MON falls, the staked
+          value may not cover the loan, and closing pays the instant exit fee
+          ({fmtPct(earn.exitFee)} now). The rate shown is the staking APY in
+          MON terms.
+        </Note>
       )}
 
       {spread != null && spread <= 0 && (

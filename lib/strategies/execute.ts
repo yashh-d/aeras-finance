@@ -75,6 +75,12 @@ import {
   type MorphoTxProgress,
 } from "@/lib/morpho/deposit";
 import { depositUsdcWithFunding, sendMonadUsdcToSolana } from "@/lib/morpho/fund";
+import { fetchMonUsd, fetchShmonPosition } from "@/lib/shmonad/client";
+import { INSTANT_EXIT_TOLERANCE_BPS } from "@/lib/shmonad/constants";
+import { stakeFromSolana } from "@/lib/shmonad/fund";
+import { instantCapacityShares, withTolerance } from "@/lib/shmonad/math";
+import { redeemInstant } from "@/lib/shmonad/stake";
+import { maxReturnableMonAtomic, sendMonToSolana } from "@/lib/shmonad/unwind";
 import { awaitTokenBalance } from "@/lib/solana/await-balance";
 import { atomicToUiString, getConnection } from "@/lib/solana/balances";
 import {
@@ -390,6 +396,24 @@ export async function depositUsdcToEarn(args: {
     return { signature: txHash };
   }
 
+  if (option.venue === "shmonad") {
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    // The borrowed USDC becomes native MON on Monad through Trustware, then
+    // the payable deposit stakes what arrived less the gas reserve. Fees come
+    // off the delivered side, so the whole amount is sent.
+    const fresh = await fetchShmonPosition(args.monad.evm.address).catch(() => null);
+    const { txHash } = await stakeFromSolana({
+      usdcAtomic: BigInt(deposit.toString()),
+      solanaUsdcAtomic: held.toString(),
+      walletMonAtomic: fresh?.walletMonAtomic ?? "0",
+      sharesPerMonAtomic: fresh?.sharesPerMonAtomic ?? "0",
+      signer: args.monad.evm,
+      solana: { address: walletAddress, signAndSendBase64: args.monad.solanaSignAndSend },
+      onProgress: toMorphoReport(args.onProgress),
+    });
+    return { signature: txHash };
+  }
+
   if (option.venue === "jupiter") {
     const meta = earnAssetByMint(USDC_MINT);
     if (!meta) throw new Error("USDC is not an earn asset");
@@ -574,6 +598,19 @@ export async function readEarnPositionUsdc(args: {
     const pos = r.positions.get(option.morphoVault.address.toLowerCase());
     return pos ? Number(atomicToUiString(pos.assetsAtomic, USDC_DECIMALS)) : 0;
   }
+  if (option.venue === "shmonad") {
+    // What the instant exit would pay, at the MON price: the figure a close
+    // can actually spend. No price means no figure, which the close treats
+    // as an error rather than as an empty position.
+    if (!args.evmAddress) return 0;
+    const [pos, monUsd] = await Promise.all([
+      fetchShmonPosition(args.evmAddress),
+      fetchMonUsd(),
+    ]);
+    if (BigInt(pos.sharesAtomic) === 0n) return 0;
+    if (monUsd == null) throw new Error("The MON price is unavailable right now. Try again shortly.");
+    return (Number(pos.instantNetMonAtomic) / 1e18) * monUsd;
+  }
   if (option.venue === "jupiter") {
     const meta = earnAssetByMint(USDC_MINT);
     if (!meta) return 0;
@@ -618,6 +655,64 @@ export async function withdrawUsdcFromEarn(args: {
   const amount = Math.min(amountUsdc, held);
   if (amount <= 0) return { signature: null, withdrawnUsdc: 0 };
   const amountAtomic = toAtomicBN(amount, USDC_DECIMALS);
+
+  if (option.venue === "shmonad") {
+    if (!args.monad) throw new Error("The Ethereum wallet is not ready yet.");
+    const report = toMorphoReport(args.onProgress);
+    const evm = args.monad.evm;
+    const pos = await fetchShmonPosition(evm.address);
+    const shares = BigInt(pos.sharesAtomic);
+    const before = BigInt(pos.walletMonAtomic);
+    let redeemed = 0n;
+    if (shares > 0n) {
+      // The slice of the position the ask needs, as shares; everything when
+      // the ask covers it, so no dust is left.
+      const wantAll = amount >= held - 0.01;
+      const want = wantAll
+        ? shares
+        : (shares * BigInt(Math.round((amount / held) * 1_000_000))) / 1_000_000n;
+      const cap = instantCapacityShares(
+        shares,
+        BigInt(pos.poolAvailableMonAtomic),
+        BigInt(pos.rateAtomic),
+      );
+      if (want > cap) {
+        throw new Error(
+          "The instant exit pool cannot pay this position right now. Queue an unstake " +
+            "from the Earn tab and close once the MON has arrived.",
+        );
+      }
+      const net = (BigInt(pos.instantNetMonAtomic) * want) / shares;
+      await redeemInstant({
+        sharesAtomic: want,
+        minMonAtomic: withTolerance(net, INSTANT_EXIT_TOLERANCE_BPS),
+        walletMonAtomic: pos.walletMonAtomic,
+        signer: evm,
+        onProgress: report,
+      });
+      const after = await fetchShmonPosition(evm.address);
+      redeemed = BigInt(after.walletMonAtomic) - before;
+      pos.walletMonAtomic = after.walletMonAtomic;
+    }
+    // Then the leg home. With no shares left (a close retried after a queued
+    // exit completed), the wallet's MON beyond the reserve is what goes.
+    const returnable = maxReturnableMonAtomic(pos.walletMonAtomic);
+    const send = shares > 0n && redeemed > 0n && redeemed < returnable ? redeemed : returnable;
+    if (send <= 0n) return { signature: null, withdrawnUsdc: 0 };
+    const { deliveredAtomic } = await sendMonToSolana({
+      monAtomic: send,
+      walletMonAtomic: pos.walletMonAtomic,
+      evm,
+      solanaAddress: walletAddress,
+      onProgress: report,
+    });
+    return {
+      signature: null,
+      withdrawnUsdc: deliveredAtomic
+        ? Number(atomicToUiString(deliveredAtomic, USDC_DECIMALS))
+        : amount,
+    };
+  }
 
   if (option.venue === "morpho") {
     if (!option.morphoVault) throw new Error("Morpho vault record missing");

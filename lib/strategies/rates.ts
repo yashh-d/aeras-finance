@@ -33,8 +33,9 @@ import {
 } from "@/lib/kamino/kvaults";
 import { fetchMorphoMetrics } from "@/lib/morpho/client";
 import { MONAD_USDC_VAULTS, type MorphoVault } from "@/lib/morpho/vaults";
+import { fetchShmonMetrics } from "@/lib/shmonad/client";
 
-export type EarnVenue = "morpho" | "jupiter" | "kamino";
+export type EarnVenue = "morpho" | "jupiter" | "kamino" | "shmonad";
 
 export interface UsdcEarnOption {
   venue: EarnVenue;
@@ -45,6 +46,12 @@ export interface UsdcEarnOption {
   kaminoVault?: KaminoVaultMeta;
   // Set for Morpho on Monad.
   morphoVault?: MorphoVault;
+  // True for shMON staking: the borrowed USDC becomes MON, so the earn side
+  // does not hold its dollar value and earnNetApy's spread is not a hedge.
+  // Never the default, and the ticket says so when it is picked.
+  monDenominated?: boolean;
+  // The instant exit fee at the venue, decimal, for the ticket's warning.
+  exitFee?: number;
 }
 
 // The base-case vault. Curated by Hyperithm; the largest of the Monad USDC
@@ -72,6 +79,19 @@ export interface StrategyRatesState {
   // Every venue, so the ticket can offer the others.
   earnOptions: UsdcEarnOption[];
   loading: boolean;
+}
+
+// Where borrowed USDC goes by default: the base case when its rate is known,
+// else the best of the USDC venues. A MON-denominated option never leads: its
+// rate is in MON terms, and the strip figure would read as a USDC spread it
+// is not. Pure, and pinned by rates.test.ts.
+export function pickDefaultEarn(options: UsdcEarnOption[]): UsdcEarnOption | null {
+  const usdc = options.filter((o) => !o.monDenominated);
+  if (usdc.length === 0) return null;
+  return (
+    usdc.find((o) => o.venue === "morpho") ??
+    usdc.reduce((best, o) => (o.apy > best.apy ? o : best))
+  );
 }
 
 function statFor(route: BorrowRoute, stats: Map<string, MarketStat>) {
@@ -140,6 +160,20 @@ export function useStrategyRates(enabled = true): StrategyRatesState {
         })(),
         (async () => {
           try {
+            const m = await fetchShmonMetrics();
+            if (m.apy != null) {
+              options.push({
+                venue: "shmonad",
+                label: "shMON staking on Monad",
+                apy: m.apy,
+                monDenominated: true,
+                exitFee: m.feeRate,
+              });
+            }
+          } catch {}
+        })(),
+        (async () => {
+          try {
             const res = await fetch("/api/kamino/reserves/metrics", {
               cache: "no-store",
             });
@@ -184,13 +218,7 @@ export function useStrategyRates(enabled = true): StrategyRatesState {
     return out;
   }, [stats, supplyApyByReserve]);
 
-  const defaultEarn = useMemo(() => {
-    if (earnOptions.length === 0) return null;
-    return (
-      earnOptions.find((o) => o.venue === "morpho") ??
-      earnOptions.reduce((best, o) => (o.apy > best.apy ? o : best))
-    );
-  }, [earnOptions]);
+  const defaultEarn = useMemo(() => pickDefaultEarn(earnOptions), [earnOptions]);
 
   return {
     rows,
