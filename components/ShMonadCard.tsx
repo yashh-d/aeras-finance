@@ -17,7 +17,7 @@
 // cooldown), and the Move to Solana form that appears whenever the Monad
 // wallet holds MON beyond its gas reserve.
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { formatUnits, parseUnits } from "viem";
 
 import { AssetLogo, VenueMark } from "@/components/AssetLogo";
