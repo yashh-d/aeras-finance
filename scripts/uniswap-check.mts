@@ -106,6 +106,10 @@ const GECKO_NETWORK: Record<UniswapChainId, string> = {
 };
 
 const SKIP = new Set((process.env.UNISWAP_CHECK_SKIP ?? "").split(",").filter(Boolean));
+// UNISWAP_CHECK_CHAIN=8453 narrows the pool sections to one chain, for a
+// targeted rerun after a node hiccup.
+const ONLY_CHAIN = process.env.UNISWAP_CHECK_CHAIN ? Number(process.env.UNISWAP_CHECK_CHAIN) : null;
+const POOLS = ONLY_CHAIN ? UNISWAP_POOLS.filter((p) => p.chainId === ONLY_CHAIN) : UNISWAP_POOLS;
 const failures: string[] = [];
 function check(section: string, ok: boolean, what: string) {
   console.log(`  ${ok ? "OK  " : "FAIL"} ${what}`);
@@ -142,7 +146,7 @@ async function rpcBatch(chainId: UniswapChainId, calls: (Call | { method: string
   // 2026-09-22: one of token1, slot0 or liquidity came back null). Re-ask
   // any dropped call on its own before giving up.
   for (let i = 0; i < results.length; i += 1) {
-    if (results[i] != null || byId.get(i)?.error) continue;
+    if (results[i] != null) continue;
     const c = calls[i];
     const res2 = await fetch(RPC[chainId], {
       method: "POST",
@@ -150,8 +154,9 @@ async function rpcBatch(chainId: UniswapChainId, calls: (Call | { method: string
       body: JSON.stringify("method" in c ? { jsonrpc: "2.0", id: 1, method: c.method, params: c.params } : { jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to: c.to, data: c.data }, "latest"] }),
       signal: AbortSignal.timeout(20_000),
     });
-    const one = (await res2.json()) as { result?: Hex | Record<string, unknown> };
+    const one = (await res2.json()) as { result?: Hex | Record<string, unknown>; error?: { message?: string } };
     results[i] = one.result ?? null;
+    if (results[i] == null) note(`  ${UNISWAP_CHAINS[chainId].label} RPC dropped call ${i} twice${one.error?.message ? `: ${one.error.message}` : ""}`);
   }
   return results;
 }
@@ -175,7 +180,7 @@ const state = new Map<string, { sqrtP: bigint; tick: number; liquidity: bigint }
 
 async function section1() {
   console.log("\n1. Registry vs chain");
-  for (const pool of UNISWAP_POOLS) {
+  for (const pool of POOLS) {
     const c = UNISWAP_CONTRACTS[pool.chainId];
     const label = `${UNISWAP_CHAINS[pool.chainId].label} ${pool.protocol} ${pool.label} ${short(pool.id)}`;
     try {
@@ -214,7 +219,7 @@ async function section1() {
   // PositionInfo unpacking against a live position on each v4 chain: the
   // latest minted token id. Its unpacked pool id must be the prefix of the
   // id its own key recomputes, and its ticks must sit on the spacing.
-  for (const chainId of [ROBINHOOD_CHAIN_ID, MONAD_CHAIN_ID] as UniswapChainId[]) {
+  for (const chainId of ([ROBINHOOD_CHAIN_ID, MONAD_CHAIN_ID] as UniswapChainId[]).filter((c) => !ONLY_CHAIN || c === ONLY_CHAIN)) {
     const c = UNISWAP_CONTRACTS[chainId];
     try {
       const [nextHex] = (await rpcBatch(chainId, [pm(c.v4PositionManager, "nextTokenId")])) as Hex[];
@@ -260,7 +265,7 @@ async function gecko(pool: UniswapPool): Promise<{ baseUsd: number; quoteUsd: nu
 
 async function section2() {
   console.log("\n2. Pool state and implied prices");
-  for (const pool of UNISWAP_POOLS) {
+  for (const pool of POOLS) {
     const s = state.get(pool.id.toLowerCase());
     const label = `${UNISWAP_CHAINS[pool.chainId].label} ${pool.label}`;
     if (!s) { check("2", false, `${label}: no state from section 1`); continue; }
@@ -282,7 +287,7 @@ async function section2() {
 
 async function section3() {
   console.log("\n3. Metrics (Uniswap GraphQL)");
-  const parts = UNISWAP_POOLS.map((p, i) =>
+  const parts = POOLS.map((p, i) =>
     p.protocol === "V3"
       ? `p${i}: v3Pool(chain: ${GRAPHQL_CHAIN[p.chainId]}, address: "${p.id}") { totalLiquidity { value } day: cumulativeVolume(duration: DAY) { value } week: cumulativeVolume(duration: WEEK) { value } feeTier }`
       : `p${i}: v4Pool(chain: ${GRAPHQL_CHAIN[p.chainId]}, poolId: "${p.id}") { totalLiquidity { value } day: cumulativeVolume(duration: DAY) { value } week: cumulativeVolume(duration: WEEK) { value } feeTier }`,
@@ -296,7 +301,7 @@ async function section3() {
     });
     const body = (await res.json()) as { data?: Record<string, { totalLiquidity?: { value?: number }; day?: { value?: number }; week?: { value?: number }; feeTier?: number } | null>; errors?: unknown };
     check("3", res.ok && !!body.data, `GraphQL answered ${res.status}${body.errors ? ` with errors ${JSON.stringify(body.errors).slice(0, 200)}` : ""}`);
-    UNISWAP_POOLS.forEach((p, i) => {
+    POOLS.forEach((p, i) => {
       const d = body.data?.[`p${i}`];
       if (!d) { note(`${UNISWAP_CHAINS[p.chainId].label} ${p.label}: no data`); return; }
       const tvl = d.totalLiquidity?.value ?? 0;
@@ -450,7 +455,7 @@ async function section5() {
   console.log("\n5. Uniswap LP API");
   if (!process.env.UNISWAP_API_KEY) { note("UNISWAP_API_KEY is not set; skipped. Create one on the Uniswap Developer Platform."); return; }
   const seen = new Set<UniswapChainId>();
-  for (const pool of UNISWAP_POOLS) {
+  for (const pool of POOLS) {
     if (seen.has(pool.chainId)) continue;
     seen.add(pool.chainId);
     const s = state.get(pool.id.toLowerCase());

@@ -40,9 +40,10 @@ claim is built by Uniswap's Liquidity Provisioning API
 handed back as a `TransactionRequest` the embedded wallet signs as it is.
 `app/api/uniswap/lp` pins the wallet to the verified identity's embedded EVM
 wallet and the pool to the registry; the browser chooses an operation, an
-amount, a tick range or a token id, and nothing else. **The key was not set
-when this was built, so no calldata has been built or signed yet** (see
-"Not yet verified").
+amount, a tick range or a token id, and nothing else. The key was set on
+2026-09-22 and the API built `check_approval` and `create` for one pool on
+each of the four chains (*verified*, table below); nothing has been signed
+yet.
 
 **v4 positions do not enumerate.** The v4 PositionManager is an ERC-721
 without enumeration, so a position the app minted is only visible to the
@@ -134,6 +135,24 @@ Base: the canonical USDC and WETH.
 A Solana-sourced quote carries `fromAmountUSD`; without it the squid
 provider declines (lifi still answers), so the planner's requests carry it.
 
+### Uniswap LP API, 2026-09-22 (*verified* with the key, dummy wallet, nothing signed)
+
+`check_approval` (action CREATE, permit as transaction) and `create`
+(0.01 of token0 as the independent side, the ±10% band) for one pool per
+chain:
+
+| Chain | Pool | check_approval | create |
+|---|---|---|---|
+| Robinhood 4663 | USDG / NVDA v3 | 200, 2 transactions | 200, 356 bytes to the v3 NPM `0x73991a25…`, ticks [221040, 222960] |
+| Monad 143 | USDC / WETH v4 | 200, 4 transactions | 200, 868 bytes to the v4 PositionManager `0x5b7ec4a9…`, ticks [196180, 198100] |
+| Ethereum 1 | USDC / WETH v3 | 200, 2 transactions | 200, 356 bytes to `0xC36442b4…`, ticks [196180, 198100] |
+| Base 8453 | WETH / USDC v3 | 200, 2 transactions | 200, 356 bytes to `0x03a520b3…`, ticks [-198120, -196140] |
+
+Each `create` echoed the dependent side's amount and the ticks it accepted,
+which were the ticks asked for. A v4 first deposit needs four approval
+transactions (two Permit2 allowances and two permits as transactions), a v3
+one needs two.
+
 ### Metrics sources
 
 Uniswap's interface GraphQL answered all twelve pools in one request with
@@ -147,9 +166,9 @@ body for the first.
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `UNISWAP_API_KEY` | server-only | The LP API. Free on the Uniswap Developer Platform. Without it the proxy answers 503 with "Liquidity pool transactions are not enabled" and the card's actions fail with that message; reads work. **Not set as of 2026-09-22.** |
-| `ROBINHOOD_RPC_URL` | server-only | Robinhood Chain reads. Public node by default (rate-limited). |
-| `BASE_RPC_URL` | server-only | Base reads. Public node by default (drops batched calls). |
+| `UNISWAP_API_KEY` | server-only | The LP API. Free on the Uniswap Developer Platform. Without it the proxy answers 503 with "Liquidity pool transactions are not enabled" and the card's actions fail with that message; reads work. Set 2026-09-22. |
+| `ROBINHOOD_RPC_URL` | server-only | Robinhood Chain reads. Public node by default (rate-limited). Set to Alchemy 2026-09-22. |
+| `BASE_RPC_URL` | server-only | Base reads. Public node by default, which answers "over rate limit" to the sixth call of a batch. Set to Alchemy 2026-09-22, after which the full registry read passed. |
 | `MONAD_RPC_URL`, `ETHEREUM_RPC_URL`, `TRUSTWARE_API_KEY` | as before | |
 
 The Supabase migration `supabase/migrations/0004_uniswap_positions.sql` has
@@ -229,12 +248,9 @@ and records nothing.
 
 ## Not yet verified
 
-- **The LP API.** No key, so no `check_approval`, `create`, `decrease` or
-  `claim_fees` has been called, and whether the API serves chains 4663 and
-  143 is unknown. Section 5 of the check script answers it the moment the
-  key is set. If it refuses a chain, the plan's D5 contingency (the same
-  calldata from `@uniswap/v3-sdk` and `@uniswap/v4-sdk` behind the same
-  proxy shape) is the next step.
+- **`decrease` and `claim_fees`.** The check script exercises
+  `check_approval` and `create`; the other two operations need a real
+  position to name, so their first call is the manual test's.
 - **Every write path.** Nothing has been signed: no leg, no swap, no
   approval, no mint, no decrease, no claim. The manual test below is the
   first run. Gas per operation is unmeasured on every chain.
@@ -252,8 +268,8 @@ and records nothing.
 
 ## Manual test (for the product owner)
 
-With `UNISWAP_API_KEY` set, the migration run, and a wallet holding 40 USDC
-on Solana plus a provisioned EVM wallet:
+With the migration run and a wallet holding 40 USDC on Solana plus a
+provisioned EVM wallet (the key and both RPC endpoints are set):
 
 1. Earn tab, Liquidity pools card: twelve rows with TVL, volume and 7d fee
    APR; positions empty.
@@ -269,4 +285,5 @@ on Solana plus a provisioned EVM wallet:
    the pool and the position gone; Move to Solana for the USDC.
 6. Withdraw the Robinhood position, then Move to Solana for both tokens.
    Expect USDC on Solana within minutes.
-7. Run `scripts/uniswap-check.mts` and paste section 5 into this file.
+7. Run `scripts/uniswap-check.mts` and update the tables above with what
+   it prints.
