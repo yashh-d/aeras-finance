@@ -297,6 +297,7 @@ export function earnRows(snapshot: EarnSnapshot): PositionRow[] {
       rows.push({
         key: "earn:shmonad",
         kind: "earn",
+        earnKind: "stake",
         symbol: SHMON_SYMBOL,
         venue: "shMON staking · Monad",
         venueLogo: VENUE_LOGOS.shmonad,

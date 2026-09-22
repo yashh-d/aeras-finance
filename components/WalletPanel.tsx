@@ -578,7 +578,7 @@ export function WalletPanel({
                 }
                 badge={
                   <span className="rounded-md bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
-                    Vault
+                    {row.earnKind === "stake" ? "Staked" : "Vault"}
                   </span>
                 }
               />
