@@ -156,6 +156,13 @@ reads the history there and everything live from `MONAD_RPC_URL`.
 ```
 /app                 Next.js App Router routes
   page.tsx           Landing page
+  /terms, /privacy   Terms of Service and Privacy Policy. Text lives in the
+                     pages; dates, paths and company facts in lib/legal/terms.ts.
+                     Every sign-in and access request is an acceptance, stamped
+                     on the users row (terms_version, terms_accepted_at); bump
+                     TERMS_VERSION on a material change. No HTML entities in
+                     these pages: SWC drops the space after a {expr} when the
+                     text run holds one (verified 2026-09-23), so use “ ” ’.
   /app               The authenticated product surface
   /api               Server routes. Third-party keys stay on this side.
     /admin/approve   Waitlist approval, guarded by ADMIN_SECRET
@@ -259,7 +266,10 @@ reads the history there and everything live from `MONAD_RPC_URL`.
   /trustware         Cross-chain conversion: equivalents, planner, execution,
                      plus the curated swap registry and its pricing, and the
                      ETH gas top-up planner (eth-gas.ts) the Ethereum venues share
-  users.ts           Supabase user model (signup, Privy sync, approval)
+  /legal             TERMS_VERSION, PRIVACY_VERSION, the two paths, and the
+                     company facts the legal pages and the acceptance stamp share
+  users.ts           Supabase user model (signup, Privy sync, approval,
+                     Terms acceptance stamp)
   waitlist.ts        Waitlist form validation
 /spend               Rain virtual card. Sits at the top level, not under /lib,
                      and holds its own panel component and SQL migration.

@@ -5,7 +5,7 @@ import { createSolanaRpc, createSolanaRpcSubscriptions } from "@solana/kit";
 import { base, bsc, mainnet, monad, robinhood } from "viem/chains";
 import { useEffect, useMemo, type ReactNode } from "react";
 
-import { TERMS_PATH } from "@/lib/legal/terms";
+import { PRIVACY_PATH, TERMS_PATH } from "@/lib/legal/terms";
 import {
   clearAccessTokenGetter,
   registerAccessTokenGetter,
@@ -93,7 +93,10 @@ export function PrivyAuthProvider({ children }: { children: ReactNode }) {
         // Terms, which is what a court looks for before enforcing an
         // arbitration clause. The acceptance itself is recorded on the users
         // row by /api/auth/sync (terms_version, terms_accepted_at).
-        legal: { termsAndConditionsUrl: TERMS_PATH },
+        legal: {
+          termsAndConditionsUrl: TERMS_PATH,
+          privacyPolicyUrl: PRIVACY_PATH,
+        },
         appearance: {
           theme: "light",
           // Both chain types, so an EVM wallet (MetaMask and friends) can sign

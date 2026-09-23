@@ -1201,9 +1201,9 @@ function Footer() {
         <div className="foot-bot">
           <span>© 2026 Aeras Finance</span>
           <span style={{ display: "flex", gap: 24 }}>
-            <a href="#">Privacy</a>
+            <a href="/privacy">Privacy</a>
             <a href="/terms">Terms</a>
-            <a href="#">Disclosures</a>
+            <a href="/terms#tokenized-assets">Disclosures</a>
           </span>
         </div>
         <p className="foot-disc">

@@ -12,6 +12,12 @@
 export const TERMS_VERSION = "2026-09-22";
 export const TERMS_PATH = "/terms";
 
+// The Privacy Policy carries its own date, because it changes on a different
+// schedule (a new data processor, not a new clause) and nothing is stamped on
+// it: the Terms incorporate it by reference, so the Terms acceptance covers it.
+export const PRIVACY_VERSION = "2026-09-22";
+export const PRIVACY_PATH = "/privacy";
+
 export const COMPANY = {
   legalName: "Aeras Labs, Inc.",
   shortName: "Aeras",

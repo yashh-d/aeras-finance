@@ -1,8 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import type { ReactNode } from "react";
 
-import { COMPANY, TERMS_VERSION } from "@/lib/legal/terms";
+import {
+  Caps,
+  Contents,
+  H2,
+  H3,
+  LegalPage,
+  List,
+  P,
+} from "@/components/legal/prose";
+import { COMPANY, PRIVACY_PATH, TERMS_VERSION } from "@/lib/legal/terms";
 
 export const metadata: Metadata = {
   title: "Terms of Service | Aeras",
@@ -20,45 +28,6 @@ export const metadata: Metadata = {
 // conspicuous, which is what makes them enforceable rather than decorative.
 
 const C = COMPANY;
-
-function H2({ id, children }: { id: string; children: ReactNode }) {
-  return (
-    <h2
-      id={id}
-      className="mt-12 scroll-mt-24 text-xl font-semibold tracking-tight text-neutral-900"
-    >
-      {children}
-    </h2>
-  );
-}
-
-function H3({ children }: { children: ReactNode }) {
-  return (
-    <h3 className="mt-6 text-base font-semibold text-neutral-900">{children}</h3>
-  );
-}
-
-function P({ children }: { children: ReactNode }) {
-  return <p className="mt-4 leading-7 text-neutral-700">{children}</p>;
-}
-
-function Caps({ children }: { children: ReactNode }) {
-  return (
-    <p className="mt-4 font-semibold uppercase leading-7 tracking-wide text-neutral-900">
-      {children}
-    </p>
-  );
-}
-
-function List({ items }: { items: ReactNode[] }) {
-  return (
-    <ul className="mt-4 list-disc space-y-2 pl-6 leading-7 text-neutral-700">
-      {items.map((item, i) => (
-        <li key={i}>{item}</li>
-      ))}
-    </ul>
-  );
-}
 
 const TOC: Array<[string, string]> = [
   ["acceptance", "1. Acceptance of these Terms"],
@@ -88,20 +57,7 @@ const TOC: Array<[string, string]> = [
 
 export default function TermsPage() {
   return (
-    <main className="mx-auto w-full max-w-3xl px-6 py-16 text-[15px]">
-      <Link
-        href="/"
-        className="text-sm text-neutral-500 underline-offset-4 hover:underline"
-      >
-        &larr; {C.shortName}
-      </Link>
-      <h1 className="mt-6 text-3xl font-semibold tracking-tight text-neutral-900">
-        Terms of Service
-      </h1>
-      <p className="mt-2 text-sm text-neutral-500">
-        Last updated: {TERMS_VERSION}
-      </p>
-
+    <LegalPage title="Terms of Service" updated={TERMS_VERSION} brand={C.shortName}>
       <div className="mt-8 rounded-md border border-neutral-200 bg-neutral-50 p-5 text-sm leading-6 text-neutral-800">
         <p className="font-semibold">Please read these Terms carefully.</p>
         <p className="mt-2">
@@ -116,38 +72,22 @@ export default function TermsPage() {
         </p>
       </div>
 
-      <nav aria-label="Contents" className="mt-8">
-        <p className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
-          Contents
-        </p>
-        <ol className="mt-2 grid grid-cols-1 gap-1 text-sm sm:grid-cols-2">
-          {TOC.map(([id, label]) => (
-            <li key={id}>
-              <a
-                href={`#${id}`}
-                className="text-neutral-700 underline-offset-4 hover:underline"
-              >
-                {label}
-              </a>
-            </li>
-          ))}
-        </ol>
-      </nav>
+      <Contents entries={TOC} />
 
       {/* 1 */}
       <H2 id="acceptance">1. Acceptance of these Terms</H2>
       <P>
-        These Terms of Service (the &ldquo;<strong>Terms</strong>&rdquo;) are a
-        binding agreement between you (&ldquo;<strong>you</strong>&rdquo; or
-        &ldquo;<strong>User</strong>&rdquo;) and {C.legalName}, a{" "}
-        {C.stateOfIncorporation} corporation (&ldquo;
-        <strong>{C.shortName}</strong>,&rdquo; &ldquo;<strong>we</strong>,&rdquo;
-        &ldquo;<strong>us</strong>&rdquo; or &ldquo;<strong>our</strong>&rdquo;).
+        These Terms of Service (the “<strong>Terms</strong>”) are a
+        binding agreement between you (“<strong>you</strong>” or
+        “<strong>User</strong>”) and {C.legalName}, a{" "}
+        {C.stateOfIncorporation} corporation (“
+        <strong>{C.shortName}</strong>,” “<strong>we</strong>,”
+        “<strong>us</strong>” or “<strong>our</strong>”).
         They govern your access to and use of the website at {C.domain} and its
         subdomains, the {C.shortName} web application, the application
         programming interfaces we expose, and any related software, content,
-        tools and features we make available (together, the &ldquo;
-        <strong>Services</strong>&rdquo;).
+        tools and features we make available (together, the “
+        <strong>Services</strong>”).
       </P>
       <P>
         You accept these Terms by doing any of the following: submitting the
@@ -157,12 +97,12 @@ export default function TermsPage() {
         otherwise accessing or using the Services. Each of these is an
         electronic signature to these Terms with the same force as a signature
         in ink. If you use the Services on behalf of an entity, you represent
-        that you are authorized to bind it, and &ldquo;you&rdquo; includes that
+        that you are authorized to bind it, and “you” includes that
         entity.
       </P>
       <P>
         We may revise these Terms at any time by posting the revised version at
-        this address and updating the &ldquo;Last updated&rdquo; date. Material
+        this address and updating the “Last updated” date. Material
         changes will be indicated at sign-in or by notice within the Services.
         Your continued use of the Services after a revision takes effect is
         acceptance of the revised Terms. If you do not agree to a revision, your
@@ -172,10 +112,13 @@ export default function TermsPage() {
         which we received written notice before the change took effect.
       </P>
       <P>
-        These Terms incorporate by reference our Privacy Policy and any
-        supplemental terms, disclosures or risk notices we present to you within
-        the Services for a particular feature, asset, venue or chain (&ldquo;
-        <strong>Supplemental Terms</strong>&rdquo;). If Supplemental Terms
+        These Terms incorporate by reference our{" "}
+        <Link href={PRIVACY_PATH} className="underline underline-offset-4">
+          Privacy Policy
+        </Link>{" "}
+        and any supplemental terms, disclosures or risk notices we present to you within
+        the Services for a particular feature, asset, venue or chain (“
+        <strong>Supplemental Terms</strong>”). If Supplemental Terms
         conflict with these Terms, the Supplemental Terms control for that
         feature only.
       </P>
@@ -187,14 +130,14 @@ export default function TermsPage() {
         items={[
           <>You are at least 18 years old and have the legal capacity to enter into a binding contract.</>,
           <>
-            You are not a resident, citizen or national of, located in, incorporated in, or otherwise subject to the laws of, any jurisdiction that is the subject of comprehensive sanctions administered by the United States, the United Kingdom, the European Union or the United Nations, which as of the date above include Cuba, Iran, North Korea, Syria and the Crimea, Donetsk and Luhansk regions of Ukraine, or any other jurisdiction in which use of the Services would be unlawful (each a &ldquo;<strong>Restricted Jurisdiction</strong>&rdquo;).
+            You are not a resident, citizen or national of, located in, incorporated in, or otherwise subject to the laws of, any jurisdiction that is the subject of comprehensive sanctions administered by the United States, the United Kingdom, the European Union or the United Nations, which as of the date above include Cuba, Iran, North Korea, Syria and the Crimea, Donetsk and Luhansk regions of Ukraine, or any other jurisdiction in which use of the Services would be unlawful (each a “<strong>Restricted Jurisdiction</strong>”).
           </>,
           <>
-            You are not, and do not act on behalf of, a person or entity named on the U.S. Treasury Department&rsquo;s Specially Designated Nationals and Blocked Persons List, the Consolidated Sanctions List, or any equivalent list maintained by any government (a &ldquo;<strong>Sanctioned Person</strong>&rdquo;), and you are not owned or controlled by a Sanctioned Person.
+            You are not, and do not act on behalf of, a person or entity named on the U.S. Treasury Department’s Specially Designated Nationals and Blocked Persons List, the Consolidated Sanctions List, or any equivalent list maintained by any government (a “<strong>Sanctioned Person</strong>”), and you are not owned or controlled by a Sanctioned Person.
           </>,
           <>You have not previously been suspended or removed from the Services and are not using the Services on behalf of anyone who has.</>,
           <>
-            You satisfy every eligibility requirement imposed by the issuer, protocol, venue or counterparty of any Digital Asset (defined in Section 6) you acquire, hold, lend, borrow against or otherwise interact with through the Services, including any requirement that you not be a &ldquo;U.S. person&rdquo; within the meaning of Regulation S under the U.S. Securities Act of 1933 where the asset is offered in reliance on it, and you will not use the Services to acquire any Digital Asset you are not eligible to hold.
+            You satisfy every eligibility requirement imposed by the issuer, protocol, venue or counterparty of any Digital Asset (defined in Section 6) you acquire, hold, lend, borrow against or otherwise interact with through the Services, including any requirement that you not be a “U.S. person” within the meaning of Regulation S under the U.S. Securities Act of 1933 where the asset is offered in reliance on it, and you will not use the Services to acquire any Digital Asset you are not eligible to hold.
           </>,
           <>Your use of the Services does not violate any law, regulation or contractual obligation applicable to you, and all funds and Digital Assets you use with the Services are lawfully yours and were lawfully obtained.</>,
           <>You will not use a virtual private network, proxy, or any other means to conceal your location or to circumvent any geographic, jurisdictional or eligibility restriction implemented by us or by any third party whose protocol or service the interface reaches.</>,
@@ -243,10 +186,10 @@ export default function TermsPage() {
         ]}
       />
       <P>
-        Words used in the interface such as &ldquo;account,&rdquo;
-        &ldquo;deposit,&rdquo; &ldquo;earn,&rdquo; &ldquo;yield,&rdquo;
-        &ldquo;APY,&rdquo; &ldquo;borrow,&rdquo; &ldquo;vault,&rdquo;
-        &ldquo;portfolio,&rdquo; &ldquo;position&rdquo; and &ldquo;card&rdquo;
+        Words used in the interface such as “account,”
+        “deposit,” “earn,” “yield,”
+        “APY,” “borrow,” “vault,”
+        “portfolio,” “position” and “card”
         are descriptive labels for on-chain states and third-party products.
         They do not indicate a deposit account, a bank product, a security, an
         insured product, a guaranteed return, or any relationship of trust or
@@ -261,10 +204,10 @@ export default function TermsPage() {
       <P>
         <strong>We never hold your keys.</strong> When you sign in, embedded
         wallets on the Solana network and on Ethereum-compatible networks are
-        provisioned for you by Privy, Inc. (&ldquo;<strong>Privy</strong>&rdquo;),
+        provisioned for you by Privy, Inc. (“<strong>Privy</strong>”),
         an independent third-party wallet infrastructure provider, under
-        Privy&rsquo;s own terms of service and privacy policy. Key material for
-        those wallets is generated and secured by Privy&rsquo;s systems and by
+        Privy’s own terms of service and privacy policy. Key material for
+        those wallets is generated and secured by Privy’s systems and by
         your own authentication device or session; it is never generated,
         stored, transmitted to, held by, or recoverable by {C.shortName}.
         {" "}{C.shortName} cannot access your wallets, move your assets, sign on your
@@ -302,7 +245,7 @@ export default function TermsPage() {
       <H2 id="third-parties">5. Third-Party Protocols and Services</H2>
       <P>
         The Services are a thin layer over software and services that belong to
-        others (&ldquo;<strong>Third-Party Services</strong>&rdquo;). These
+        others (“<strong>Third-Party Services</strong>”). These
         include, without limitation and as they change from time to time: wallet
         infrastructure (Privy); the Solana, Ethereum, BNB Chain, Base, Monad and
         Robinhood Chain networks and their validators and sequencers; swap
@@ -345,7 +288,7 @@ export default function TermsPage() {
       {/* 6 */}
       <H2 id="tokenized-assets">6. Tokenized Assets</H2>
       <P>
-        &ldquo;<strong>Digital Assets</strong>&rdquo; means cryptocurrencies,
+        “<strong>Digital Assets</strong>” means cryptocurrencies,
         stablecoins, tokenized representations of equities, funds, commodities,
         treasuries or other real-world assets, liquid staking tokens, vault
         shares, liquidity position tokens, and any other blockchain-based token
@@ -363,7 +306,7 @@ export default function TermsPage() {
         receive dividends directly from the issuer of the underlying security,
         rights in a bankruptcy of the underlying company, or any other right of
         a shareholder. Whatever economic exposure the token carries depends
-        entirely on the issuer&rsquo;s structure, its solvency, its custodian,
+        entirely on the issuer’s structure, its solvency, its custodian,
         its ability and willingness to honor redemptions, and the law of the
         jurisdiction it operates in. Tokenized gold and other commodity tokens
         depend in the same way on the issuer holding and safeguarding the
@@ -375,16 +318,16 @@ export default function TermsPage() {
         issuers may impose know-your-customer, transfer, and redemption
         restrictions at the issuer level even where the token trades freely on
         decentralized exchanges. We are not the issuer, we do not perform the
-        issuer&rsquo;s eligibility checks, and we make no representation that
+        issuer’s eligibility checks, and we make no representation that
         you are eligible to hold any asset or that any asset is a lawful
         security, commodity or other instrument in your jurisdiction. You are
-        responsible for reading each issuer&rsquo;s terms and confirming your
+        responsible for reading each issuer’s terms and confirming your
         own eligibility before acquiring an asset.
       </P>
       <H3>Stablecoins</H3>
       <P>
         Stablecoins such as USDC, USDT and USDG are issued by third parties and
-        depend on those issuers&rsquo; reserves, redemption practices and
+        depend on those issuers’ reserves, redemption practices and
         regulatory standing. A stablecoin may lose its peg, be frozen at the
         contract level by its issuer, or become unredeemable. We do not issue
         or back any stablecoin.
@@ -415,13 +358,13 @@ export default function TermsPage() {
       <List
         items={[
           <><strong>Market risk.</strong> Digital Assets are volatile. The value of any asset, including a tokenized equity, may fall to zero. Prices on decentralized venues may differ from prices on traditional exchanges, may gap, and may be illiquid, especially outside the trading hours of the underlying market.</>,
-          <><strong>Liquidation risk.</strong> If you borrow against collateral, a fall in the collateral&rsquo;s price, a rise in the borrowed asset&rsquo;s price, accrued interest, an oracle update, or a change in the protocol&rsquo;s risk parameters may cause some or all of your collateral to be sold by the protocol or by third-party liquidators, at a discount, without notice, and with no ability for you or us to stop it. Leveraged strategies multiply this risk. Health figures, liquidation prices and &ldquo;safe&rdquo; ratios shown in the interface are estimates computed from third-party inputs and are not guarantees.</>,
+          <><strong>Liquidation risk.</strong> If you borrow against collateral, a fall in the collateral’s price, a rise in the borrowed asset’s price, accrued interest, an oracle update, or a change in the protocol’s risk parameters may cause some or all of your collateral to be sold by the protocol or by third-party liquidators, at a discount, without notice, and with no ability for you or us to stop it. Leveraged strategies multiply this risk. Health figures, liquidation prices and “safe” ratios shown in the interface are estimates computed from third-party inputs and are not guarantees.</>,
           <><strong>Smart contract and protocol risk.</strong> Any protocol may contain bugs, be exploited, be drained, be governed badly, change its parameters, be upgraded in ways that harm you, pause withdrawals, or fail entirely. Audits reduce but do not eliminate this risk.</>,
           <><strong>Counterparty and issuer risk.</strong> Issuers of tokenized assets and stablecoins, portfolio managers, perpetual futures venues, vault curators and bridge operators may become insolvent, be sanctioned, be shut down by a regulator, refuse redemptions, freeze tokens, or act dishonestly.</>,
-          <><strong>Yield and rate risk.</strong> Every rate shown is variable, read live from a third-party protocol, and may fall to zero or turn negative at any time. Incentive campaigns, boosts and rewards are discretionary, may be reduced or ended without notice by the party offering them, and may be paid in tokens that have no value. Certain venues expose your deposit to first loss on the protocol&rsquo;s bad debt in exchange for a higher rate.</>,
+          <><strong>Yield and rate risk.</strong> Every rate shown is variable, read live from a third-party protocol, and may fall to zero or turn negative at any time. Incentive campaigns, boosts and rewards are discretionary, may be reduced or ended without notice by the party offering them, and may be paid in tokens that have no value. Certain venues expose your deposit to first loss on the protocol’s bad debt in exchange for a higher rate.</>,
           <><strong>Liquidity and lock-up risk.</strong> Some positions cannot be exited instantly. Vaults may lack the liquidity to honor a withdrawal; staking venues may impose cooldowns, queues or exit fees; liquidity pools may be exited only at the then-current price; portfolio strategies may take time to liquidate. A venue that allowed instant exit yesterday may not today.</>,
           <><strong>Impermanent loss.</strong> Providing liquidity to an automated market maker exposes you to both assets in the pair and may leave you with less value than if you had simply held them.</>,
-          <><strong>Derivatives risk.</strong> Perpetual futures are leveraged instruments. You may lose more than your margin, be liquidated in seconds, pay or receive funding rates that change continuously, and be unable to close a position when you want to. A &ldquo;hedge&rdquo; opened through the interface may not perfectly offset the position it was sized against.</>,
+          <><strong>Derivatives risk.</strong> Perpetual futures are leveraged instruments. You may lose more than your margin, be liquidated in seconds, pay or receive funding rates that change continuously, and be unable to close a position when you want to. A “hedge” opened through the interface may not perfectly offset the position it was sized against.</>,
           <><strong>Cross-chain and bridge risk.</strong> Moving assets between networks relies on third-party bridges and solvers. Transfers may be delayed, may complete on one leg and fail on another, may deliver less than quoted, may deliver a different token than expected, or may lose assets entirely. Assets delivered to a network where you hold no gas token may be stranded until you fund gas.</>,
           <><strong>Network risk.</strong> Blockchain networks may be congested, halt, reorganize, fork or be attacked. Transactions may fail after fees are paid, be delayed, be front-run, or execute at a worse price than previewed. Transaction fees, priority fees and slippage are paid by you and are not refundable.</>,
           <><strong>Oracle and data risk.</strong> Protocols price assets from oracles that may be stale, manipulated or wrong, causing liquidations or mispriced trades. The information the interface displays comes from indexers and data providers that may be down, delayed or inaccurate.</>,
@@ -445,7 +388,7 @@ export default function TermsPage() {
       <P>
         Nothing in the Services, on our website, in our documentation, in our
         communications, or in any content the interface displays (including
-        rankings, &ldquo;best rate&rdquo; figures, default selections, named
+        rankings, “best rate” figures, default selections, named
         strategies and their descriptions, model portfolios, news, earnings
         data, analyst figures, or educational material) is investment, legal,
         tax, accounting or financial advice, a recommendation, an offer to sell
@@ -578,7 +521,7 @@ export default function TermsPage() {
         your assets, termination of your access to the interface does not
         affect your ownership of or ability to reach your assets by other
         means, including directly through the relevant protocol, an exported
-        key, or Privy&rsquo;s own recovery tools, and you are responsible for
+        key, or Privy’s own recovery tools, and you are responsible for
         doing so. Sections that by their nature should survive termination,
         including Sections 3 through 12 and 14 through 23, survive.
       </P>
@@ -594,7 +537,7 @@ export default function TermsPage() {
         grant you a limited, revocable, non-exclusive, non-transferable,
         non-sublicensable license to access and use the Services for your own
         personal or internal business purposes in accordance with these Terms.
-        All rights not expressly granted are reserved. &ldquo;Aeras&rdquo; and
+        All rights not expressly granted are reserved. “Aeras” and
         our logos are our trademarks; third-party names and logos shown in the
         interface belong to their owners and are used only to identify the
         assets and integrations they refer to, without implying endorsement.
@@ -608,8 +551,12 @@ export default function TermsPage() {
       {/* 15 */}
       <H2 id="privacy">15. Privacy</H2>
       <P>
-        Our Privacy Policy describes what information we collect, how we use it
-        and with whom we share it, and is incorporated into these Terms. You
+        Our{" "}
+        <Link href={PRIVACY_PATH} className="underline underline-offset-4">
+          Privacy Policy
+        </Link>{" "}
+        describes what information we collect, how we use it and with whom we
+        share it, and is incorporated into these Terms. You
         acknowledge that blockchain transactions are public, permanent and
         traceable, that your wallet addresses and everything they do are
         visible to anyone, and that we cannot delete or anonymize on-chain data.
@@ -624,12 +571,12 @@ export default function TermsPage() {
       <Caps>
         The Services, and all information, content, software, tools, Digital
         Assets and Third-Party Services made available through them, are
-        provided &ldquo;as is,&rdquo; &ldquo;as available&rdquo; and &ldquo;with
-        all faults,&rdquo; without warranty of any kind. To the fullest extent
+        provided “as is,” “as available” and “with
+        all faults,” without warranty of any kind. To the fullest extent
         permitted by law, {C.shortName} and its affiliates, and their respective
         officers, directors, employees, contractors, agents, licensors,
-        suppliers and service providers (the &ldquo;<strong>{C.shortName}{" "}
-        Parties</strong>&rdquo;) expressly disclaim all warranties, whether
+        suppliers and service providers (the “<strong>{C.shortName}{" "}
+        Parties</strong>”) expressly disclaim all warranties, whether
         express, implied, statutory or otherwise, including any warranty of
         merchantability, fitness for a particular purpose, title,
         non-infringement, accuracy, quiet enjoyment, and any warranty arising
@@ -717,7 +664,7 @@ export default function TermsPage() {
         and hold harmless the {C.shortName} Parties from and against any and all
         claims, demands, actions, investigations, damages, losses, liabilities,
         judgments, settlements, penalties, fines, costs and expenses (including
-        reasonable attorneys&rsquo; fees and costs) arising out of or relating
+        reasonable attorneys’ fees and costs) arising out of or relating
         to: (a) your access to or use of the Services; (b) any transaction you
         authorize or any Digital Asset you acquire, hold, lend, borrow against,
         or transfer through the Services; (c) your breach or alleged breach of
@@ -744,11 +691,11 @@ export default function TermsPage() {
       </P>
       <P>
         If you are a California resident, you waive California Civil Code
-        Section 1542, which says: &ldquo;A general release does not extend to
+        Section 1542, which says: “A general release does not extend to
         claims that the creditor or releasing party does not know or suspect to
         exist in his or her favor at the time of executing the release and
         that, if known by him or her, would have materially affected his or her
-        settlement with the debtor or released party.&rdquo; If you are a
+        settlement with the debtor or released party.” If you are a
         resident of another jurisdiction, you waive any comparable statute or
         doctrine.
       </P>
@@ -764,16 +711,16 @@ export default function TermsPage() {
       <H3>20.1 Informal resolution first</H3>
       <P>
         Before starting an arbitration or any other proceeding, you and we
-        agree to try to resolve any Dispute informally. &ldquo;
-        <strong>Dispute</strong>&rdquo; means any dispute, claim or controversy
+        agree to try to resolve any Dispute informally. “
+        <strong>Dispute</strong>” means any dispute, claim or controversy
         between you and any {C.shortName} Party arising out of or relating to
         these Terms, the Services, any Digital Asset or transaction, or any
         marketing or communication, whether based in contract, tort, statute,
         fraud, misrepresentation or any other legal theory, and whether it
         arose before or after these Terms. To begin, the party raising the
-        Dispute must send the other a written notice (&ldquo;
-        <strong>Notice of Dispute</strong>&rdquo;) that includes the
-        claimant&rsquo;s name, mailing address and email, the wallet addresses
+        Dispute must send the other a written notice (“
+        <strong>Notice of Dispute</strong>”) that includes the
+        claimant’s name, mailing address and email, the wallet addresses
         involved, a description of the Dispute and the facts supporting it, and
         the specific relief requested. You must send your Notice of Dispute to{" "}
         {C.legalName}, {C.noticeAddress}, with a copy to {C.legalEmail}. We will
@@ -790,7 +737,7 @@ export default function TermsPage() {
         If a Dispute is not resolved within the sixty-day period, you and we
         agree that it will be resolved exclusively by final and binding
         arbitration administered by the American Arbitration Association
-        (&ldquo;<strong>AAA</strong>&rdquo;) under its Consumer Arbitration
+        (“<strong>AAA</strong>”) under its Consumer Arbitration
         Rules then in effect (or, if you are not a consumer, its Commercial
         Arbitration Rules), as modified by this Section. The AAA rules are
         available at www.adr.org. If the AAA is unavailable or unwilling to
@@ -812,11 +759,11 @@ export default function TermsPage() {
         is needed. Payment of filing, administrative and arbitrator fees will
         be governed by the AAA rules, except that if you are a consumer and
         your claim is not frivolous or brought for an improper purpose, we will
-        pay the arbitrator&rsquo;s fees and the administrative fees above the
+        pay the arbitrator’s fees and the administrative fees above the
         amount you would have paid to file in court. The arbitrator will issue
         a reasoned written decision, and judgment on the award may be entered
         in any court of competent jurisdiction. The arbitrator may award
-        attorneys&rsquo; fees and costs to the prevailing party where the
+        attorneys’ fees and costs to the prevailing party where the
         governing law allows it, and may sanction a party who brings a claim or
         defense that is frivolous or for an improper purpose.
       </P>
@@ -833,7 +780,7 @@ export default function TermsPage() {
       <H3>20.4 Exceptions</H3>
       <P>
         Either party may bring an individual action in small claims court for a
-        Dispute within that court&rsquo;s jurisdiction, as long as it stays in
+        Dispute within that court’s jurisdiction, as long as it stays in
         small claims court and is brought on an individual basis. Either party
         may seek a temporary restraining order or preliminary injunction in a
         court of competent jurisdiction to prevent irreparable harm pending
@@ -848,10 +795,10 @@ export default function TermsPage() {
         resolved only on an individual basis, and not as a plaintiff or class
         member in any purported class, collective, consolidated, representative
         or private attorney general action or proceeding. The arbitrator may
-        not consolidate more than one person&rsquo;s claims, may not preside
+        not consolidate more than one person’s claims, may not preside
         over any form of class, collective or representative proceeding, and
         may award relief only in favor of the individual party seeking relief
-        and only to the extent necessary to resolve that party&rsquo;s
+        and only to the extent necessary to resolve that party’s
         individual claim. To the fullest extent permitted by law, you and{" "}
         {C.shortName} each waive the right to a trial by jury and the right to
         participate in a class action. If a court finds this waiver
@@ -865,8 +812,8 @@ export default function TermsPage() {
         If twenty-five (25) or more Notices of Dispute or arbitration demands
         raising similar claims are brought against {C.shortName} by or with the
         assistance of the same or coordinated counsel or organizations within a
-        period of one hundred eighty (180) days (a &ldquo;
-        <strong>Mass Filing</strong>&rdquo;), the following applies. The
+        period of one hundred eighty (180) days (a “
+        <strong>Mass Filing</strong>”), the following applies. The
         parties will select ten (10) demands as bellwether cases, five chosen
         by each side, to proceed to arbitration first, with all other demands
         held in abeyance and their filing fees deferred. After the bellwether
@@ -982,8 +929,8 @@ export default function TermsPage() {
       </P>
       <P>
         <strong>Headings and interpretation.</strong> Headings are for
-        convenience only. &ldquo;Including&rdquo; means &ldquo;including
-        without limitation.&rdquo; These Terms will not be construed against
+        convenience only. “Including” means “including
+        without limitation.” These Terms will not be construed against
         either party as the drafter.
       </P>
       <P>
@@ -1011,6 +958,6 @@ export default function TermsPage() {
         interface to third-party, non-custodial protocols and does not custody
         assets, provide investment advice, or guarantee any yield or outcome.
       </p>
-    </main>
+    </LegalPage>
   );
 }
