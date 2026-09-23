@@ -28,6 +28,16 @@ export interface MarketStat {
   // borrow no matter how much collateral is posted, so the forms clamp their
   // max against it instead of letting the user submit a doomed transaction.
   liquidityUsd: number | null;
+  // Max borrow LTV as the venue publishes it, exact and unparsed: Kamino's
+  // decimal string ("0.6"), Jupiter's per-mille integer as a string ("650").
+  // `maxLtvKind` says which, so lib/borrow/limit.ts converts without guessing.
+  //
+  // Null while loading or if the read failed. A caller sizing a borrow then
+  // falls back to the registry snapshot, and should know that is what it is:
+  // the snapshots were taken on 2026-07-29 and were still correct at both
+  // venues on 2026-09-22, but nothing keeps them that way.
+  maxLtv: string | null;
+  maxLtvKind: "decimal" | "per-mille";
 }
 
 // Stable per-venue keys, shared with the borrow list so a row can look up its
@@ -69,6 +79,8 @@ export function useBorrowMarketStats(enabled = true): {
               sizeUsd: live.totalSuppliedUsd,
               borrowedUsd: live.totalBorrowedUsd,
               liquidityUsd: live.borrowableUsd,
+              maxLtv: String(live.collateralFactor),
+              maxLtvKind: "per-mille",
             });
           } catch {
             next.set(jupiterMarketKey(v.vaultId), {
@@ -76,6 +88,8 @@ export function useBorrowMarketStats(enabled = true): {
               sizeUsd: null,
               borrowedUsd: null,
               liquidityUsd: null,
+              maxLtv: null,
+              maxLtvKind: "per-mille",
             });
           }
         }),
@@ -114,6 +128,11 @@ export function useBorrowMarketStats(enabled = true): {
               // total borrow is the comparable figure to Jupiter's vault debt.
               borrowedUsd: usdc ? usdc.totalBorrowUsd : null,
               liquidityUsd: usdcLiquidityUsd,
+              // Kamino's own live figure. Null where the reserve is missing
+              // from the payload, so the caller falls back knowingly rather
+              // than silently sizing against a July snapshot.
+              maxLtv: m ? m.maxLtv : null,
+              maxLtvKind: "decimal",
             });
           }
         }

@@ -17,6 +17,9 @@ import {
 } from "@solana/spl-token";
 
 import { PriceChart } from "@/components/PriceChart";
+import { RepayForm } from "@/components/RepayPanel";
+import { RepayKindToggle } from "@/components/BorrowMarketDetail";
+import type { OpenBorrowPosition } from "@/lib/borrow/use-borrow-summary";
 import { SOLSCAN_TX_BASE, SOL_MINT } from "@/lib/jupiter/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import { xstockByMint } from "@/lib/jupiter/xstocks";
@@ -32,8 +35,20 @@ import {
   fetchKaminoPosition,
   type KaminoPosition,
 } from "@/lib/kamino/positions";
-import type { KaminoCollateralReserve } from "@/lib/kamino/reserves";
+import {
+  KAMINO_USDC_BORROW,
+  type KaminoCollateralReserve,
+} from "@/lib/kamino/reserves";
 import type { MarketStat } from "@/lib/borrow/use-market-stats";
+import {
+  atomicToNumber,
+  availableToBorrowAtomic,
+  ltvBpsFromDecimal,
+  parseScaled,
+  priceFromDecimal,
+  PRICE_SCALE,
+  type CollateralInput,
+} from "@/lib/borrow/limit";
 import { createPortal } from "react-dom";
 
 import {
@@ -48,7 +63,7 @@ import {
 } from "@/lib/solana/balances";
 import { sendAndConfirm } from "@/lib/solana/send-confirm";
 import { floorToDisplay } from "@/lib/trustware/selection";
-import { FirstPositionSheet } from "@/components/FirstPositionSheet";
+import { useGasGate } from "@/lib/gas/use-gas-gate";
 import {
   pendingRecordFor,
   recordPositionSetup,
@@ -57,9 +72,8 @@ import {
 import { estimateKaminoSetupCost } from "@/lib/kamino/first-position";
 import {
   describeInsufficientLamports,
-  isBlocked,
+  estimateSolanaFeeCost,
   needsSetup,
-  type SetupCost,
 } from "@/lib/borrow/setup-cost";
 
 // USDC is the only borrow asset in this market for v1.
@@ -69,8 +83,14 @@ interface Props {
   collateral: KaminoCollateralReserve;
   walletAddress: string;
   // Solana USDC, used to buy the SOL a first position needs. See
-  // components/FirstPositionSheet.tsx.
+  // components/GasSheet.tsx.
   walletUsdc: number;
+  // Exact atomic Solana USDC, SOL balance and SOL price: the partial repay in
+  // Repay mode funds a shortfall from Monad USDC and spare SOL the way the
+  // headline Repay panel does, and sizes that against the real figure.
+  solanaUsdcAtomic: string;
+  solBalance: number;
+  solPriceUsd: number | null;
   collateralBalance: number;
   // Exact base-unit balance as a decimal string. Used to defeat float rounding
   // when depositing the full wallet balance.
@@ -106,6 +126,9 @@ export function KaminoBorrowCard({
   collateral,
   walletAddress,
   walletUsdc,
+  solanaUsdcAtomic,
+  solBalance,
+  solPriceUsd,
   collateralBalance,
   collateralBalanceAtomic,
   prices,
@@ -130,17 +153,11 @@ export function KaminoBorrowCard({
   // Which of the two actions is on screen. Borrow first: a user opening a market
   // they have no position in is here to draw, not to repay.
   const [mode, setMode] = useState<BorrowMode>("borrow");
+  // Within Repay mode: close the whole position, or pay part of the debt and
+  // leave the collateral deposited. Same shape as the Jupiter card.
+  const [repayKind, setRepayKind] = useState<"close" | "partial">("close");
   // Header cell the borrow form portals its submit into. See BorrowMarketDetail.
   const [borrowSlot, setBorrowSlot] = useState<HTMLDivElement | null>(null);
-
-  // A first Kamino position allocates accounts the user has to pay rent for,
-  // and until this existed a wallet that could not cover it got a raw
-  // simulation error. Holds the priced shortfall and the submit it interrupted,
-  // so the borrow resumes with the same amounts once the SOL is there.
-  const [setupGate, setSetupGate] = useState<{
-    cost: SetupCost;
-    args: { collateralUi: number; borrowUi: number };
-  } | null>(null);
 
   // Held from the moment the user accepts the setup cost until the position
   // actually settles, then written once. Recording at acceptance instead would
@@ -220,6 +237,72 @@ export function KaminoBorrowCard({
     prices?.[collateral.collateralMint]?.usdPrice ??
     null;
 
+  // Every signature here goes through this. A first position allocates
+  // accounts the user pays rent for, and every transaction needs the fee;
+  // the sheet opens only when the wallet cannot cover it, selling a little
+  // of the collateral or USDC for SOL. See lib/gas/use-gas-gate.tsx.
+  const gas = useGasGate({
+    walletAddress,
+    walletUsdc,
+    asset: {
+      symbol: collateral.symbol,
+      mint: collateral.collateralMint,
+      decimals: collateral.decimals,
+      balanceUi: collateralBalance,
+      priceUsd: oraclePrice,
+    },
+    solPriceUsd: prices?.[SOL_MINT]?.usdPrice ?? null,
+    signTxBase64,
+  });
+
+  // The wallet's collateral balance at "processed", for the quote below.
+  //
+  // This is what makes the limit deterministic instead of a race. The prop is
+  // read through the shared Connection, which is opened at "confirmed"
+  // (lib/solana/balances.ts), so it can still show stock that a landed deposit
+  // has already spent -- while the obligation read, which comes from Kamino's
+  // API, may already include it. When the two disagree in that direction the
+  // same stock is counted twice, once as deposited collateral and once as
+  // wallet stock, and the card offers double the real limit. That is the
+  // $600-against-$500 report: $500 of GOOGLx at its 60% max LTV is $300.
+  //
+  // "processed" is never behind a confirmed deposit, so the overlap cannot
+  // happen in that direction. The other direction, an obligation read that
+  // lags the wallet, just under-quotes, which is safe.
+  const [freshWalletAtomic, setFreshWalletAtomic] = useState<string | null>(
+    null,
+  );
+  useEffect(() => {
+    let cancelled = false;
+    readFreshCollateralAtomic().then((atomic) => {
+      if (!cancelled) setFreshWalletAtomic(atomic);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Re-reads when the posted amount changes, which is exactly when the prop
+    // is most likely to be behind.
+  }, [readFreshCollateralAtomic, position?.collateralAtomic]);
+
+  // Max LTV in basis points: Kamino's live value where the metrics read landed,
+  // the registry snapshot only if it did not. Derived once and shared by the
+  // quote below and the submit-time cap, so the number the user is shown and
+  // the number the borrow is sized against cannot drift apart.
+  //
+  // Sizing against the snapshot is what lib/kamino/reserves.ts already warns
+  // about in maxLtvSnapshot's own comment ("the UI should refresh this from
+  // /reserves/metrics rather than trust it for math"). It was being trusted for
+  // math until the proxy stopped dropping the live field.
+  const ltvBps = useMemo(
+    () =>
+      ltvBpsFromDecimal(
+        stat?.maxLtv != null && stat.maxLtvKind === "decimal"
+          ? stat.maxLtv
+          : String(collateral.maxLtvSnapshot),
+      ),
+    [stat?.maxLtv, stat?.maxLtvKind, collateral.maxLtvSnapshot],
+  );
+
   // What this market will lend against collateral deposited here plus the same
   // stock sitting in the wallet, less what is already drawn. Wallet stock counts
   // because the form below deposits it as part of the borrow.
@@ -227,20 +310,59 @@ export function KaminoBorrowCard({
   // Capped by undrawn USDC in the reserve: earned headroom is not drawable from
   // a reserve that has already lent everything out, and quoting it would let the
   // user submit a borrow that fails on chain.
+  //
+  // The arithmetic is lib/borrow/limit.ts: integers on atomic units, flooring,
+  // so the figure offered is one the chain will actually honour. The max LTV is
+  // Kamino's live value where the metrics read landed, and the registry
+  // snapshot only if it did not -- sizing a borrow against a snapshot is what
+  // lib/kamino/reserves.ts already warns against in maxLtvSnapshot's own
+  // comment.
   const availableUsd = useMemo(() => {
     if (oraclePrice == null) return null;
-    const collateralUi = (position?.collateralUi ?? 0) + collateralBalance;
-    const headroomUsd =
-      collateralUi * oraclePrice * collateral.maxLtvSnapshot -
-      (position?.debtUsdc ?? 0);
-    const liquidityUsd = stat?.liquidityUsd ?? Infinity;
-    return Math.max(0, Math.min(headroomUsd, liquidityUsd));
+    // The price is a float by the time it reaches here (Kamino reports the
+    // obligation's USD totals, and the price map is JSON numbers), so this is
+    // exact for the float it is given rather than exact outright. What the
+    // module guarantees is that nothing further is lost and that the result is
+    // floored, which is the half that was producing unfillable quotes.
+    const priceScaled = priceFromDecimal(oraclePrice.toFixed(PRICE_SCALE));
+    const pool = (atomic: bigint): CollateralInput => ({
+      atomic,
+      decimals: collateral.decimals,
+      priceScaled,
+      ltvBps,
+    });
+
+    const pools: CollateralInput[] = [];
+    const deposited = BigInt(position?.collateralAtomic ?? "0");
+    if (deposited > 0n) pools.push(pool(deposited));
+    const inWallet = BigInt(freshWalletAtomic ?? collateralBalanceAtomic ?? "0");
+    if (inWallet > 0n) pools.push(pool(inWallet));
+
+    const borrowDecimals = KAMINO_USDC_BORROW.decimals;
+    const atomic = availableToBorrowAtomic({
+      pools,
+      borrowDecimals,
+      debtAtomic: parseScaled(
+        (position?.debtUsdc ?? 0).toFixed(borrowDecimals),
+        borrowDecimals,
+      ),
+      liquidityAtomic:
+        stat?.liquidityUsd != null
+          ? parseScaled(
+              Math.max(0, stat.liquidityUsd).toFixed(borrowDecimals),
+              borrowDecimals,
+            )
+          : undefined,
+    });
+    return atomicToNumber(atomic, borrowDecimals);
   }, [
     oraclePrice,
-    position?.collateralUi,
+    position?.collateralAtomic,
     position?.debtUsdc,
-    collateralBalance,
-    collateral.maxLtvSnapshot,
+    freshWalletAtomic,
+    collateralBalanceAtomic,
+    collateral.decimals,
+    ltvBps,
     stat?.liquidityUsd,
   ]);
 
@@ -256,29 +378,26 @@ export function KaminoBorrowCard({
     [signTxBase64],
   );
 
-  // Price the one-off account rent before asking for a signature, and stop
-  // here if the wallet cannot cover it.
-  //
-  // The check is advisory: if it cannot read the chain it gets out of the way
-  // rather than blocking a borrow that would have worked. The catch in
-  // runSubmit still translates the on-chain refusal if this was the reason.
+  // Price the rent and the fee before asking for a signature, and stop here
+  // if the wallet cannot cover it. The rent is logged either way.
   async function handleSubmit(args: {
     collateralUi: number;
     borrowUi: number;
   }) {
-    try {
-      setFormState({ kind: "submitting", step: "Checking your wallet…" });
-      const cost = await estimateKaminoSetupCost({
-        connection: getConnection(),
-        walletAddress,
-      });
-      if (needsSetup(cost)) {
-        setSetupGate({ cost, args });
-        setFormState({ kind: "idle" });
-        return;
-      }
-    } catch (err) {
-      console.error("[kamino setup cost]", err);
+    setFormState({ kind: "submitting", step: "Checking your wallet…" });
+    const blocked = await gas.guard({
+      estimate: () =>
+        estimateKaminoSetupCost({ connection: getConnection(), walletAddress }),
+      resume: () => runSubmit(args),
+      onCovered: (cost) => {
+        if (needsSetup(cost)) setPendingSetup(pendingRecordFor("kamino", cost));
+      },
+      onFunded: (funding, cost) =>
+        setPendingSetup(pendingRecordFor("kamino", cost, funding)),
+    });
+    if (blocked) {
+      setFormState({ kind: "idle" });
+      return;
     }
     await runSubmit(args);
   }
@@ -287,12 +406,13 @@ export function KaminoBorrowCard({
     collateralUi: number;
     borrowUi: number;
   }) {
+    // Carried out of the deposit leg so the borrow below can size against what
+    // was actually posted, not what was typed. Declared outside the try because
+    // the catch needs it too: "deposit before borrowing" is the wrong thing to
+    // say to someone whose deposit just landed.
+    let depositedUi = 0;
     try {
       let lastSig: string | null = null;
-
-      // Carried out of the deposit leg so the borrow below can size against
-      // what was actually posted, not what was typed.
-      let depositedUi = 0;
 
       if (args.collateralUi > 0) {
         setFormState({
@@ -342,24 +462,55 @@ export function KaminoBorrowCard({
         // reason the chain requires.
         //
         // This can only ever reduce the borrow, never raise it.
+        //
+        // Sized through lib/borrow/limit.ts on atomic units, at the live max
+        // LTV, flooring. This is the figure that becomes a transaction, so it
+        // is the one place where a float that rounded the wrong way is not a
+        // display glitch but a borrow the chain refuses.
         let borrowUi = args.borrowUi;
         if (oraclePrice != null) {
-          const collateralUsd =
-            ((position?.collateralUi ?? 0) + depositedUi) * oraclePrice;
-          const cap =
-            collateralUsd * ((collateral.maxLtvSnapshot * 100 - 1) / 100) -
-            (position?.debtUsdc ?? 0);
-          if (cap <= 0) {
+          const borrowDecimals = KAMINO_USDC_BORROW.decimals;
+          // One percentage point is 100 basis points. Same buffer as before,
+          // now subtracted from the live ratio rather than the snapshot.
+          const bufferedBps = ltvBps > 100n ? ltvBps - 100n : 0n;
+          // The obligation state here is the pre-deposit one: `position` has
+          // not been refreshed yet inside this submit. Adding what this run
+          // just deposited gives what the chain now holds.
+          const postedAtomic =
+            BigInt(position?.collateralAtomic ?? "0") +
+            parseScaled(
+              depositedUi.toFixed(collateral.decimals),
+              collateral.decimals,
+            );
+          const capAtomic = availableToBorrowAtomic({
+            pools: [
+              {
+                atomic: postedAtomic,
+                decimals: collateral.decimals,
+                priceScaled: priceFromDecimal(oraclePrice.toFixed(PRICE_SCALE)),
+                ltvBps: bufferedBps,
+              },
+            ],
+            borrowDecimals,
+            debtAtomic: parseScaled(
+              (position?.debtUsdc ?? 0).toFixed(borrowDecimals),
+              borrowDecimals,
+            ),
+          });
+          if (capAtomic <= 0n) {
             throw new Error(
               `The deposited ${collateral.symbol} does not support a loan this size. Deposit more, or borrow less.`,
             );
           }
-          borrowUi = Math.min(borrowUi, cap);
+          borrowUi = Math.min(borrowUi, atomicToNumber(capAtomic, borrowDecimals));
         }
         setFormState({ kind: "submitting", step: `Borrowing ${BORROW_SYMBOL}…` });
         const borrowTx = await buildKaminoBorrowTx({
           walletAddress,
           borrowUi,
+          // A deposit in this same submit means the obligation may be newer
+          // than Kamino's view of the chain. See lib/kamino/borrow.ts.
+          afterDeposit: depositedUi > 0,
         });
         lastSig = await signSend(borrowTx);
       }
@@ -383,7 +534,12 @@ export function KaminoBorrowCard({
       const message =
         err instanceof KaminoKtxError &&
         err.code === "KLEND_OBLIGATION_NOT_FOUND"
-          ? `Deposit ${collateral.symbol} before borrowing ${BORROW_SYMBOL}.`
+          ? depositedUi > 0
+            ? // The deposit landed and Kamino still cannot see it after the
+              // wait in buildKaminoBorrowTx. Say that, because the collateral
+              // is posted and re-submitting the form would deposit it twice.
+              `Your ${collateral.symbol} is deposited, but Kamino has not caught up enough to build the loan yet. Wait a minute, then borrow without depositing again.`
+            : `Deposit ${collateral.symbol} before borrowing ${BORROW_SYMBOL}.`
           : // Ran out of SOL for the account rent. The preflight above normally
             // catches this, but a balance can move between the check and the
             // signature, and CLAUDE.md forbids putting the raw simulation dump
@@ -396,6 +552,19 @@ export function KaminoBorrowCard({
 
   async function handleClose() {
     if (!position) return;
+    if (
+      await gas.guard({
+        estimate: () =>
+          estimateSolanaFeeCost({
+            connection: getConnection(),
+            walletAddress,
+            venueLabel: "Kamino",
+          }),
+        resume: () => handleClose(),
+      })
+    ) {
+      return;
+    }
     try {
       let lastSig: string | null = null;
       if (position.debtUsdc > 0) {
@@ -432,6 +601,23 @@ export function KaminoBorrowCard({
   const hasPosition =
     position != null && (position.collateralUi > 0 || position.debtUsdc > 0);
 
+  // This obligation in the shape the headline Repay form takes, so the partial
+  // repay below is that form and not a second copy of the path. Null when
+  // nothing is owed.
+  const repayTarget: OpenBorrowPosition | null =
+    position && position.debtUsdc > 0
+      ? {
+          key: `kamino:${position.collateral.reserve}`,
+          venueLabel: "Kamino",
+          collateralSymbol: position.collateral.symbol,
+          collateralMint: position.collateral.collateralMint,
+          collateralUi: position.collateralUi,
+          debtUi: position.debtUsdc,
+          debtSymbol: BORROW_SYMBOL,
+          ref: { venue: "kamino", position },
+        }
+      : null;
+
   return (
     <div className="space-y-5 rounded-xl border border-white/10 bg-white/5 p-5">
       <MarketDetailHeader
@@ -462,13 +648,37 @@ export function KaminoBorrowCard({
       ) : null}
 
       {mode === "repay" && hasPosition && position ? (
-        <KaminoCloseControl
-          collateral={collateral}
-          position={position}
-          state={closingState}
-          onClose={handleClose}
-          onReset={() => setClosingState({ kind: "idle" })}
-        />
+        <div className="space-y-3">
+          {repayKind === "partial" && repayTarget ? (
+            <RepayForm
+              key={repayTarget.key}
+              position={repayTarget}
+              walletUsdc={walletUsdc}
+              solanaUsdcAtomic={solanaUsdcAtomic}
+              sol={solBalance}
+              solPriceUsd={solPriceUsd}
+              walletAddress={walletAddress}
+              onSettled={async () => {
+                await onRefresh();
+                await refreshPosition();
+                onPositionChange();
+              }}
+              onClose={() => setRepayKind("close")}
+              embedded
+            />
+          ) : (
+            <KaminoCloseControl
+              collateral={collateral}
+              position={position}
+              state={closingState}
+              onClose={handleClose}
+              onReset={() => setClosingState({ kind: "idle" })}
+            />
+          )}
+          {repayTarget && (
+            <RepayKindToggle kind={repayKind} onChange={setRepayKind} />
+          )}
+        </div>
       ) : mode === "borrow" ? (
         <KaminoOperateForm
           collateral={collateral}
@@ -485,50 +695,7 @@ export function KaminoBorrowCard({
         />
       ) : null}
 
-      {setupGate && (
-        <FirstPositionSheet
-          cost={setupGate.cost}
-          walletAddress={walletAddress}
-          walletUsdc={walletUsdc}
-          collateral={{
-            symbol: collateral.symbol,
-            mint: collateral.collateralMint,
-            decimals: collateral.decimals,
-            balanceUi: collateralBalance,
-            priceUsd: oraclePrice,
-          }}
-          solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
-          signTxBase64={signTxBase64}
-          onCancel={() => setSetupGate(null)}
-          onProceed={() => {
-            const { args, cost } = setupGate;
-            setPendingSetup(pendingRecordFor("kamino", cost));
-            setSetupGate(null);
-            void runSubmit(args);
-          }}
-          onFunded={async (funding) => {
-            // Re-price rather than trusting the swap's own estimate: the borrow
-            // that follows is the thing that must not fail, and it reads the
-            // same balance this does.
-            const fresh = await estimateKaminoSetupCost({
-              connection: getConnection(),
-              walletAddress,
-            });
-            if (isBlocked(fresh)) {
-              setSetupGate({ cost: fresh, args: setupGate.args });
-              return;
-            }
-            const { args } = setupGate;
-            // Logged against the cost the user was shown and agreed to, not the
-            // re-price above, which by now reads as covered.
-            setPendingSetup(
-              pendingRecordFor("kamino", setupGate.cost, funding),
-            );
-            setSetupGate(null);
-            await runSubmit(args);
-          }}
-        />
-      )}
+      {gas.element}
     </div>
   );
 }

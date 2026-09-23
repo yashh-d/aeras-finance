@@ -37,7 +37,9 @@ export interface SetupCostItem {
 }
 
 export interface SetupCost {
-  venueLabel: "Kamino" | "Jupiter Lend";
+  // Where the SOL is going, for the sheet's heading. A venue for a first
+  // position; the action for an ordinary transaction ("this transfer").
+  venueLabel: string;
   // Only the accounts that do NOT already exist. Empty means this is not the
   // user's first position here and there is nothing to pay.
   items: SetupCostItem[];
@@ -90,13 +92,21 @@ export async function rentFor(
 }
 
 // Assemble the final figure once a venue has decided what it must allocate.
+//
+// An empty `items` is an ordinary transaction, not a free one. It still pays
+// the signature fee, and the fee payer still has to end above the rent floor,
+// so a wallet holding nothing (or holding less than the floor, which the
+// runtime treats the same) is short of it. Until 2026-09-22 this returned a
+// zero shortfall for an empty list, so only first positions were ever checked
+// and every other Solana transaction from an empty wallet failed with the raw
+// simulation dump.
 export function toSetupCost({
   venueLabel,
   items,
   haveLamports,
   floorLamports = 0,
 }: {
-  venueLabel: SetupCost["venueLabel"];
+  venueLabel: string;
   items: SetupCostItem[];
   haveLamports: number;
   // Rent-exempt minimum for a zero-byte account, `rentFor(connection, 0)`.
@@ -105,20 +115,6 @@ export function toSetupCost({
 }): SetupCost {
   const rentLamports = items.reduce((sum, i) => sum + i.lamports, 0);
   const reserveLamports = Math.max(RESERVE_LAMPORTS, floorLamports);
-  // Nothing to allocate means nothing to warn about: this is not a first
-  // position, so the ordinary flow applies and fees come out of the balance the
-  // user already has.
-  if (items.length === 0) {
-    return {
-      venueLabel,
-      items,
-      rentLamports: 0,
-      feeLamports: 0,
-      totalLamports: 0,
-      haveLamports,
-      shortfallLamports: 0,
-    };
-  }
   const totalLamports = rentLamports + FEE_ALLOWANCE_LAMPORTS;
   return {
     venueLabel,
@@ -134,6 +130,27 @@ export function toSetupCost({
   };
 }
 
+// Price an ordinary Solana transaction: no accounts to create, just the fee
+// and the floor. For the paths that have no estimator of their own (repay,
+// withdraw, close, a Trustware leg signed from Solana), so they can open the
+// gas sheet instead of failing inside the runtime.
+export async function estimateSolanaFeeCost({
+  connection,
+  walletAddress,
+  venueLabel,
+}: {
+  connection: Connection;
+  walletAddress: string;
+  venueLabel: string;
+}): Promise<SetupCost> {
+  const { PublicKey } = await import("@solana/web3.js");
+  const [haveLamports, floorLamports] = await Promise.all([
+    connection.getBalance(new PublicKey(walletAddress), "confirmed"),
+    rentFor(connection, 0),
+  ]);
+  return toSetupCost({ venueLabel, items: [], haveLamports, floorLamports });
+}
+
 // Did this transaction die for want of SOL? The two shapes the runtime uses:
 // "insufficient lamports X, need Y" from a System Program allocation, and
 // "Transaction results in an account (N) with insufficient funds for rent"
@@ -147,22 +164,18 @@ export function isLamportShortfall(err: unknown): boolean {
   );
 }
 
-// True when this borrow would allocate accounts the user has to pay rent for.
-//
-// This, not isBlocked, is what opens the sheet. A user about to spend $3.17 on
-// accounts they did not ask for and will never see should be told so and get to
-// decide, even when the balance covers it: the surprise is the charge, not the
-// failure. Gating on affordability instead would only ever explain the cost to
-// people too poor to pay it.
+// True when this transaction allocates accounts the user pays rent for. This
+// no longer opens anything: it decides whether a setup row is recorded. The
+// sheet used to open on every first position to disclose the rent, and the
+// rent turned out to be a few dollars that nobody wanted a dialog about.
 export function needsSetup(cost: SetupCost): boolean {
   return cost.items.length > 0;
 }
 
-// True when this is a first position AND the wallet cannot pay for it. Decides
-// which action the sheet offers, buy SOL or continue, and whether a funding
-// round actually cleared the gap.
+// True when the wallet cannot pay for the transaction. The one thing that
+// opens the gas sheet, and what a funding round has to clear.
 export function isBlocked(cost: SetupCost): boolean {
-  return needsSetup(cost) && cost.shortfallLamports > 0;
+  return cost.shortfallLamports > 0;
 }
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;

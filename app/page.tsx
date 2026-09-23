@@ -1202,7 +1202,7 @@ function Footer() {
           <span>© 2026 Aeras Finance</span>
           <span style={{ display: "flex", gap: 24 }}>
             <a href="#">Privacy</a>
-            <a href="#">Terms</a>
+            <a href="/terms">Terms</a>
             <a href="#">Disclosures</a>
           </span>
         </div>

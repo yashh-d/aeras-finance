@@ -242,6 +242,22 @@ describe("the two shapes that keep a caller-supplied address", () => {
 });
 
 describe("the allowlist still holds", () => {
+  it("rejects the same token on both sides before any shape can claim it", () => {
+    // Solana USDC to Solana USDC would otherwise match `return`, whose only
+    // test is the destination, and reach Trustware as a real request.
+    const r = validateTrustwareRequest(
+      req({
+        fromChain: TRUSTWARE_SOLANA_CHAIN,
+        fromToken: USDC_MINT,
+        toChain: TRUSTWARE_SOLANA_CHAIN,
+        toToken: USDC_MINT,
+        fromAddress: OWN_SOLANA,
+        toAddress: OWN_SOLANA,
+      }),
+    );
+    expect(r).toEqual({ ok: false, error: "the source and destination are the same token" });
+  });
+
   it("rejects an uncurated pair", () => {
     expect(
       deliveredTo(

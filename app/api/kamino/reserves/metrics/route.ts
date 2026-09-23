@@ -14,6 +14,15 @@ const CACHE_TTL_MS = 30_000;
 export interface KaminoReserveMetric {
   reserve: string;
   liquidityTokenMint: string;
+  // Max borrow LTV, kept as the decimal STRING Kamino publishes ("0.6") rather
+  // than a number. It sizes borrows, so it goes into lib/borrow/limit.ts as an
+  // exact scaled integer, and parsing it through a float on the way there is
+  // the round trip that module exists to avoid.
+  //
+  // This is the live value. lib/kamino/reserves.ts carries a snapshot of the
+  // same figure taken on 2026-07-29, whose own comment says not to trust it for
+  // math; it was being trusted for math anyway until this was plumbed through.
+  maxLtv: string;
   // Annualised rates, decimal (0.05 = 5%).
   borrowApy: number;
   supplyApy: number;
@@ -25,6 +34,7 @@ export interface KaminoReserveMetric {
 interface RawMetric {
   reserve?: string;
   liquidityTokenMint?: string;
+  maxLtv?: string;
   borrowApy?: string;
   supplyApy?: string;
   totalSupplyUsd?: string;
@@ -62,6 +72,9 @@ export async function GET() {
       .map((r) => ({
         reserve: r.reserve as string,
         liquidityTokenMint: r.liquidityTokenMint as string,
+        // "0" is Kamino's own value for a reserve that cannot be used as
+        // collateral (USDG is one), and is the right answer, not a fallback.
+        maxLtv: r.maxLtv ?? "0",
         borrowApy: Number(r.borrowApy ?? 0),
         supplyApy: Number(r.supplyApy ?? 0),
         totalSupplyUsd: Number(r.totalSupplyUsd ?? 0),

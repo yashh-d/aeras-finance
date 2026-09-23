@@ -143,6 +143,19 @@ multiple for leverage, the ladder's converged leverage and debt for ladder.
 `plays.test.ts` pins every play to a resolvable mint and, for ladders, a
 `nextMint` in the catalog.
 
+Two fields were added on 2026-09-22, both optional. `collateral: "any"`
+marks a play whose thesis is about the destination rather than the stock,
+and the detail view then offers every asset with a borrow market in a
+dropdown (`components/trader/PlayAssetPicker.tsx`, the Home chart picker's
+shape) with `symbol` preselected. A ladder preset's `nextChoices`, a catalog
+category or a symbol list, does the same for the next pick, with
+`nextSymbol` preselected: "Stocks buy gold" lists the three golds. The
+choice re-resolves the play (`resolvePlay(play, rates, choice)`), so the
+headline, the strip and the ticket follow it; the name, thesis and risk do
+not. Plays named for their asset or tied to its pool (the two index
+leverage plays, the Tesla ladder, Elon Maxxing, the two LP plays) stay
+fixed. The grid cards keep showing each play's default.
+
 The tickets gain additive props so a play can pre-fill them: `EarnTicket`
 takes `initialVenue` and `initialRatio`; `LeverageTicket` takes
 `initialLeverage`; `LadderTicket` takes `initialRatio` and

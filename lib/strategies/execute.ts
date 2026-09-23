@@ -325,7 +325,13 @@ async function kaminoDepositAndBorrow(args: {
 
   if (borrowUsdc > 0) {
     args.onProgress?.("Borrowing USDC on Kamino");
-    const borrowTx = await buildKaminoBorrowTx({ walletAddress, borrowUi: borrowUsdc });
+    const borrowTx = await buildKaminoBorrowTx({
+      walletAddress,
+      borrowUi: borrowUsdc,
+      // The deposit above may not be visible to KTX yet. See
+      // lib/kamino/borrow.ts.
+      afterDeposit: true,
+    });
     signatures.push(await signAndSend(signTx, borrowTx));
   }
   return { signatures };

@@ -417,7 +417,9 @@ export function LadderTicket({
     bought.current = null;
     setRounds([]);
     setPendingUsd(0);
-    setNextMint(row.xstock.mint);
+    // The play's first pick survives the start; without it a play that
+    // opened on gold prompted for the collateral again after round one.
+    setNextMint(initialNextMint ?? row.xstock.mint);
     setPhase("running");
     // On failure the phase stays "running": the step list with its retry
     // button is what the user needs to see, and the step's own success handler

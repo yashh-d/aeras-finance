@@ -28,7 +28,9 @@ import { AssetLogo } from "@/components/AssetLogo";
 import { curatorLogo } from "@/lib/tokens/logos";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
-import { MONAD_EXPLORER_TX_BASE } from "@/lib/morpho/constants";
+import { MONAD_CHAIN_ID, MONAD_EXPLORER_TX_BASE } from "@/lib/morpho/constants";
+import { planEvmGas } from "@/lib/gas/evm";
+import { useEvmGasGate } from "@/lib/gas/use-evm-gas-gate";
 import {
   fetchMorphoMetrics,
   fetchMorphoPositions,
@@ -345,18 +347,38 @@ function MorphoVaultForm({
   const onProgress = (p: MorphoTxProgress) =>
     setState({ kind: "busy", message: p.message });
 
+  // A deposit funded from Solana buys its own MON on the way in; a withdrawal
+  // has no leg to attach that to, so it goes through the gas sheet instead.
+  // See lib/gas/use-evm-gas-gate.tsx.
+  const evmSigner = evm.address
+    ? { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider }
+    : null;
+  const gas = useEvmGasGate({ evm: evmSigner, solana: solanaSigner });
+
   async function handleSubmit() {
-    if (!evm.address) {
+    if (!evmSigner) {
       setState({ kind: "error", message: "No embedded EVM wallet available." });
       return;
     }
     setState({ kind: "busy", message: "Preparing…" });
+    if (
+      mode === "withdraw" &&
+      (await gas.guard({
+        plan: () =>
+          planEvmGas({
+            chainId: MONAD_CHAIN_ID,
+            evm: evmSigner,
+            solanaUsdcAtomic,
+            solanaAddress: solanaSigner?.address,
+          }),
+        resume: () => handleSubmit(),
+      }))
+    ) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
-      const signer = {
-        address: evm.address,
-        switchChain: evm.switchChain,
-        getProvider: evm.getProvider,
-      };
+      const signer = evmSigner;
       const txHash =
         mode === "deposit"
           ? (
@@ -533,6 +555,7 @@ function MorphoVaultForm({
         {vault.name} is a Morpho Vaults V2 vault on Monad, managed by{" "}
         {vault.curator}.
       </p>
+      {gas.element}
     </div>
   );
 }

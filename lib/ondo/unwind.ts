@@ -71,11 +71,11 @@ const ETHEREUM_CHAIN = "1";
 // price spike between the estimate and the second signature, which matters
 // because running out of gas *between* the approve and the route call leaves an
 // allowance granted and nothing bridged.
-const GAS_SAFETY_MULTIPLE = 3;
+export const GAS_SAFETY_MULTIPLE = 3;
 
 // Rough gas for the two transactions, used only to size the balance check.
 // The approve is ~46k and a LI.FI/Mayan bridge call ~400k, both measured.
-const ESTIMATED_GAS_UNITS = 446_000n;
+export const ESTIMATED_GAS_UNITS = 446_000n;
 
 // The same soft bound the deposit path uses, and for the same reason: the cost
 // here is the spread between two thin markets, not the bridge. Measured

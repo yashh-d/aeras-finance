@@ -10,6 +10,9 @@ import { useState } from "react";
 import { formatUnits, parseUnits } from "viem";
 
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { planEvmGas, readNativeBalance } from "@/lib/gas/evm";
+import { useEvmGasGate } from "@/lib/gas/use-evm-gas-gate";
+import { MONAD_CHAIN_ID } from "@/lib/morpho/constants";
 import {
   fundMonadUsdc,
   maxFundableDepositAtomic,
@@ -70,10 +73,16 @@ export function MonadFundForm({
   })();
   const overLimit = amountAtomic > BigInt(maxAtomic);
   const busy = state.kind === "busy";
-  const ready = toMonad
-    ? Boolean(evm.address && solanaSigner)
-    : Boolean(evm.ready && !needsMonadGas(monBalanceAtomic));
+  const ready = toMonad ? Boolean(evm.address && solanaSigner) : Boolean(evm.ready);
   const disabled = busy || amountAtomic <= 0n || overLimit || !ready;
+
+  // The leg home is signed on Monad and paid in MON. A wallet with none gets
+  // the gas sheet, which buys 0.50 USDC of MON from Solana, rather than a
+  // disabled button. See lib/gas/use-evm-gas-gate.tsx.
+  const evmSigner = evm.address
+    ? { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider }
+    : null;
+  const gas = useEvmGasGate({ evm: evmSigner, solana: solanaSigner });
 
   function switchDirection(next: Direction) {
     setDirection(next);
@@ -101,11 +110,29 @@ export function MonadFundForm({
         });
         setState({ kind: "done", message: "USDC arrived on Monad." });
       } else {
+        if (!evmSigner) return;
+        if (
+          await gas.guard({
+            plan: () =>
+              planEvmGas({
+                chainId: MONAD_CHAIN_ID,
+                evm: evmSigner,
+                solanaUsdcAtomic,
+                solanaAddress: solanaSigner?.address,
+              }),
+            resume: () => handleSubmit(),
+          })
+        ) {
+          setState({ kind: "idle" });
+          return;
+        }
         await sendMonadUsdcToSolana({
           amountAtomic,
           monadUsdcAtomic,
-          monBalanceAtomic,
-          evm: { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider },
+          // Read live: the prop is the figure from before a top-up the guard
+          // above may have just run, and the library checks it again.
+          monBalanceAtomic: (await readNativeBalance(evmSigner, MONAD_CHAIN_ID)).toString(),
+          evm: evmSigner,
           solanaAddress,
           onProgress,
         });
@@ -202,9 +229,8 @@ export function MonadFundForm({
 
       {!ready && (
         <p className="text-[11px] text-aeras-warning">
-          {!toMonad && evm.ready && needsMonadGas(monBalanceAtomic)
-            ? "Your Monad wallet has no MON for gas. Fund it from Solana first; gas arrives automatically."
-            : "Both wallets are required. They are provisioned on login; try reconnecting if this persists."}
+          Both wallets are required. They are provisioned on login; try
+          reconnecting if this persists.
         </p>
       )}
       {overLimit && (
@@ -235,6 +261,7 @@ export function MonadFundForm({
             ? "Fund Monad wallet"
             : "Send to Solana"}
       </button>
+      {gas.element}
     </div>
   );
 }

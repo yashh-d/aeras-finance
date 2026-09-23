@@ -18,34 +18,11 @@
 // letting the user confirm a withdrawal that would fail after signing.
 
 import type { ActionPlan } from "@blend-money/fe";
-import type { EIP1193Provider } from "@privy-io/react-auth";
 import type { Hex } from "viem";
 
-import { topUpBaseGas } from "@/lib/glider/exit";
-import { USDC_DECIMALS } from "@/lib/jupiter/constants";
-import { MONAD_NATIVE_TOKEN } from "@/lib/morpho/constants";
-import {
-  GAS_MIN_DELIVERED_WEI,
-  GAS_TOPUP_USDC_ATOMIC,
-  fundingRequest,
-  quoteFunding,
-} from "@/lib/morpho/fund";
-import { atomicToUi } from "@/lib/trustware/amounts";
-import {
-  fetchTrustwareQuoteViaProxy,
-  fetchTrustwareRouteViaProxy,
-} from "@/lib/trustware/client";
-import { planEthGas, type TrustwareLeg } from "@/lib/trustware/eth-gas";
-import {
-  submitTrustwareReceipt,
-  trackTrustwareSettlement,
-  type SolanaSigner,
-} from "@/lib/trustware/execute";
-import {
-  extractExecution,
-  extractIntentId,
-  type TrustwareQuoteRequest,
-} from "@/lib/trustware/types";
+import { fundEvmGas, planEvmGas } from "@/lib/gas/evm";
+import type { SolanaSigner } from "@/lib/trustware/execute";
+
 
 import { blendChainName } from "./constants";
 import {
@@ -62,12 +39,6 @@ export type { SolanaSigner } from "@/lib/trustware/execute";
 // transaction that runs out of balance mid-way is the state to avoid.
 const HEADROOM_NUMERATOR = 15n;
 const HEADROOM_DENOMINATOR = 10n;
-
-// How long to wait for a top-up to become readable on its chain after
-// Trustware reports it settled. The destination transaction has mined by
-// then; this only covers RPC read lag.
-const ARRIVAL_TIMEOUT_MS = 3 * 60_000;
-const ARRIVAL_POLL_MS = 3_000;
 
 export interface ChainGasReview {
   chainId: number;
@@ -142,54 +113,13 @@ export async function reviewPlansGas(
 
 export type GasReport = (message: string) => void;
 
-async function readNativeBalance(provider: EIP1193Provider, owner: Hex): Promise<bigint> {
-  return BigInt(
-    (await provider.request({ method: "eth_getBalance", params: [owner, "latest"] })) as string,
-  );
-}
-
-async function awaitNativeBalance(
-  provider: EIP1193Provider,
-  owner: Hex,
-  atLeastWei: bigint,
-  signal?: AbortSignal,
-): Promise<bigint> {
-  const deadline = Date.now() + ARRIVAL_TIMEOUT_MS;
-  let last = 0n;
-  for (;;) {
-    if (signal?.aborted) return last;
-    try {
-      last = await readNativeBalance(provider, owner);
-      if (last >= atLeastWei) return last;
-    } catch {
-      // Transient read failure; the next poll retries.
-    }
-    if (Date.now() >= deadline) return last;
-    await new Promise((r) => setTimeout(r, ARRIVAL_POLL_MS));
-  }
-}
-
-// Route one priced Solana leg, sign it, hand Trustware the hash, and wait for
-// Trustware to report it settled.
-async function runSolanaLeg(args: {
-  request: TrustwareQuoteRequest;
-  solana: SolanaSigner;
-  signal?: AbortSignal;
-}): Promise<void> {
-  const route = await fetchTrustwareRouteViaProxy(args.request);
-  const intentId = extractIntentId(route);
-  const base64Tx = extractExecution(route)?.transaction?.data;
-  if (!intentId || !base64Tx || base64Tx.startsWith("0x")) {
-    throw new Error("Trustware returned no signable Solana transaction for the gas top-up.");
-  }
-  const hash = await args.solana.signAndSendBase64(base64Tx);
-  await submitTrustwareReceipt(intentId, hash, args.signal);
-  await trackTrustwareSettlement(intentId, args.signal, () => {});
-}
-
 // Bring the wallet's native balance on `review.chainId` up to what its
 // transaction needs, from Solana USDC. Signs one Solana transaction when a
 // top-up is needed, none otherwise. Resolves once the balance is readable.
+//
+// The legs and the arrival wait live in lib/gas/evm.ts now, shared with the
+// gas sheet every other exit path opens; this passes the review's simulated
+// requirement in place of the chain's floor.
 export async function ensureGasForChain(args: {
   review: ChainGasReview;
   evm: EvmSigner;
@@ -201,67 +131,30 @@ export async function ensureGasForChain(args: {
   signal?: AbortSignal;
 }): Promise<void> {
   const { review, evm } = args;
-  const report = args.report ?? (() => {});
-  const owner = evm.address as Hex;
-  const name = blendChainName(review.chainId);
   if (!review.needsTopUp) return;
+  const name = blendChainName(review.chainId);
   if (!args.solana) {
     throw new Error(
       `Your wallet needs gas on ${name} for this withdrawal and no Solana wallet is available to buy it.`,
     );
   }
-  const solana = args.solana;
-
-  if (review.chainId === 143) {
-    const onSolana = BigInt(args.solanaUsdcAtomic || "0");
-    if (onSolana < GAS_TOPUP_USDC_ATOMIC) {
-      throw new Error(
-        `Your Monad wallet needs a MON gas top-up (about ${atomicToUi(GAS_TOPUP_USDC_ATOMIC.toString(), USDC_DECIMALS)} USDC), but your Solana wallet holds only ${atomicToUi(onSolana.toString(), USDC_DECIMALS)} USDC.`,
-      );
-    }
-    const request = fundingRequest(
-      GAS_TOPUP_USDC_ATOMIC.toString(),
-      solana.address,
-      owner,
-      MONAD_NATIVE_TOKEN,
-    );
-    const quote = await quoteFunding(request, fetchTrustwareQuoteViaProxy);
-    if (BigInt(quote.toAmountMinAtomic) < GAS_MIN_DELIVERED_WEI) {
-      throw new Error("The Monad gas top-up did not return a usable rate. Try again shortly.");
-    }
-    report("Buying MON on Monad for gas from your Solana wallet.");
-    await runSolanaLeg({ request, solana, signal: args.signal });
-  } else if (review.chainId === 8453) {
-    report("Buying a little ETH on Base for gas from your Solana wallet.");
-    await topUpBaseGas({ solana, evmAddress: owner, signal: args.signal });
-  } else if (review.chainId === 1) {
-    const plan = await planEthGas({
-      ethBalanceAtomic: review.balanceWei.toString(),
-      gasPriceWei: review.gasPriceWei.toString(),
-      solanaUsdcAtomic: args.solanaUsdcAtomic,
-      solanaAddress: solana.address,
-      evmAddress: owner,
-      gasUnits: review.gasUnits,
-      positionValueUsd: args.positionValueUsd,
-      fetchQuote: fetchTrustwareQuoteViaProxy,
-    });
-    if (plan.kind === "blocked") throw new Error(plan.reason);
-    const leg: TrustwareLeg | undefined = plan.leg;
-    if (!leg) return;
-    report(
-      `Buying about $${plan.costUsd?.toFixed(2) ?? "?"} of ETH on Ethereum for gas from your Solana wallet.`,
-    );
-    await runSolanaLeg({ request: leg.request, solana, signal: args.signal });
-  } else {
-    throw new Error(`Gas on ${name} cannot be topped up from here.`);
-  }
-
-  report(`Waiting for the gas to land on ${name}.`);
-  const provider = await connectPlanChain(evm, review.chainId);
-  const balance = await awaitNativeBalance(provider, owner, review.requiredWei, args.signal);
-  if (balance < review.requiredWei) {
-    throw new Error(
-      `The gas top-up settled but the ${name} balance has not caught up. Your funds are safe. Try again in a moment.`,
-    );
-  }
+  const shortfall = await planEvmGas({
+    chainId: review.chainId,
+    evm,
+    solanaUsdcAtomic: args.solanaUsdcAtomic,
+    solanaAddress: args.solana.address,
+    gasUnits: review.gasUnits,
+    positionValueUsd: args.positionValueUsd,
+    balanceWei: review.balanceWei,
+    gasPriceWei: review.gasPriceWei,
+    requiredWei: review.requiredWei,
+  });
+  if (!shortfall) return;
+  await fundEvmGas({
+    shortfall,
+    evm,
+    solana: args.solana,
+    report: args.report,
+    signal: args.signal,
+  });
 }

@@ -19,6 +19,7 @@
 import { useState } from "react";
 
 import type { UseOndoUnwind } from "@/lib/ondo/use-ondo-unwind";
+import { EvmGasSheet } from "@/components/EvmGasSheet";
 
 import { INSET_PANEL } from "@/lib/ui/surface";
 
@@ -85,6 +86,14 @@ export function OndoUnwindCard({ unwind }: { unwind: UseOndoUnwind }) {
 
   return (
     <div className={`${PANEL} p-4`}>
+      {status.kind === "gas" && (
+        <EvmGasSheet
+          shortfall={status.shortfall}
+          onUse={unwind.fundGas}
+          onCheckAgain={unwind.recheckGas}
+          onCancel={unwind.reset}
+        />
+      )}
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-white">On Ethereum</h3>

@@ -13,11 +13,14 @@ import { useState } from "react";
 import { formatUnits, parseUnits } from "viem";
 
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
+import { BASE_CHAIN_ID } from "@/lib/base/constants";
+import { planEvmGas, readNativeBalance } from "@/lib/gas/evm";
+import { useEvmGasGate } from "@/lib/gas/use-evm-gas-gate";
 import {
   BASE_USDC,
   LOSSY_RETURN_BELOW_ATOMIC,
   maxReturnableBaseUsdcAtomic,
-  needsBaseGas,
   RETURN_COST_USDC,
   sendBaseUsdcToSolana,
 } from "@/lib/trustware/base";
@@ -30,25 +33,36 @@ type FormState =
 
 export function BaseReturnForm({
   solanaAddress,
+  solanaUsdcAtomic,
   baseUsdcAtomic,
-  baseEthWei,
   onMoved,
 }: {
   solanaAddress: string;
+  // Solana USDC, which buys the Base ETH when the wallet has none.
+  solanaUsdcAtomic: string;
   // Base USDC available to move, 6-decimal atomic.
   baseUsdcAtomic: string;
-  // Base ETH, 18-decimal atomic. Gas for the approval and the route.
-  baseEthWei: string;
   // Called after funds arrive, so the panel refreshes both chains.
   onMoved: () => Promise<void> | void;
 }) {
   const evm = useEmbeddedEvmWallet();
+  const sendSolanaTx = useSendSolanaTxBase64();
   const [input, setInput] = useState("");
   const [state, setState] = useState<FormState>({ kind: "idle" });
 
   const maxAtomic = BigInt(maxReturnableBaseUsdcAtomic(baseUsdcAtomic));
   const max = Number(formatUnits(maxAtomic, BASE_USDC.decimals));
-  const noGas = needsBaseGas(baseEthWei);
+
+  // Base ETH pays for this, and the embedded wallet is born with none. The
+  // gas sheet buys 2 USDC of it from Solana; this used to refuse and tell the
+  // user to send ETH by hand. See lib/gas/use-evm-gas-gate.tsx.
+  const evmSigner = evm.address
+    ? { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider }
+    : null;
+  const gas = useEvmGasGate({
+    evm: evmSigner,
+    solana: { address: solanaAddress, signAndSendBase64: sendSolanaTx },
+  });
 
   let amountAtomic = 0n;
   try {
@@ -63,22 +77,34 @@ export function BaseReturnForm({
   const busy = state.kind === "busy";
   const overBalance = amountAtomic > maxAtomic;
   const lossy = amountAtomic > 0n && amountAtomic < LOSSY_RETURN_BELOW_ATOMIC;
-  const canSubmit =
-    !busy && !noGas && amountAtomic > 0n && !overBalance && !!evm.address;
+  const canSubmit = !busy && amountAtomic > 0n && !overBalance && !!evm.address;
 
   async function handleSubmit() {
-    if (!evm.address) return;
+    if (!evmSigner) return;
     setState({ kind: "busy", message: "Preparing…" });
+    if (
+      await gas.guard({
+        plan: () =>
+          planEvmGas({
+            chainId: BASE_CHAIN_ID,
+            evm: evmSigner,
+            solanaUsdcAtomic,
+            solanaAddress,
+          }),
+        resume: () => handleSubmit(),
+      })
+    ) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
       await sendBaseUsdcToSolana({
         amountAtomic,
         baseUsdcAtomic,
-        ethBalanceWei: baseEthWei,
-        evm: {
-          address: evm.address,
-          switchChain: evm.switchChain,
-          getProvider: evm.getProvider,
-        },
+        // Read live: the prop is the figure from before a top-up the guard
+        // above may have just run, and the library checks it again.
+        ethBalanceWei: (await readNativeBalance(evmSigner, BASE_CHAIN_ID)).toString(),
+        evm: evmSigner,
         solanaAddress,
         onProgress: (p) => setState({ kind: "busy", message: p.message }),
       });
@@ -126,14 +152,6 @@ export function BaseReturnForm({
         </div>
       </div>
 
-      {/* Gas is the one thing that stops this before it starts, so it is stated
-          up front rather than raised as a failure after the amount is entered. */}
-      {noGas && (
-        <p className="text-[11px] text-aeras-warning">
-          This wallet has no ETH on Base to pay gas. Send a small amount of Base
-          ETH to the same address first, then come back.
-        </p>
-      )}
       {overBalance && (
         <p className="text-[11px] text-aeras-warning">
           That is more than the wallet holds on Base.
@@ -170,6 +188,7 @@ export function BaseReturnForm({
         Bridges through Trustware and lands as USDC in your Solana wallet. It
         takes a few minutes, and the cost comes out of the amount delivered.
       </p>
+      {gas.element}
     </div>
   );
 }

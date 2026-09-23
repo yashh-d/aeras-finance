@@ -44,6 +44,10 @@ import {
 } from "@/lib/uniswap/pools";
 import { useUniswapEarn, type UniswapEarn } from "@/lib/uniswap/use-uniswap";
 import { claimFees, moveTokenToSolana, reopenPosition, withdrawPosition } from "@/lib/uniswap/withdraw";
+import { ETHEREUM_CHAIN_ID } from "@/lib/ethereum/constants";
+import { planEvmGas } from "@/lib/gas/evm";
+import { useEvmGasGate, type EvmGasGuardArgs } from "@/lib/gas/use-evm-gas-gate";
+import { ETHEREUM_GAS_UNITS_FULL_CYCLE } from "@/lib/uniswap/fund";
 
 const GROUP_ORDER: PoolGroup[] = ["stocks", "monad", "ethereum", "base"];
 
@@ -315,6 +319,30 @@ function PoolDetail({
   const balances = earn.positions?.balances[pool.chainId] ?? null;
   const gasPriceWei = earn.pools?.gasPriceWei?.[pool.chainId];
 
+  // A deposit funded from Solana buys the chain's gas on the way in. A claim,
+  // a withdrawal, a reopen or a move home is paid from what the wallet holds
+  // there, and a wallet that is short gets the gas sheet instead of the
+  // library's refusal. One gate for every action on this pool; the actions
+  // below call `guardGas` before they sign. See lib/gas/use-evm-gas-gate.tsx.
+  const gas = useEvmGasGate({ evm: signer, solana: earn.solanaSigner });
+  const guardGas = (resume: EvmGasGuardArgs["resume"]) =>
+    signer
+      ? gas.guard({
+          plan: () =>
+            planEvmGas({
+              chainId: pool.chainId,
+              evm: signer,
+              solanaUsdcAtomic,
+              solanaAddress: earn.solanaSigner?.address,
+              gasUnits: ETHEREUM_GAS_UNITS_FULL_CYCLE,
+              // The library's own floor for an exit, a quarter of the deposit
+              // floor (lib/uniswap/withdraw.ts).
+              requiredWei: pool.chainId === ETHEREUM_CHAIN_ID ? undefined : gasFloorWei(pool.chainId) / 4n,
+            }),
+          resume,
+        })
+      : Promise.resolve(false);
+
   return (
     <div className="space-y-4 pb-4 pt-1">
       <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
@@ -338,7 +366,7 @@ function PoolDetail({
           {positions.map((p) => (
             <PositionBlock key={p.key} pool={pool} position={p}>
               {signer && (
-                <PositionActions pool={pool} position={p} signer={signer} prices={prices} onSettled={onSettled} />
+                <PositionActions pool={pool} position={p} signer={signer} prices={prices} guardGas={guardGas} onSettled={onSettled} />
               )}
             </PositionBlock>
           ))}
@@ -367,9 +395,10 @@ function PoolDetail({
               onSettled={onSettled}
             />
           )}
-          <MoveHome pool={pool} signer={signer} solanaAddress={earn.solanaSigner.address} balances={balances} prices={prices} onSettled={onSettled} />
+          <MoveHome pool={pool} signer={signer} solanaAddress={earn.solanaSigner.address} balances={balances} prices={prices} guardGas={guardGas} onSettled={onSettled} />
         </>
       )}
+      {gas.element}
     </div>
   );
 }
@@ -605,12 +634,14 @@ function PositionActions({
   position,
   signer,
   prices,
+  guardGas,
   onSettled,
 }: {
   pool: UniswapPool;
   position: UniswapPositionView;
   signer: EvmSigner;
   prices: Record<string, number>;
+  guardGas: (resume: () => Promise<void>) => Promise<boolean>;
   onSettled: () => Promise<void>;
 }) {
   const [state, setState] = useState<FormState>({ kind: "idle" });
@@ -619,6 +650,10 @@ function PositionActions({
 
   async function run(work: () => Promise<unknown>, doneMessage: string) {
     setState({ kind: "busy", message: "Starting." });
+    if (await guardGas(() => run(work, doneMessage))) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
       const result = await work();
       const txHash = typeof result === "string" ? result : (result as { txHash?: string })?.txHash;
@@ -674,6 +709,7 @@ function MoveHome({
   solanaAddress,
   balances,
   prices,
+  guardGas,
   onSettled,
 }: {
   pool: UniswapPool;
@@ -681,6 +717,7 @@ function MoveHome({
   solanaAddress: string;
   balances: WalletBalances | null;
   prices: Record<string, number>;
+  guardGas: (resume: () => Promise<void>) => Promise<boolean>;
   onSettled: () => Promise<void>;
 }) {
   const [state, setState] = useState<FormState>({ kind: "idle" });
@@ -701,6 +738,10 @@ function MoveHome({
 
   async function move(t: PoolToken, atomic: bigint) {
     setState({ kind: "busy", message: `Moving ${t.symbol} to Solana.` });
+    if (await guardGas(() => move(t, atomic))) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
       await moveTokenToSolana({
         chainId: pool.chainId,

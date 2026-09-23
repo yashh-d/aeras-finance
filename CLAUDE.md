@@ -34,7 +34,7 @@ Solana mainnet holds every position. All xStocks live on Solana via Backed Finan
 
 EVM chains appear only as a source of funds **for anything that becomes a position**. The Trustware layer in `lib/trustware` lets a user who already holds a tokenized-stock equivalent on Ethereum (chain `1`) or BNB Chain (chain `56`) convert it into the canonical Solana xStock and deposit that. The destination is always the user's Solana address. The supported source tokens are a hardcoded registry in `lib/trustware/equivalents.ts`, not anything the user can pass in.
 
-The swap surface is the one exception, and it is deliberate. A swap may end on an EVM chain: Solana USDC to Ethereum USDT is a supported pair. That is wallet plumbing, not lending, and it does not weaken the rule that a *position* never settles off Solana. Its tokens are a separate hardcoded registry in `lib/trustware/swap-tokens.ts`, and both sides of a pair must be in it.
+The swap surface is the one exception, and it is deliberate. A swap may end on an EVM chain: Solana USDC to Ethereum USDT is a supported pair. That is wallet plumbing, not lending, and it does not weaken the rule that a *position* never settles off Solana. Its tokens are a separate hardcoded registry in `lib/trustware/swap-tokens.ts`, and both sides of a pair must be in it. As of 2026-09-22 that registry also carries Monad (USDC, MON) and Base (USDC, ETH), every route to them already exercised by a venue module, and the surface itself exists: the **Swap** button on the wallet panel opens `components/SwapSheet.tsx`, which prices through `lib/trustware/swap-quote.ts` (Jupiter for Solana to Solana, Trustware for anything else) and executes through `lib/swap/execute.ts`, whose Solana-source path is `executeSolanaRoute` in `lib/trustware/execute.ts`. Its From list is what the wallet holds (`lib/swap/holdings.ts`); the number it leads with is the guaranteed minimum. `scripts/trustware-swap-quote-check.mts` verifies every registry token from both directions and, with `PROXY_ORIGIN`, the proxy allowlist; run it after touching the registry.
 
 **Base is a source of USDC, and the home of one position: Bitwise Mag7X.** No tokenized-stock entries in the equivalents registry, no borrow venue. Base was listed only because `lib/trustware/base.ts` can move USDC off it to Solana, and that is still the bar for listing any chain here: a chain a user can receive on but not spend from strands funds, which is exactly what the wallet panel's "cannot be moved" warning exists to say about every chain that is *not* listed. Verified live by `scripts/trustware-base-check.mts` (2026-08-28, 4/4 sizes signable). Two things that fall out of the measurements: the route costs about $0.30 flat, so a $5 move loses 5.4% of itself and the form warns below $25; and gas is ETH on Base with no automatic top-up on the plain return, because Base USDC that arrives from outside the app has no inbound leg to attach one to, unlike Monad.
 
@@ -347,6 +347,27 @@ For Jupiter specifically, a project-scoped MCP server is wired up in `.mcp.json`
 - Broadcast every Solana transaction through `sendAndConfirm` in `lib/solana/send-confirm.ts`. Never call `connection.confirmTransaction(signature, ...)` with a bare signature string: that selects web3.js's legacy strategy, which is a flat 30-second timer and confirms over a WebSocket subscription with no polling behind it, so it reported failures on transactions that were still in flight and on transactions that had already landed. Never cap `maxRetries` on a send either; capping it at 3 stopped the RPC rebroadcasting after about five seconds. Both were live production bugs.
 - Any transaction we build ourselves sets a compute unit PRICE, not just a limit, via `resolvePriorityFee`. A limit alone raises the ceiling without buying a place in the queue. Note that Solana charges the priority fee on the requested limit rather than on units consumed, so an inflated limit is money spent for nothing.
 - Prefer small, focused files over large ones. One hook, one helper, one component per file when reasonable.
+- **Gas goes through `lib/gas`, and the sheet opens only when the wallet is
+  short.** Every self-built Solana signature runs behind `useGasGate`
+  (`lib/gas/use-gas-gate.tsx`): `toSetupCost` prices the rent for accounts
+  that do not exist yet plus the fee allowance plus the rent floor the fee
+  payer must be left holding, and `isBlocked` (shortfall above zero) is the
+  one thing that opens `components/GasSheet.tsx`. A wallet holding less than
+  the zero-byte rent floor (~0.00065 SOL) cannot pay any fee, so it reads as
+  short. The sheet offers three things: use a little of the asset in the
+  ticket (USDC first, else the asset, sold gaslessly through Ultra), add SOL
+  through Privy, or cancel. It does not open to disclose rent; rent is still
+  logged to `position_setup` through `needsSetup`. The EVM chains have the
+  twin, `useEvmGasGate` over `lib/gas/evm.ts`: Monad, Base and Robinhood
+  Chain are a floor and a fixed Solana USDC top-up (`FIXED_GAS_POLICY`),
+  Ethereum is sized live by `lib/trustware/eth-gas.ts`, and the source is
+  always Solana USDC because a position on an EVM chain cannot pay for its
+  own exit. Deposits funded from Solana keep their silent gas leg; the exits
+  and returns (Morpho and Aave withdrawals, shMON unstake, Uniswap claim,
+  withdraw, reopen and move home, the Monad and Base return legs, the Ondo
+  unwind, both gold cards' close and borrow-more, Blend's per-chain top-up)
+  open the sheet. BNB is deliberately not handled. Do not add a venue-local
+  "send ETH by hand" error or a disabled-on-no-gas button; call the gate.
 
 ## Writing Style (for any user-facing copy)
 

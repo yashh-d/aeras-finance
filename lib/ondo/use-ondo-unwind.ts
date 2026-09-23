@@ -25,11 +25,15 @@ import { useCallback, useEffect, useState } from "react";
 import { encodeFunctionData, erc20Abi } from "viem";
 
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
+import { fundEvmGas, planEvmGas, type EvmGasShortfall } from "@/lib/gas/evm";
 import { atomicToUi, uiToAtomic } from "@/lib/trustware/amounts";
 import { connectEvmChain, type ConversionProgress } from "@/lib/trustware/execute";
 
 import type { OndoCollateral } from "./collateral";
 import {
+  ESTIMATED_GAS_UNITS,
+  GAS_SAFETY_MULTIPLE,
   executeOndoUnwind,
   planOndoUnwind,
   unwindTargetFor,
@@ -57,6 +61,13 @@ export type UnwindStatus =
   | { kind: "confirm"; reason: string; lossBps: number }
   | { kind: "working"; message: string }
   | { kind: "sent"; sourceTxHash: string; destTxHash: string | null }
+  // The wallet cannot pay the Ethereum gas this leg needs. The card shows the
+  // gas sheet; `fundGas` and `recheckGas` re-run the priced request after.
+  | {
+      kind: "gas";
+      shortfall: EvmGasShortfall;
+      retry: { symbol: string; amountUi: string; acceptLossBps?: number };
+    }
   | { kind: "error"; message: string };
 
 export interface UseOndoUnwind {
@@ -71,17 +82,26 @@ export interface UseOndoUnwind {
   refresh: () => Promise<void>;
   price: (symbol: string, amountUi: string, acceptLossBps?: number) => Promise<void>;
   confirm: () => Promise<void>;
+  // Buy the ETH the "gas" status names from Solana USDC, then price again.
+  fundGas: (report: (message: string) => void) => Promise<void>;
+  // The user sent ETH by hand; re-read and price again.
+  recheckGas: () => Promise<void>;
   reset: () => void;
 }
 
 export function useOndoUnwind(params: {
   collateral: OndoCollateral[];
   solanaAddress: string | undefined;
+  // Solana USDC, which buys the ETH when the wallet has none. Without it the
+  // gas sheet offers only sending ETH by hand.
+  solanaUsdcAtomic?: string;
   enabled?: boolean;
   onDelivered?: () => void;
 }): UseOndoUnwind {
   const enabled = params.enabled ?? true;
   const { collateral, solanaAddress } = params;
+  const solanaUsdcAtomic = params.solanaUsdcAtomic ?? "0";
+  const sendSolanaTx = useSendSolanaTxBase64();
 
   // **Destructured, never used as an object in a dependency array.**
   //
@@ -212,13 +232,39 @@ export function useOndoUnwind(params: {
           params: [],
         })) as string;
 
+        // The gas check planOndoUnwind makes, made first, so a wallet that is
+        // short gets the gas sheet rather than a sentence telling it to go and
+        // find ETH. The units are doubled because the shared planner's floor
+        // is 1.5x the units and this leg's own safety multiple is 3x.
+        const balanceWei = (await provider.request({
+          method: "eth_getBalance",
+          params: [evmAddress, "latest"],
+        })) as string;
+        const gasPriceWei = BigInt(gasPriceHex || "0x0");
+        if (BigInt(balanceWei) < ESTIMATED_GAS_UNITS * gasPriceWei * BigInt(GAS_SAFETY_MULTIPLE)) {
+          const shortfall = await planEvmGas({
+            chainId: Number(ETHEREUM_CHAIN),
+            evm: { address: evmAddress, switchChain, getProvider },
+            solanaUsdcAtomic,
+            solanaAddress,
+            gasUnits: ESTIMATED_GAS_UNITS * 2n,
+            positionValueUsd: holding.valueUsd ?? 0,
+            balanceWei: BigInt(balanceWei),
+            gasPriceWei,
+          });
+          if (shortfall) {
+            setStatus({ kind: "gas", shortfall, retry: { symbol, amountUi, acceptLossBps } });
+            return;
+          }
+        }
+
         const result = await planOndoUnwind({
           collateral: asset,
           amountAtomic,
           evmAddress,
           solanaAddress,
-          gasBalanceWei: BigInt(gasWei),
-          gasPriceWei: BigInt(gasPriceHex || "0x0"),
+          gasBalanceWei: BigInt(balanceWei),
+          gasPriceWei,
           acceptLossBps,
         });
 
@@ -235,8 +281,32 @@ export function useOndoUnwind(params: {
         setStatus({ kind: "error", message: err instanceof Error ? err.message : String(err) });
       }
     },
-    [collateral, holdings, evmAddress, switchChain, getProvider, solanaAddress, gasWei],
+    [collateral, holdings, evmAddress, switchChain, getProvider, solanaAddress, solanaUsdcAtomic],
   );
+
+  const fundGas = useCallback(
+    async (report: (message: string) => void) => {
+      if (status.kind !== "gas") return;
+      if (!evmAddress || !solanaAddress) throw new Error("Both wallets are required.");
+      const { retry } = status;
+      await fundEvmGas({
+        shortfall: status.shortfall,
+        evm: { address: evmAddress, switchChain, getProvider },
+        solana: { address: solanaAddress, signAndSendBase64: sendSolanaTx },
+        report,
+      });
+      await refresh();
+      await price(retry.symbol, retry.amountUi, retry.acceptLossBps);
+    },
+    [status, evmAddress, solanaAddress, switchChain, getProvider, sendSolanaTx, refresh, price],
+  );
+
+  const recheckGas = useCallback(async () => {
+    if (status.kind !== "gas") return;
+    const { retry } = status;
+    await refresh();
+    await price(retry.symbol, retry.amountUi, retry.acceptLossBps);
+  }, [status, refresh, price]);
 
   const confirm = useCallback(async () => {
     if (status.kind !== "ready" || !evmAddress || !solanaAddress) return;
@@ -268,6 +338,8 @@ export function useOndoUnwind(params: {
     refresh,
     price,
     confirm,
+    fundGas,
+    recheckGas,
     reset: useCallback(() => setStatus({ kind: "idle" }), []),
   };
 }

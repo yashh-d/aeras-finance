@@ -44,16 +44,8 @@ import {
   type TrendPoint,
 } from "@/lib/jupiter/portfolio-trend";
 import { SOLSCAN_TX_BASE } from "@/lib/jupiter/constants";
-import {
-  XSTOCK_BORROW_VAULTS,
-  fetchLiveVaultStateViaProxy,
-  fetchPositionState,
-  findExistingNftId,
-  fromAtomicBN,
-  type LiveVaultState,
-  type UserPositionState,
-  type XStockBorrowVault,
-} from "@/lib/jupiter/borrow";
+import { fetchLiveVaultStateViaProxy } from "@/lib/jupiter/borrow";
+import { useBorrowSummary } from "@/lib/borrow/use-borrow-summary";
 import type { PortfolioHolding } from "@/lib/solana/holdings";
 import { getConnection } from "@/lib/solana/balances";
 
@@ -636,9 +628,13 @@ function TrendTooltip({
 // ── Health card ────────────────────────────────────────────────────────────
 
 interface AggregatePosition {
-  vault: XStockBorrowVault;
-  position: UserPositionState;
-  live: LiveVaultState | null;
+  // Stable identity across venues. `vaultId` was the key while this read
+  // Jupiter alone; a Kamino obligation has no vault id.
+  key: string;
+  venueLabel: string;
+  collateralSymbol: string;
+  collateralMint: string;
+  borrowSymbol: string;
   collateralUi: number;
   debtUi: number;
   collateralUsd: number;
@@ -647,85 +643,137 @@ interface AggregatePosition {
   liquidationPct: number;
   healthFactor: number;
   liquidationPrice: number | null;
+  // False when the collateral is posted with nothing drawn against it. Such a
+  // position has no LTV, no health and nothing to liquidate, so the figures
+  // above are all zero or infinite and the row says so instead of drawing them.
+  hasLoan: boolean;
 }
 
+// Every open borrow the account holds, at every venue, with the numbers this
+// panel draws health and net worth from.
+//
+// This used to scan XSTOCK_BORROW_VAULTS directly and read Jupiter Lend alone,
+// which is why a Kamino borrow showed up here as no position, no health factor,
+// and a net worth that counted neither the posted collateral nor the debt. It
+// also loaded exactly once per mount, with no refresh and no polling, so a
+// position closed elsewhere in the app stayed on screen until a page reload.
+//
+// Both are fixed by reading the shared snapshot instead: useBorrowSummary
+// already covers both venues, already settles after an action rather than
+// committing the first (possibly pre-settlement) read, and is cached across
+// consumers, so this costs no extra chain reads on a page that has already
+// mounted the borrow panel.
+//
+// Collateral posted with no loan against it is included. A user who deposits
+// stock and then does not borrow -- or whose borrow leg failed after the
+// deposit leg landed -- has watched that stock leave their wallet, and this is
+// the surface that has to account for it. Its net worth counts it too.
 function useBorrowPositions(walletAddress: string): AggregatePosition[] {
-  const [positions, setPositions] = useState<AggregatePosition[]>([]);
+  const summary = useBorrowSummary({
+    walletAddress,
+    // Only the position lists are read here. Capacity is the borrow panel's
+    // headline, and computing it needs prices and balances this panel
+    // deliberately no longer takes as props.
+    prices: null,
+    balances: null,
+    equivalents: [],
+  });
+
+  // The Jupiter side's oracle price, which the summary does not carry. Read per
+  // position rather than per vault: an account with nothing at Jupiter makes no
+  // calls at all. Kamino's obligation already reports its own USD figures.
+  const summaryPositions = summary.positions;
+  const summaryCollateralOnly = summary.collateralOnly;
+  const open = useMemo(
+    () => [...summaryPositions, ...summaryCollateralOnly],
+    [summaryPositions, summaryCollateralOnly],
+  );
+  const [oraclePriceUsd, setOraclePriceUsd] = useState<Record<string, number>>(
+    {},
+  );
 
   useEffect(() => {
+    const jupiter = open.filter((p) => p.ref.venue === "jupiter");
+    if (jupiter.length === 0) return;
     let cancelled = false;
-    async function load() {
-      try {
-        const connection = getConnection();
-        const results = await Promise.all(
-          XSTOCK_BORROW_VAULTS.map(async (vault) => {
-            const nftId = await findExistingNftId(
-              walletAddress,
-              vault,
-              connection,
-            );
-            if (nftId == null) return null;
-            const [position, live] = await Promise.all([
-              fetchPositionState(vault, nftId, connection),
-              fetchLiveVaultStateViaProxy(vault.vaultId).catch(() => null),
-            ]);
-            if (!position) return null;
-            if (
-              position.collateralAtomic.isZero() &&
-              position.debtAtomic.isZero()
-            )
-              return null;
-
-            const collateralUi = fromAtomicBN(
-              position.collateralAtomic,
-              vault.collateralDecimals,
-            );
-            const debtUi = fromAtomicBN(
-              position.debtAtomic,
-              vault.borrowDecimals,
-            );
-            const price = live?.oraclePriceUsd ?? 0;
-            const collateralUsd = collateralUi * price;
-            const debtUsd = debtUi; // USDC, $1
-            const ltvPct =
-              collateralUsd > 0 ? (debtUsd / collateralUsd) * 100 : 0;
-            const liquidationPct = vault.liquidationThreshold / 10;
-            const healthFactor =
-              ltvPct > 0 ? liquidationPct / ltvPct : Infinity;
-            const liquidationPrice =
-              collateralUi > 0 && debtUi > 0
-                ? debtUi / (collateralUi * (vault.liquidationThreshold / 1000))
-                : null;
-
-            return {
-              vault,
-              position,
-              live,
-              collateralUi,
-              debtUi,
-              collateralUsd,
-              debtUsd,
-              ltvPct,
-              liquidationPct,
-              healthFactor,
-              liquidationPrice,
-            } as AggregatePosition;
-          }),
-        );
-        if (!cancelled) {
-          setPositions(results.filter((r): r is AggregatePosition => r != null));
-        }
-      } catch (err) {
-        console.error("[useBorrowPositions]", err);
-      }
-    }
-    load();
+    (async () => {
+      const entries = await Promise.all(
+        jupiter.map(async (p) => {
+          if (p.ref.venue !== "jupiter") return null;
+          try {
+            const live = await fetchLiveVaultStateViaProxy(p.ref.vault.vaultId);
+            return [p.key, live.oraclePriceUsd] as const;
+          } catch (err) {
+            console.error("[positions borrow vault]", err);
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      setOraclePriceUsd(
+        Object.fromEntries(entries.filter((e): e is [string, number] => e != null)),
+      );
+    })();
     return () => {
       cancelled = true;
     };
-  }, [walletAddress]);
+  }, [open]);
 
-  return positions;
+  return useMemo(
+    () =>
+      open.map((p): AggregatePosition => {
+        const base = {
+          key: p.key,
+          venueLabel: p.venueLabel,
+          collateralSymbol: p.collateralSymbol,
+          collateralMint: p.collateralMint,
+          borrowSymbol: p.debtSymbol,
+          collateralUi: p.collateralUi,
+          debtUi: p.debtUi,
+          // USDC on both venues, marked at $1.
+          debtUsd: p.debtUi,
+          hasLoan: p.debtUi > 0,
+        };
+
+        if (p.ref.venue === "kamino") {
+          // Kamino reports LTV and its liquidation ceiling on the obligation
+          // itself, at the oracle price liquidation is actually judged on, so
+          // nothing here is re-derived from a price map.
+          const pos = p.ref.position;
+          const liquidationPct = pos.liquidationLtvPct;
+          return {
+            ...base,
+            collateralUsd: pos.collateralUsd,
+            ltvPct: pos.ltvPct,
+            liquidationPct,
+            healthFactor: pos.ltvPct > 0 ? liquidationPct / pos.ltvPct : Infinity,
+            liquidationPrice:
+              p.collateralUi > 0 && p.debtUi > 0 && liquidationPct > 0
+                ? p.debtUi / (p.collateralUi * (liquidationPct / 100))
+                : null,
+          };
+        }
+
+        // Jupiter Lend. liquidationThreshold is in tenths of a percent.
+        const vault = p.ref.vault;
+        const price = oraclePriceUsd[p.key] ?? 0;
+        const collateralUsd = p.collateralUi * price;
+        const ltvPct = collateralUsd > 0 ? (p.debtUi / collateralUsd) * 100 : 0;
+        const liquidationPct = vault.liquidationThreshold / 10;
+        return {
+          ...base,
+          collateralUsd,
+          ltvPct,
+          liquidationPct,
+          healthFactor: ltvPct > 0 ? liquidationPct / ltvPct : Infinity,
+          liquidationPrice:
+            p.collateralUi > 0 && p.debtUi > 0
+              ? p.debtUi / (p.collateralUi * (vault.liquidationThreshold / 1000))
+              : null,
+        };
+      }),
+    [open, oraclePriceUsd],
+  );
 }
 
 function HealthCard({
@@ -849,9 +897,9 @@ function HealthCard({
           <ul className="space-y-1.5 pt-1">
             {positions.map((p) => (
               <PositionHealthRow
-                key={p.vault.vaultId}
+                key={p.key}
                 pos={p}
-                strategy={strategyByMint.get(p.vault.collateralMint) ?? null}
+                strategy={strategyByMint.get(p.collateralMint) ?? null}
               />
             ))}
           </ul>
@@ -884,12 +932,53 @@ function PositionHealthRow({
   const caution = pos.healthFactor >= 1.1 && pos.healthFactor < 1.5;
   const color = safe ? "#119b62" : caution ? "#e8a13a" : "#d93232";
   const ratio = Math.min(pos.ltvPct / pos.liquidationPct, 1);
+
+  // Posted with nothing drawn against it. There is no health to report and no
+  // bar to fill, so the row says where the collateral is and what it is worth
+  // rather than drawing an empty gauge and a 0.0% LTV that reads as a fault.
+  if (!pos.hasLoan) {
+    return (
+      <li className="flex items-center justify-between gap-3 text-xs">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline justify-between">
+            <span className="flex items-center gap-1.5 font-medium text-white">
+              {pos.collateralSymbol}
+              <span className="text-[10px] font-normal text-white/40">
+                {pos.venueLabel}
+              </span>
+              {strategy && (
+                <span className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
+                  {strategy}
+                </span>
+              )}
+            </span>
+            <span className="font-mono tabular-nums text-white/70">
+              {fmtUsd(pos.collateralUsd)}
+            </span>
+          </div>
+          <div className="mt-1 text-[10px] text-white/50">
+            {pos.collateralUi.toLocaleString(undefined, {
+              maximumFractionDigits: 4,
+            })}{" "}
+            posted as collateral. Nothing borrowed against it.
+          </div>
+        </div>
+      </li>
+    );
+  }
+
   return (
     <li className="flex items-center justify-between gap-3 text-xs">
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between">
           <span className="flex items-center gap-1.5 font-medium text-white">
-            {pos.vault.collateralSymbol} → {pos.vault.borrowSymbol}
+            {pos.collateralSymbol} → {pos.borrowSymbol}
+            {/* Both venues take the same collateral, so a user borrowing
+                against the same stock at each would otherwise see two
+                identical rows. */}
+            <span className="text-[10px] font-normal text-white/40">
+              {pos.venueLabel}
+            </span>
             {strategy && (
               <span className="rounded bg-white/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wider text-white/60">
                 {strategy}

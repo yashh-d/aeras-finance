@@ -1,5 +1,6 @@
 import "server-only";
 
+import { TERMS_VERSION } from "@/lib/legal/terms";
 import { getSupabaseAdmin, UNIQUE_VIOLATION } from "@/lib/supabase/server";
 import { isValidEmail, normalizeEmail } from "@/lib/waitlist";
 
@@ -19,7 +20,32 @@ export type UserRow = {
   reason: string | null;
   approved_at: string | null;
   created_at: string;
+  // Terms of Service acceptance (migration 0005). Absent on rows read before
+  // the migration has run, which the stamp below tolerates.
+  terms_version: string | null;
+  terms_accepted_at: string | null;
 };
+
+// Records that this row accepted the current Terms, if it has not already.
+// Every path that creates or signs in a user runs through here, because each
+// of those actions is taken past a line that says "you agree to the Terms".
+//
+// Best-effort on purpose: a failure here (most likely migration 0005 not yet
+// applied) is logged and the row is returned unstamped, so an acceptance
+// record can never be the reason a sign-in 500s.
+async function stampTermsAcceptance(row: UserRow): Promise<UserRow> {
+  if (row.terms_version === TERMS_VERSION) return row;
+  const acceptedAt = new Date().toISOString();
+  const { error } = await getSupabaseAdmin()
+    .from("users")
+    .update({ terms_version: TERMS_VERSION, terms_accepted_at: acceptedAt })
+    .eq("id", row.id);
+  if (error) {
+    console.warn("terms acceptance not recorded:", error.message);
+    return row;
+  }
+  return { ...row, terms_version: TERMS_VERSION, terms_accepted_at: acceptedAt };
+}
 
 // The only shape the client ever sees. Never return raw rows.
 export type UserView = {
@@ -59,6 +85,18 @@ export async function toView(row: UserRow): Promise<UserView> {
 // Public form submission. Creates a waitlisted row keyed by email, or returns
 // the existing row (idempotent). Links a referrer if a valid code was passed.
 export async function createFromForm(input: {
+  email: string;
+  name?: string;
+  reason?: string;
+  walletAddress?: string;
+  referralCode?: string;
+}): Promise<{ created: boolean; row: UserRow }> {
+  const result = await createFromFormRow(input);
+  // A re-submit is an acceptance too, so the stamp is not gated on `created`.
+  return { ...result, row: await stampTermsAcceptance(result.row) };
+}
+
+async function createFromFormRow(input: {
   email: string;
   name?: string;
   reason?: string;
@@ -116,6 +154,18 @@ export async function createFromForm(input: {
 // Upsert from a verified Privy identity. Match by privy_did first; otherwise by
 // email, which adopts a row created by the pre-auth form; otherwise insert new.
 export async function syncFromPrivy(
+  identity: {
+    privyDid: string;
+    email: string | null;
+    walletAddress: string | null;
+  },
+): Promise<UserRow> {
+  // Every sign-in passes the Privy modal's "I agree to the Terms" line, so
+  // every sign-in is an acceptance of whatever version is current.
+  return stampTermsAcceptance(await syncFromPrivyRow(identity));
+}
+
+async function syncFromPrivyRow(
   identity: {
     privyDid: string;
     email: string | null;

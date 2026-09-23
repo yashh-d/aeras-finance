@@ -95,11 +95,13 @@ function BorrowForms({
   const { stats } = useBorrowMarketStats();
 
   // A settled borrow or repay changes both the wallet and the headline
-  // figures, as on the tab.
+  // figures, as on the tab. Both awaited, as the tab does: a card that awaits
+  // this before re-reading its own position wants the summary's settle loop
+  // to have finished too, so the owed and available figures it draws are the
+  // post-action ones.
   const summaryRefresh = summary.refresh;
   const refreshAll = useCallback(async () => {
-    await onRefresh();
-    summaryRefresh();
+    await Promise.all([onRefresh(), summaryRefresh()]);
   }, [onRefresh, summaryRefresh]);
 
   const held = balances?.xstocks[xstock.mint] ?? 0;
@@ -156,6 +158,9 @@ function BorrowForms({
           collateral={reserve}
           walletAddress={walletAddress}
           walletUsdc={balances?.usdc ?? 0}
+          solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+          solBalance={balances?.sol ?? 0}
+          solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
           collateralBalance={held}
           collateralBalanceAtomic={heldAtomic}
           prices={prices}

@@ -82,7 +82,7 @@ const GAS_RESERVE_USDC_ATOMIC = 5_000_000n; // 5 USDC
 // and a reward claim (~150k). A supply vault uses well under half, and paying
 // for the larger case means a user who moves from one to the other never
 // strands. The multiples and the dollar cap live in lib/trustware/eth-gas.ts.
-const GAS_UNITS_FULL_CYCLE = 1_100_000n;
+export const GAS_UNITS_FULL_CYCLE = 1_100_000n;
 
 // How long to wait for delivered funds to become readable after Trustware
 // reports success. The destination transaction has already mined by then;

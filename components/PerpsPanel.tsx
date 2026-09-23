@@ -85,10 +85,14 @@ type Venue = "lighter" | "ondo";
 // the user already holds. Ondo needs a SIWE sign-in and an Ethereum deposit
 // before a single order can be placed, so defaulting to it meant a page load
 // spent four requests discovering the user was not signed in.
+// TEMPORARY (demo): hides the Ondo venue from the toggle. Nothing else is
+// removed, and the Ondo body stays reachable the moment this is false again.
+const HIDE_ONDO = true;
+
 const VENUES: { id: Venue; label: string }[] = [
   { id: "lighter", label: "Lighter" },
   { id: "ondo", label: "Ondo" },
-];
+].filter((v) => !(HIDE_ONDO && v.id === "ondo")) as { id: Venue; label: string }[];
 
 type Status =
   | { kind: "idle" }
@@ -505,6 +509,7 @@ function TopBar({
         </span>
       </div>
       <div className="flex items-center gap-2">
+        {VENUES.length > 1 && (
         <div className="flex items-center rounded-lg border border-white/10 p-0.5">
           {VENUES.map((v) => (
             <button
@@ -521,6 +526,7 @@ function TopBar({
             </button>
           ))}
         </div>
+        )}
         <button
           type="button"
           onClick={onRefresh}

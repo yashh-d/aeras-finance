@@ -79,11 +79,10 @@ import {
   type KaminoVaultState,
 } from "@/lib/kamino/kvaults";
 import { useSignSolanaTxBase64 } from "@/lib/privy/sign";
-import { FirstPositionSheet } from "@/components/FirstPositionSheet";
+import { useGasGate } from "@/lib/gas/use-gas-gate";
 import {
-  isBlocked,
+  estimateSolanaFeeCost,
   isLamportShortfall,
-  needsSetup,
   type SetupCost,
 } from "@/lib/borrow/setup-cost";
 import { estimateJupiterEarnDepositCost } from "@/lib/jupiter/earn-deposit-cost";
@@ -1265,13 +1264,6 @@ function VaultForm({
   // share balance instead of an asset amount that rounds against them.
   const [redeemAll, setRedeemAll] = useState(false);
   const [state, setState] = useState<FormState>({ kind: "idle" });
-  // The priced rent of a first deposit and the amount it interrupted, held
-  // while the setup sheet is open so the deposit resumes with the same figure
-  // once the SOL is there.
-  const [setupGate, setSetupGate] = useState<{
-    cost: SetupCost;
-    amountAtomic: BN;
-  } | null>(null);
   // Set once a funding round has spent something, so a deposit that then
   // fails still refreshes the balances the sale changed.
   const fundedRef = useRef(false);
@@ -1322,6 +1314,17 @@ function VaultForm({
         }
       : undefined;
 
+  // Every signature here goes through the gate; the sheet opens only when
+  // the wallet cannot pay, selling a little of the deposit or USDC for SOL.
+  // See lib/gas/use-gas-gate.tsx.
+  const gas = useGasGate({
+    walletAddress,
+    walletUsdc,
+    asset: sellableDeposit,
+    solPriceUsd,
+    signTxBase64,
+  });
+
   // A first deposit allocates a token account for the vault's shares, and the
   // wallet pays rent for it. Price that before asking for a signature and open
   // the setup sheet when there is something to pay: it offers to buy the SOL
@@ -1334,17 +1337,36 @@ function VaultForm({
       return;
     }
     setState({ kind: "submitting" });
-    try {
-      const cost = await estimateDepositCost(amountAtomic);
-      if (needsSetup(cost)) {
-        setSetupGate({ cost, amountAtomic });
-        setState({ kind: "idle" });
-        return;
-      }
-    } catch (err) {
-      console.error("[earn deposit cost]", err);
+    if (await guardDeposit(amountAtomic)) {
+      setState({ kind: "idle" });
+      return;
     }
     await runDeposit(amountAtomic);
+  }
+
+  // A withdrawal creates nothing, but still pays the fee.
+  function guardWithdraw(venueLabel: string): Promise<boolean> {
+    return gas.guard({
+      estimate: () =>
+        estimateSolanaFeeCost({
+          connection: getConnection(),
+          walletAddress,
+          venueLabel,
+        }),
+      resume: () => runWithdraw(),
+    });
+  }
+
+  // Opens the gas sheet when the wallet cannot pay for this deposit, and
+  // resumes it with the same amount once it can.
+  function guardDeposit(requestedAtomic: BN): Promise<boolean> {
+    return gas.guard({
+      estimate: () => estimateDepositCost(requestedAtomic),
+      resume: () => runDeposit(requestedAtomic),
+      onFunded: () => {
+        fundedRef.current = true;
+      },
+    });
   }
 
   function estimateDepositCost(requestedAtomic: BN): Promise<SetupCost> {
@@ -1394,17 +1416,9 @@ function VaultForm({
   // Re-price and reopen the sheet when it agrees; otherwise fall through to
   // the ordinary message.
   async function failDeposit(err: unknown, requestedAtomic: BN) {
-    if (isLamportShortfall(err)) {
-      try {
-        const cost = await estimateDepositCost(requestedAtomic);
-        if (isBlocked(cost)) {
-          setSetupGate({ cost, amountAtomic: requestedAtomic });
-          setState({ kind: "idle" });
-          return;
-        }
-      } catch (costErr) {
-        console.error("[earn deposit cost]", costErr);
-      }
+    if (isLamportShortfall(err) && (await guardDeposit(requestedAtomic))) {
+      setState({ kind: "idle" });
+      return;
     }
     // A funding round already changed what the wallet holds; refresh so the
     // form does not keep drawing the balances from before the sale.
@@ -1414,6 +1428,10 @@ function VaultForm({
 
   async function runWithdraw() {
     setState({ kind: "submitting" });
+    if (await guardWithdraw("Jupiter Lend")) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
       const connection = getConnection();
       const built = redeemAll
@@ -1616,40 +1634,7 @@ function VaultForm({
       </button>
       </div>
 
-      {setupGate && (
-        <FirstPositionSheet
-          purpose="deposit"
-          depositSymbol={meta.symbol}
-          cost={setupGate.cost}
-          walletAddress={walletAddress}
-          walletUsdc={walletUsdc}
-          collateral={sellableDeposit}
-          solPriceUsd={solPriceUsd}
-          signTxBase64={signTxBase64}
-          onCancel={() => setSetupGate(null)}
-          onProceed={() => {
-            const { amountAtomic: requested } = setupGate;
-            setSetupGate(null);
-            void runDeposit(requested);
-          }}
-          onFunded={async () => {
-            fundedRef.current = true;
-            // Re-price rather than trusting the swap's own estimate: the
-            // deposit that follows reads the same balance this does.
-            const fresh = await estimateDepositCost(setupGate.amountAtomic);
-            if (isBlocked(fresh)) {
-              setSetupGate({
-                cost: fresh,
-                amountAtomic: setupGate.amountAtomic,
-              });
-              return;
-            }
-            const { amountAtomic: requested } = setupGate;
-            setSetupGate(null);
-            await runDeposit(requested);
-          }}
-        />
-      )}
+      {gas.element}
     </div>
   );
 }
@@ -1697,12 +1682,7 @@ function KaminoVaultForm({
   // trip through tokens would leave share dust behind.
   const [withdrawAll, setWithdrawAll] = useState(false);
   const [state, setState] = useState<FormState>({ kind: "idle" });
-  // See VaultForm: the priced rent of a first deposit and the amount it
-  // interrupted, and whether a funding round has spent something.
-  const [setupGate, setSetupGate] = useState<{
-    cost: SetupCost;
-    amountAtomic: string;
-  } | null>(null);
+  // See VaultForm: whether a funding round has spent something.
   const fundedRef = useRef(false);
 
   const walletAtomic = depositableAtomic(asset, balances);
@@ -1752,23 +1732,51 @@ function KaminoVaultForm({
         }
       : undefined;
 
+  // Every signature here goes through the gate; the sheet opens only when
+  // the wallet cannot pay, selling a little of the deposit or USDC for SOL.
+  // See lib/gas/use-gas-gate.tsx.
+  const gas = useGasGate({
+    walletAddress,
+    walletUsdc,
+    asset: sellableDeposit,
+    solPriceUsd,
+    signTxBase64,
+  });
+
   async function handleSubmit() {
     if (mode !== "deposit") {
       await runWithdraw();
       return;
     }
     setState({ kind: "submitting" });
-    try {
-      const cost = await estimateDepositCost(amountAtomic.toString());
-      if (needsSetup(cost)) {
-        setSetupGate({ cost, amountAtomic: amountAtomic.toString() });
-        setState({ kind: "idle" });
-        return;
-      }
-    } catch (err) {
-      console.error("[kamino deposit cost]", err);
+    if (await guardDeposit(amountAtomic.toString())) {
+      setState({ kind: "idle" });
+      return;
     }
     await runDeposit(amountAtomic.toString());
+  }
+
+  // See VaultForm.
+  function guardWithdraw(venueLabel: string): Promise<boolean> {
+    return gas.guard({
+      estimate: () =>
+        estimateSolanaFeeCost({
+          connection: getConnection(),
+          walletAddress,
+          venueLabel,
+        }),
+      resume: () => runWithdraw(),
+    });
+  }
+
+  function guardDeposit(requestedAtomic: string): Promise<boolean> {
+    return gas.guard({
+      estimate: () => estimateDepositCost(requestedAtomic),
+      resume: () => runDeposit(requestedAtomic),
+      onFunded: () => {
+        fundedRef.current = true;
+      },
+    });
   }
 
   function estimateDepositCost(requestedAtomic: string): Promise<SetupCost> {
@@ -1819,17 +1827,9 @@ function KaminoVaultForm({
 
   // The chain refused the deposit for want of SOL. See VaultForm.
   async function failDeposit(err: unknown, requestedAtomic: string) {
-    if (isLamportShortfall(err)) {
-      try {
-        const cost = await estimateDepositCost(requestedAtomic);
-        if (isBlocked(cost)) {
-          setSetupGate({ cost, amountAtomic: requestedAtomic });
-          setState({ kind: "idle" });
-          return;
-        }
-      } catch (costErr) {
-        console.error("[kamino deposit cost]", costErr);
-      }
+    if (isLamportShortfall(err) && (await guardDeposit(requestedAtomic))) {
+      setState({ kind: "idle" });
+      return;
     }
     if (fundedRef.current) void onSettled();
     setState({ kind: "error", message: readableError(err) });
@@ -1837,6 +1837,10 @@ function KaminoVaultForm({
 
   async function runWithdraw() {
     setState({ kind: "submitting" });
+    if (await guardWithdraw("Kamino")) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
       // Withdrawals are priced in shares, so the typed token amount is
       // converted, and a full exit uses the exact share balance.
@@ -2048,38 +2052,7 @@ function KaminoVaultForm({
         </p>
       </div>
 
-      {setupGate && (
-        <FirstPositionSheet
-          purpose="deposit"
-          depositSymbol={asset.symbol}
-          cost={setupGate.cost}
-          walletAddress={walletAddress}
-          walletUsdc={walletUsdc}
-          collateral={sellableDeposit}
-          solPriceUsd={solPriceUsd}
-          signTxBase64={signTxBase64}
-          onCancel={() => setSetupGate(null)}
-          onProceed={() => {
-            const { amountAtomic: requested } = setupGate;
-            setSetupGate(null);
-            void runDeposit(requested);
-          }}
-          onFunded={async () => {
-            fundedRef.current = true;
-            const fresh = await estimateDepositCost(setupGate.amountAtomic);
-            if (isBlocked(fresh)) {
-              setSetupGate({
-                cost: fresh,
-                amountAtomic: setupGate.amountAtomic,
-              });
-              return;
-            }
-            const { amountAtomic: requested } = setupGate;
-            setSetupGate(null);
-            await runDeposit(requested);
-          }}
-        />
-      )}
+      {gas.element}
     </div>
   );
 }

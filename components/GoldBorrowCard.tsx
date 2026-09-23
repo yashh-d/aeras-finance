@@ -28,6 +28,10 @@ import { AssetLogo, VenueMark } from "@/components/AssetLogo";
 import { Stat, fmt, fmtUsd, healthTone } from "@/components/gold/shared";
 import { VENUE_LOGOS } from "@/lib/tokens/logos";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { ETHEREUM_CHAIN_ID } from "@/lib/ethereum/constants";
+import { planEvmGas } from "@/lib/gas/evm";
+import { useEvmGasGate } from "@/lib/gas/use-evm-gas-gate";
+import { MORPHO_GAS_UNITS_FULL_CYCLE } from "@/lib/morpho/gold-fund";
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
 import {
   fetchGoldMarkets,
@@ -279,6 +283,13 @@ function GoldMarketForm({
   // The cost the user has accepted for this amount from this source. Cleared
   // with the plan whenever either changes. See AaveGoldBorrowCard.
   const [acceptedLossBps, setAcceptedLossBps] = useState<number | null>(null);
+  // A supply funded from Solana gold buys its own ETH on the way in; every
+  // other action here is paid from what the wallet holds, and a wallet that is
+  // short gets the gas sheet. See lib/gas/use-evm-gas-gate.tsx.
+  const evmSigner = evm.address
+    ? { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider }
+    : null;
+  const gas = useEvmGasGate({ evm: evmSigner, solana: solanaSigner });
 
   const collateralDecimals = market.collateralToken.decimals;
   const loanDecimals = market.loanToken.decimals;
@@ -438,16 +449,30 @@ function GoldMarketForm({
     setState({ kind: "busy", message: p.message });
 
   async function handleSubmit() {
-    if (!evm.address) {
+    if (!evmSigner) {
       setState({ kind: "error", message: "No embedded EVM wallet available." });
       return;
     }
     setState({ kind: "busy", message: "Preparing…" });
-    const signer = {
-      address: evm.address,
-      switchChain: evm.switchChain,
-      getProvider: evm.getProvider,
-    };
+    const signer = evmSigner;
+    const fundsItsOwnGas = mode === "supply" && Boolean(selectedHolding);
+    if (
+      !fundsItsOwnGas &&
+      (await gas.guard({
+        plan: () =>
+          planEvmGas({
+            chainId: ETHEREUM_CHAIN_ID,
+            evm: signer,
+            solanaUsdcAtomic,
+            solanaAddress,
+            gasUnits: MORPHO_GAS_UNITS_FULL_CYCLE,
+          }),
+        resume: () => handleSubmit(),
+      }))
+    ) {
+      setState({ kind: "idle" });
+      return;
+    }
 
     try {
       let txHash: string;
@@ -469,7 +494,7 @@ function GoldMarketForm({
           const { xautDeliveredAtomic } = await executeGoldFunding({
             plan,
             source: selectedHolding.source,
-            evmAddress: evm.address,
+            evmAddress: signer.address,
             solanaAddress,
             solana: solanaSigner,
             evm: signer,
@@ -868,6 +893,7 @@ function GoldMarketForm({
                     : `Withdraw ${market.collateralToken.symbol}`}
         </button>
       </div>
+      {gas.element}
     </div>
   );
 }

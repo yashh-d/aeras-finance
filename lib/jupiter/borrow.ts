@@ -124,11 +124,42 @@ export interface LiveVaultState {
   // Total debt drawn from this vault, in USD. Null if the payload lacks the
   // borrow-token price/total needed to compute it.
   totalBorrowedUsd: number | null;
+
+  // ── Live risk parameters, for sizing a borrow ────────────────────────────
+  //
+  // These are the figures the protocol enforces, published per vault. The
+  // registry in this file snapshots collateralFactor and liquidationThreshold
+  // too; those are for rendering a market that has not been read yet. Anything
+  // that sizes a transaction uses these.
+
+  // Max LTV, per mille (650 = 65%).
+  collateralFactor: number;
+  // Liquidation threshold, per mille (750 = 75%).
+  liquidationThreshold: number;
+  // Oracle price for OPERATIONS, at Jupiter's own 1e15 scale, as an exact
+  // string. The protocol marks borrows and withdrawals at this price and
+  // liquidations at `oraclePriceLiquidate`, which is separately configured.
+  // They are often equal -- both were, on every xStock vault on 2026-09-22 --
+  // which is what makes reading the wrong one easy to miss and hard to catch.
+  oraclePriceOperateScaled: string;
+  // Smallest borrow the vault accepts, in atomic units of the borrow token.
+  // About $1.02 on the xStock vaults. A draw below it reverts, so a form that
+  // offers one is offering a failure.
+  minimumBorrowingAtomic: string;
 }
 
 interface RawVault {
   id: number;
   oraclePrice: string;
+  // Separately configured marks for operations and for liquidation. See
+  // LiveVaultState.oraclePriceOperateScaled.
+  oraclePriceOperate?: string;
+  oraclePriceLiquidate?: string;
+  // Per mille, both of them.
+  collateralFactor?: string;
+  liquidationThreshold?: string;
+  // Atomic units of the borrow token.
+  minimumBorrowing?: string;
   borrowRate: string;
   borrowable: string;
   // Total collateral (supply token) deposited, in atomic units.
@@ -188,6 +219,10 @@ export function parseLiveVault(raw: RawVault): LiveVaultState {
     borrowPrice != null && raw.borrowable != null
       ? (Number(raw.borrowable) / 10 ** borrowDecimals) * borrowPrice
       : null;
+  // Risk parameters, live. The registry entry is the fallback for a payload
+  // that predates these fields, not the source: it is a snapshot, and sizing a
+  // borrow against a snapshot is how a quote and the chain come to disagree.
+  const registry = XSTOCK_BORROW_VAULTS.find((v) => v.vaultId === raw.id);
   return {
     vaultId: raw.id,
     oraclePriceUsd,
@@ -196,6 +231,18 @@ export function parseLiveVault(raw: RawVault): LiveVaultState {
     borrowableUsd,
     totalSuppliedUsd,
     totalBorrowedUsd,
+    collateralFactor:
+      raw.collateralFactor != null
+        ? Number(raw.collateralFactor)
+        : (registry?.collateralFactor ?? 0),
+    liquidationThreshold:
+      raw.liquidationThreshold != null
+        ? Number(raw.liquidationThreshold)
+        : (registry?.liquidationThreshold ?? 0),
+    // Falls back to the plain `oraclePrice`, which is what every caller read
+    // before the distinction existed.
+    oraclePriceOperateScaled: raw.oraclePriceOperate ?? raw.oraclePrice,
+    minimumBorrowingAtomic: raw.minimumBorrowing ?? "0",
   };
 }
 

@@ -18,7 +18,7 @@ import type { SetupCost } from "@/lib/borrow/setup-cost";
 import type {
   PrivyFundingMethod,
   SetupFunding,
-} from "@/components/FirstPositionSheet";
+} from "@/components/GasSheet";
 
 export type SetupVenue = "kamino" | "jupiter";
 export type SetupFundedVia =

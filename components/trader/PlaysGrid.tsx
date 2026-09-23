@@ -13,7 +13,7 @@ import { LadderTicket } from "@/components/strategies/LadderTicket";
 import { LeverageTicket } from "@/components/strategies/LeverageTicket";
 import { borrowRouteFor } from "@/lib/borrow/route";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
-import { xstockBySymbol } from "@/lib/jupiter/xstocks";
+import type { XStock } from "@/lib/jupiter/xstocks";
 import type { AccountBalances } from "@/lib/solana/balances";
 import {
   earnNetApy,
@@ -23,9 +23,12 @@ import {
 } from "@/lib/strategies/math";
 import {
   PLAYS,
+  playCollateralChoices,
+  playNextChoices,
   playPool,
   resolvePlay,
   type Play,
+  type PlayChoice,
   type PlayTag,
   type ResolvedPlay,
 } from "@/lib/strategies/plays";
@@ -39,6 +42,7 @@ import { pickRun, useStrategyRuns, type StrategyRun, type StrategyRunsStore } fr
 import { assetMark, destinationMarks, type Mark } from "@/lib/trader/exposures";
 
 import { ExposureStrip } from "./ExposureStrip";
+import { PlayAssetPicker } from "./PlayAssetPicker";
 import { PositionSummary } from "./PositionSummary";
 import {
   BackLink,
@@ -169,12 +173,13 @@ export function PlaysGrid({
 
   const resolved = useMemo(() => PLAYS.map((p) => resolvePlay(p, rates)), [rates]);
   const cards = filter === "all" ? resolved : resolved.filter((r) => r.play.tag === filter);
-  const opened = open ? resolved.find((r) => r.play.id === open) : null;
+  const opened = open ? PLAYS.find((p) => p.id === open) : null;
 
   if (opened) {
     return (
       <PlayDetail
-        resolved={opened}
+        key={opened.id}
+        play={opened}
         rates={rates}
         store={store}
         walletAddress={walletAddress}
@@ -264,8 +269,13 @@ function PlayCard({
   );
 }
 
+// The detail opens on the play's defaults and, where the play allows it,
+// lets the user swap the collateral or the ladder's next pick from a
+// dropdown. The choice re-resolves the play, so the headline, the strip and
+// the ticket follow it; the name and the thesis do not, because the play is
+// the idea and the asset is the instance.
 function PlayDetail({
-  resolved,
+  play,
   rates,
   store,
   walletAddress,
@@ -274,7 +284,7 @@ function PlayDetail({
   onRefresh,
   onBack,
 }: {
-  resolved: ResolvedPlay;
+  play: Play;
   rates: StrategyRatesState;
   store: StrategyRunsStore;
   walletAddress: string;
@@ -283,7 +293,11 @@ function PlayDetail({
   onRefresh: () => Promise<void> | void;
   onBack: () => void;
 }) {
-  const { play, xstock, kind } = resolved;
+  const [choice, setChoice] = useState<PlayChoice>({});
+  const resolved = useMemo(() => resolvePlay(play, rates, choice), [play, rates, choice]);
+  const collateralChoices = useMemo(() => playCollateralChoices(play), [play]);
+  const nextChoices = useMemo(() => playNextChoices(play), [play]);
+  const { xstock, kind, next } = resolved;
   const row = rates.rows.find((r) => r.xstock.mint === xstock.mint) ?? null;
   const saved = pickRun(store.runs, kind, xstock.mint);
   const h = headline(resolved, row, rates);
@@ -293,7 +307,6 @@ function PlayDetail({
     await onRefresh();
     setTick((n) => n + 1);
   };
-
   return (
     <div className="space-y-6">
       <BackLink label="All plays" onClick={onBack} />
@@ -302,9 +315,28 @@ function PlayDetail({
           <ExposureStrip from={marks.from} to={marks.to} size={40} max={8} />
           <div>
             <div className="text-xl font-light tracking-tight text-white">{play.name}</div>
-            <div className="mt-1 flex items-center gap-1.5">
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <Pill>{play.tag}</Pill>
-              <Pill>{xstock.symbol}</Pill>
+              {collateralChoices.length > 0 ? (
+                <PlayAssetPicker
+                  label="Buy and borrow against"
+                  choices={collateralChoices}
+                  value={xstock}
+                  onChange={(x) => setChoice((c) => ({ ...c, collateralMint: x.mint }))}
+                />
+              ) : (
+                <Pill>{xstock.symbol}</Pill>
+              )}
+              {next && nextChoices.length > 0 ? (
+                <PlayAssetPicker
+                  label="Then buy"
+                  choices={nextChoices}
+                  value={next}
+                  onChange={(x) => setChoice((c) => ({ ...c, nextMint: x.mint }))}
+                />
+              ) : (
+                next && <Pill>{next.symbol}</Pill>
+              )}
             </div>
           </div>
         </div>
@@ -316,7 +348,9 @@ function PlayDetail({
           <DetailCard title="Run it">
             {row ? (
               <PlayTicket
+                key={`${xstock.mint}-${next?.mint ?? ""}`}
                 play={play}
+                next={next}
                 row={row}
                 rates={rates}
                 store={store}
@@ -360,9 +394,11 @@ function PlayDetail({
 
 // The strategy's own ticket, opened on the play's preset and, for an earn
 // play, on the play's venue alone. Keyed by play so a different play on the
-// same asset mounts fresh.
+// same asset mounts fresh, and by the caller on the chosen assets so a
+// different choice does too.
 function PlayTicket({
   play,
+  next,
   row,
   rates,
   store,
@@ -373,6 +409,9 @@ function PlayTicket({
   onRefresh,
 }: {
   play: Play;
+  // The ladder's first pick as resolved, which is the user's choice when
+  // the play offers one.
+  next: XStock | null;
   row: StrategyRates;
   rates: StrategyRatesState;
   store: StrategyRunsStore;
@@ -414,15 +453,13 @@ function PlayTicket({
   }
   // The first pick, by mint. Resolved through the catalog rather than the
   // rates rows because a ladder-ending pick (gold) has no borrow row.
-  const nextSymbol = play.preset.nextSymbol;
-  const next = nextSymbol ? xstockBySymbol(nextSymbol)?.mint : undefined;
   return (
     <LadderTicket
       key={play.id}
       {...common}
       rows={rates.rows}
       initialRatio={play.preset.ratio ?? maxBorrowRatio(row.route)}
-      initialNextMint={next}
+      initialNextMint={next?.mint}
     />
   );
 }

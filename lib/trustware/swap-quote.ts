@@ -25,6 +25,7 @@
 
 import {
   quoteSolanaConversion,
+  type SolanaConversionQuote,
   type QuoteTransport,
 } from "@/lib/jupiter/convert";
 import { atomicToUi, toNumberOrNull, uiToAtomic } from "./amounts";
@@ -33,7 +34,11 @@ import {
   TRUSTWARE_SOLANA_SLIPPAGE,
 } from "./constants";
 import { isSamePair, solanaMintFor, type SwapToken } from "./swap-tokens";
-import { extractEstimate, type TrustwareQuoteResponse } from "./types";
+import {
+  extractEstimate,
+  type TrustwareQuoteRequest,
+  type TrustwareQuoteResponse,
+} from "./types";
 
 export interface SwapQuote {
   from: SwapToken;
@@ -58,6 +63,11 @@ export interface SwapQuote {
   slippagePct: number;
   // Which engine priced it, for display and for picking the executor.
   engine: "jupiter" | "trustware";
+  // What the executor needs, by engine: Jupiter builds its transaction from
+  // the quote it returned; Trustware routes the exact request that was
+  // priced, so the executed route matches the shown one.
+  jupiter?: SolanaConversionQuote;
+  request?: TrustwareQuoteRequest;
 }
 
 // Post to our own proxy. Relative by default, which only resolves in the
@@ -151,6 +161,7 @@ async function quoteViaJupiter(
       quote.priceImpactPct === null ? null : quote.priceImpactPct / 100,
     slippagePct,
     engine: "jupiter",
+    jupiter: quote,
   });
 }
 
@@ -162,7 +173,7 @@ async function quoteViaTrustware(
   const slippagePct = input.slippagePct ?? TRUSTWARE_DEFAULT_SLIPPAGE;
   const fetchQuote = input.fetchTrustware ?? proxyQuote;
 
-  const res = await fetchQuote({
+  const request: TrustwareQuoteRequest = {
     fromChain: from.chain,
     toChain: to.chain,
     fromToken: from.address,
@@ -171,7 +182,8 @@ async function quoteViaTrustware(
     fromAddress: input.fromAddress,
     toAddress: input.toAddress,
     slippage: slippagePct,
-  });
+  };
+  const res = await fetchQuote({ ...request });
 
   const estimate = extractEstimate(res);
   if (!estimate?.toAmount) {
@@ -207,6 +219,7 @@ async function quoteViaTrustware(
         : null,
     slippagePct,
     engine: "trustware",
+    request,
   });
 }
 

@@ -570,6 +570,83 @@ async function sendEvmTransaction(
   })) as string;
 }
 
+// Run one Solana-source Trustware route end to end: build it, sign the Solana
+// transaction with the embedded wallet, submit the receipt, and track to
+// settlement. The Solana twin of executeEvmRoute, and the shape six venue
+// modules each carried a private copy of (the Monad and Base gas legs, the
+// Ethereum gas leg, the Ondo margin deposit, the Glider funding leg) before
+// the wallet's Swap sheet needed one that any pair could use.
+//
+// The same two rules apply: nothing downstream treats funds as delivered
+// before Trustware reports success, and the last free abort is before the
+// user signs, which is where the guaranteed minimum is checked.
+export async function executeSolanaRoute(args: {
+  request: TrustwareQuoteRequest;
+  solana: SolanaSigner;
+  // Progress-copy noun for what is moving, e.g. "USDC".
+  describe: string;
+  // Guaranteed-minimum floor the fresh route must clear before signing.
+  // 0n disables the check.
+  minDeliveredAtomic?: bigint;
+  onProgress?: (progress: ConversionProgress) => void;
+  signal?: AbortSignal;
+}): Promise<EvmRouteResult> {
+  const { request, solana, describe, onProgress, signal } = args;
+  const report = (
+    stage: ConversionStage,
+    message: string,
+    extra?: Partial<ConversionProgress>,
+  ) => onProgress?.({ stage, message, ...extra });
+
+  report("routing", `Preparing the ${describe} transfer.`);
+  const routeRes = await postJson<TrustwareQuoteResponse>(
+    "/api/trustware/route",
+    request,
+    true,
+  );
+  const intentId = extractIntentId(routeRes);
+  const base64Tx = extractExecution(routeRes)?.transaction?.data;
+  if (!intentId) throw new Error("Trustware returned no intent to track.");
+  if (!base64Tx || base64Tx.startsWith("0x")) {
+    throw new Error("Trustware returned no signable Solana transaction.");
+  }
+
+  const floor = args.minDeliveredAtomic ?? 0n;
+  if (floor > 0n) {
+    const estimate = extractEstimate(routeRes);
+    const guaranteed = estimate?.toAmountMin ?? estimate?.toAmount;
+    if (guaranteed && BigInt(guaranteed) < floor) {
+      throw new Error(
+        "The rate moved below the quoted minimum. Nothing was signed; try again for a fresh quote.",
+      );
+    }
+  }
+
+  report("signing", `Sending ${describe}.`);
+  const sourceTxHash = await solana.signAndSendBase64(base64Tx);
+  // Submit immediately after broadcast, before anything else. Without this
+  // Trustware cannot track a route the user has already paid for.
+  await submitTrustwareReceipt(intentId, sourceTxHash, signal);
+
+  report("tracking", `Waiting for the ${describe} to arrive.`, { sourceTxHash });
+  const final = await trackTrustwareSettlement(intentId, signal, (status) =>
+    report("tracking", `Bridging ${describe}.`, {
+      sourceTxHash,
+      destTxHash: status.data?.dest_tx_hash,
+    }),
+  );
+  report("settled", `${describe} arrived.`, {
+    sourceTxHash,
+    destTxHash: final.data?.dest_tx_hash,
+  });
+  return {
+    intentId,
+    sourceTxHash,
+    destTxHash: final.data?.dest_tx_hash ?? null,
+    deliveredAtomic: final.data?.to_amount_wei ?? null,
+  };
+}
+
 // Exported for reuse: the Morpho-on-Monad funding leg (lib/morpho/fund.ts)
 // broadcasts its own source transaction and then needs the same receipt and
 // settlement machinery as an xStock conversion.

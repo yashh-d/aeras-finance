@@ -45,8 +45,10 @@ Only needed if the SQL editor is unavailable. It leaves this repo untouched:
 5. Drop `--dry-run`
 
 This adds one row to the shared history table, which is accurate rather than
-harmful. `0003_position_setup.sql` was applied this way on 2026-09-05, and
-`0003_strategy_runs.sql` on 2026-09-22 (as `20260922120000_strategy_runs.sql`).
+harmful. `0003_position_setup.sql` was applied this way on 2026-09-05,
+`0003_strategy_runs.sql` on 2026-09-22 (as `20260922120000_strategy_runs.sql`),
+and `0005_terms_acceptance.sql` the same day (as
+`20260922130000_terms_acceptance.sql`).
 The link needed no database password either time, and the dry run listed only
 the one new file, which is the check that the other application's seven
 migrations are not about to be touched. Do not skip it.
@@ -57,7 +59,8 @@ The history table does not say, because the early ones were pasted into the
 SQL editor. Ask the database instead: a `GET {SUPABASE_URL}/rest/v1/<table>
 ?limit=0` with the service-role key answers 200 when the table exists and 404
 when it does not. As of 2026-09-22 `users`, `loop_positions`,
-`position_setup`, `strategy_runs` and `uniswap_positions` all answer 200, so
+`position_setup`, `strategy_runs` and `uniswap_positions` all answer 200, and
+`users?select=terms_version&limit=0` answers 200 for `0005`, so
 every file in this directory is applied.
 
 ## Watch the dollar quoting

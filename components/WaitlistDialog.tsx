@@ -196,7 +196,11 @@ export function WaitlistDialog({
             </button>
 
             <p className="wl-fine">
-              We use your email to send your invite and occasional product
+              By requesting access you agree to the{" "}
+              <a href="/terms" target="_blank" rel="noopener noreferrer">
+                Terms of Service
+              </a>
+              . We use your email to send your invite and occasional product
               updates. You can opt out any time.
             </p>
           </form>

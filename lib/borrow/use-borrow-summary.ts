@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import {
@@ -19,6 +19,7 @@ import {
 } from "@/lib/kamino/positions";
 import { KAMINO_XSTOCK_COLLATERALS } from "@/lib/kamino/reserves";
 import { getConnection, type AccountBalances } from "@/lib/solana/balances";
+import { snapshotSignature } from "./snapshot-signature";
 import { atomicToUi } from "@/lib/trustware/amounts";
 import { groupEquivalentsByVault } from "@/lib/trustware/selection";
 import type { HeldEquivalent } from "@/lib/trustware/planner";
@@ -59,6 +60,15 @@ export interface BorrowSummary {
   // Every market with a non-zero debt, largest first. Empty when nothing is
   // owed anywhere.
   positions: OpenBorrowPosition[];
+  // Collateral posted at a venue with nothing drawn against it, largest first.
+  // Kept apart from `positions` so the repay flow, which is the other consumer,
+  // cannot offer a position with no debt to repay.
+  //
+  // This is money the user can see leaving their wallet, so something has to
+  // account for it. It is also the state a half-finished borrow lands in: the
+  // deposit leg settles, the borrow leg does not, and the stock is at a venue
+  // with no loan against it. Before this, no surface in the app named it.
+  collateralOnly: OpenBorrowPosition[];
   // Most that could be drawn at max LTV against everything the account can put
   // up: collateral already deposited, xStocks sitting in the Solana wallet, and
   // same-underlying holdings that convert into a vault's collateral mint on
@@ -76,7 +86,9 @@ export interface BorrowSummary {
   // the stock backing it has left the wallet.
   collateralByMint: Record<string, number>;
   loading: boolean;
-  refresh: () => void;
+  // Re-reads every venue and resolves once the change has actually landed. See
+  // the settle loop below for why this awaits rather than firing one read.
+  refresh: () => Promise<void>;
 }
 
 // Best max-LTV any venue lends against this collateral mint, as a fraction.
@@ -137,11 +149,33 @@ async function readVaultPosition(
 interface BorrowSnapshot {
   debtUsd: number;
   positions: OpenBorrowPosition[];
+  collateralOnly: OpenBorrowPosition[];
   pledged: PledgedCollateral[];
   kaminoPosition: KaminoPosition | null;
 }
 
 const SNAPSHOT_TTL_MS = 20_000;
+
+// Backoff for the post-action settle loop, matching useBalances.refreshSettled.
+// A transaction confirmed at "confirmed" commitment is routinely not visible to
+// the next read yet, and the two venues are read through two different
+// providers: the Jupiter side scans with getProgramAccounts, which
+// lib/solana/program-accounts.ts routes to the Helius fallback, while Kamino's
+// obligation comes back through Alchemy. Neither guarantees read-your-writes
+// against a write the other one saw.
+//
+// Without this, a close was read back at a slot that still showed it open, that
+// answer was committed to state AND seeded into the shared cache above, and
+// nothing ever re-read it. The position stayed on screen until the user
+// reloaded the page by hand.
+const SETTLE_DELAYS_MS = [0, 1200, 2500, 4000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Identity of a snapshot for "has the change landed yet" purposes. Quantised so
+// per-slot interest accrual does not read as a change; see snapshot-signature.ts.
 
 const snapshotCache = new Map<
   string,
@@ -165,6 +199,7 @@ async function readBorrowSnapshot(
   let debt = 0;
   const collateral: PledgedCollateral[] = [];
   const open: OpenBorrowPosition[] = [];
+  const idle: OpenBorrowPosition[] = [];
   // A holder rather than a bare `let`, so the value assigned inside the Kamino
   // task is visibly the one returned below.
   const kaminoResult: { position: KaminoPosition | null } = { position: null };
@@ -179,18 +214,18 @@ async function readBorrowSnapshot(
         position.collateralAtomic,
         vault.collateralDecimals,
       );
-      if (debtUi > 0) {
-        open.push({
-          key: `jupiter:${vault.vaultId}`,
-          venueLabel: "Jupiter Lend",
-          collateralSymbol: vault.collateralSymbol,
-          collateralMint: vault.collateralMint,
-          collateralUi: amountUi,
-          debtUi,
-          debtSymbol: vault.borrowSymbol,
-          ref: { venue: "jupiter", vault, nftId: position.nftId },
-        });
-      }
+      const entry: OpenBorrowPosition = {
+        key: `jupiter:${vault.vaultId}`,
+        venueLabel: "Jupiter Lend",
+        collateralSymbol: vault.collateralSymbol,
+        collateralMint: vault.collateralMint,
+        collateralUi: amountUi,
+        debtUi,
+        debtSymbol: vault.borrowSymbol,
+        ref: { venue: "jupiter", vault, nftId: position.nftId },
+      };
+      if (debtUi > 0) open.push(entry);
+      else if (amountUi > 0) idle.push(entry);
       if (amountUi > 0) {
         collateral.push({
           mint: vault.collateralMint,
@@ -209,18 +244,18 @@ async function readBorrowSnapshot(
       kaminoResult.position = p;
       if (!p) return;
       debt += p.debtUsdc;
-      if (p.debtUsdc > 0) {
-        open.push({
-          key: `kamino:${p.collateral.reserve}`,
-          venueLabel: "Kamino",
-          collateralSymbol: p.collateral.symbol,
-          collateralMint: p.collateral.collateralMint,
-          collateralUi: p.collateralUi,
-          debtUi: p.debtUsdc,
-          debtSymbol: "USDC",
-          ref: { venue: "kamino", position: p },
-        });
-      }
+      const entry: OpenBorrowPosition = {
+        key: `kamino:${p.collateral.reserve}`,
+        venueLabel: "Kamino",
+        collateralSymbol: p.collateral.symbol,
+        collateralMint: p.collateral.collateralMint,
+        collateralUi: p.collateralUi,
+        debtUi: p.debtUsdc,
+        debtSymbol: "USDC",
+        ref: { venue: "kamino", position: p },
+      };
+      if (p.debtUsdc > 0) open.push(entry);
+      else if (p.collateralUi > 0) idle.push(entry);
       if (p.collateralUi > 0) {
         collateral.push({
           mint: p.collateral.collateralMint,
@@ -237,10 +272,13 @@ async function readBorrowSnapshot(
   // The venue reads settle concurrently, so sort rather than relying on the
   // order they happened to finish in.
   open.sort((a, b) => b.debtUi - a.debtUi);
+  // Nothing owed on any of these, so size them by what is posted instead.
+  idle.sort((a, b) => b.collateralUi - a.collateralUi);
 
   return {
     debtUsd: debt,
     positions: open,
+    collateralOnly: idle,
     pledged: collateral,
     kaminoPosition: kaminoResult.position,
   };
@@ -267,41 +305,82 @@ export function useBorrowSummary({
 }): BorrowSummary {
   const [debtUsd, setDebtUsd] = useState(0);
   const [positions, setPositions] = useState<OpenBorrowPosition[]>([]);
+  const [collateralOnly, setCollateralOnly] = useState<OpenBorrowPosition[]>(
+    [],
+  );
   const [pledged, setPledged] = useState<PledgedCollateral[]>([]);
   const [kaminoPosition, setKaminoPosition] = useState<KaminoPosition | null>(
     null,
   );
   const [loading, setLoading] = useState(true);
-  const [tick, setTick] = useState(0);
 
-  // Drops the shared snapshot before re-running, so a refresh after a borrow or
-  // repay goes to chain instead of replaying the pre-settlement read.
-  const refresh = useCallback(() => {
-    snapshotCache.delete(walletAddress);
-    setTick((n) => n + 1);
-  }, [walletAddress]);
+  // Bumped on every load and on wallet change. A read only commits if its
+  // captured epoch is still current, so a settle loop that is still running
+  // when the wallet changes (or when a second refresh starts) drops its results
+  // instead of writing them back over newer ones.
+  const epochRef = useRef(0);
+  // Signature of the last committed snapshot, read synchronously by the settle
+  // loop to tell "the change landed" from "still reading the old state".
+  const signatureRef = useRef<string | null>(null);
+
+  const commit = useCallback((snapshot: BorrowSnapshot) => {
+    setDebtUsd(snapshot.debtUsd);
+    setPositions(snapshot.positions);
+    setCollateralOnly(snapshot.collateralOnly);
+    setPledged(snapshot.pledged);
+    setKaminoPosition(snapshot.kaminoPosition);
+    signatureRef.current = snapshotSignature(snapshot);
+  }, []);
+
+  // Re-read after a borrow, repay, deposit or withdraw, and keep re-reading
+  // until the venues actually report the change.
+  //
+  // Drops the shared snapshot before each attempt so this goes to chain rather
+  // than replaying the pre-settlement read, and re-seeds it on the way through
+  // so a card mounting mid-loop shares the in-flight read instead of firing its
+  // own fourteen venue reads.
+  //
+  // Every read is committed, not just the settled one: they agree until the
+  // change lands, so there is nothing to hide, and committing as we go means a
+  // caller that gives up waiting still has the freshest state we have.
+  const refresh = useCallback(async () => {
+    const before = signatureRef.current;
+    const myEpoch = ++epochRef.current;
+    for (const delay of SETTLE_DELAYS_MS) {
+      if (delay > 0) await sleep(delay);
+      snapshotCache.delete(walletAddress);
+      let next: BorrowSnapshot;
+      try {
+        next = await loadBorrowSnapshot(walletAddress);
+      } catch (err) {
+        console.error("[borrow summary]", err);
+        return;
+      }
+      if (epochRef.current !== myEpoch) return;
+      commit(next);
+      setLoading(false);
+      // Nothing to compare against on a first read, so take it and stop.
+      if (before == null) return;
+      if (snapshotSignature(next) !== before) return;
+    }
+  }, [walletAddress, commit]);
 
   useEffect(() => {
-    let cancelled = false;
+    const myEpoch = ++epochRef.current;
+    signatureRef.current = null;
     setLoading(true);
     loadBorrowSnapshot(walletAddress)
       .then((snapshot) => {
-        if (cancelled) return;
-        setDebtUsd(snapshot.debtUsd);
-        setPositions(snapshot.positions);
-        setPledged(snapshot.pledged);
-        setKaminoPosition(snapshot.kaminoPosition);
+        if (epochRef.current !== myEpoch) return;
+        commit(snapshot);
         setLoading(false);
       })
       .catch((err) => {
-        if (cancelled) return;
+        if (epochRef.current !== myEpoch) return;
         console.error("[borrow summary]", err);
         setLoading(false);
       });
-    return () => {
-      cancelled = true;
-    };
-  }, [walletAddress, tick]);
+  }, [walletAddress, commit]);
 
   const capacityUsd = useMemo(() => {
     let capacity = 0;
@@ -351,6 +430,7 @@ export function useBorrowSummary({
   return {
     debtUsd,
     positions,
+    collateralOnly,
     capacityUsd,
     availableUsd: Math.max(0, capacityUsd - debtUsd),
     kaminoPosition,

@@ -337,6 +337,17 @@ export function validateTrustwareRequest(
   }
   if (!req.toChain) return fail("toChain is required");
   if (!req.toToken) return fail("toToken is required");
+  // The same token to itself is not a move under any shape. Checked here,
+  // above the shapes, because a Solana USDC destination matches `return`
+  // before the swap branch's own same-pair check would ever run, and the
+  // request then reached Trustware and came back as a 502. Found by
+  // scripts/trustware-swap-quote-check.mts on 2026-09-22.
+  if (
+    req.fromChain === req.toChain &&
+    sameToken(req.fromChain!, req.fromToken!, req.toToken)
+  ) {
+    return fail("the source and destination are the same token");
+  }
 
   // The two shapes that keep the caller's toAddress have to be asked for by
   // name, and are the only shapes considered when they are.
@@ -551,6 +562,12 @@ export function trustwareRoute(
 // straight into the request path, so anything outside these two alphabets could
 // escape the endpoint and reach other parts of the key-bearing API.
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+// Token equality on one chain: EVM addresses compare case-insensitively,
+// Solana mints are base58 and compare verbatim.
+function sameToken(chain: string, a: string, b: string): boolean {
+  return chain === TRUSTWARE_SOLANA_CHAIN ? a === b : a.toLowerCase() === b.toLowerCase();
+}
 const SOLANA_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 export function isSupportedAddress(address: string): boolean {

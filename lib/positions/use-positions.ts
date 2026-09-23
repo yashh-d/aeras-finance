@@ -256,6 +256,7 @@ function healthFrom(ltvPct: number, liquidationLtvPct: number): number | null {
 
 function borrowRows(
   open: OpenBorrowPosition[],
+  idle: OpenBorrowPosition[],
   detail: BorrowDetail,
   gold: GoldPosition[],
   aaveGold: AaveGoldPosition[],
@@ -306,6 +307,39 @@ function borrowRows(
       tone: healthTone(health),
     };
   });
+
+  // Collateral sitting at a venue with nothing drawn against it. Worth a row of
+  // its own: the stock has left the wallet, so without one it reads as money
+  // that vanished. It is also where a borrow that deposited and then failed to
+  // draw ends up.
+  //
+  // Priced at its real value but held out of the group's total: the Borrow
+  // group totals what is owed, and nothing is owed on these.
+  rows.push(
+    ...idle.map((p): PositionRow => {
+      const price =
+        p.ref.venue === "kamino"
+          ? p.ref.position.oraclePriceUsd
+          : (prices?.[p.collateralMint]?.usdPrice ?? null);
+      const posted = p.collateralUi.toLocaleString(undefined, {
+        maximumFractionDigits: 4,
+      });
+      return {
+        key: `collateral:${p.key}`,
+        kind: "borrow" as const,
+        symbol: p.collateralSymbol,
+        venue: p.venueLabel,
+        venueLogo:
+          p.venueLabel === "Kamino" ? VENUE_LOGOS.kamino : VENUE_LOGOS.jupiter,
+        asset: assetIdentity(p.collateralMint, p.collateralSymbol),
+        usd: price != null ? p.collateralUi * price : 0,
+        excludeFromTotal: true,
+        detail: `${posted} posted as collateral`,
+        note: "No loan drawn",
+        tone: "neutral",
+      };
+    }),
+  );
 
   // Morpho Blue on Ethereum. XAUt collateral against USDT, the one borrow that
   // does not settle on Solana, so the chain is named in the venue line.
@@ -550,11 +584,14 @@ export function usePositions({
 
   // Awaits the venue reads rather than bumping a counter, so a caller can hold a
   // "refreshing" state for as long as the reads actually take. The borrow
-  // summary drops its cached snapshot and re-reads on its own.
+  // summary settles on its own, so awaiting it here means the rows are the
+  // post-action ones rather than whatever the RPC had at the moment we asked.
   const summaryRefresh = summary.refresh;
   const refresh = useCallback(async () => {
-    summaryRefresh();
-    const next = await readVenues(walletAddress, evmAddress);
+    const [, next] = await Promise.all([
+      summaryRefresh(),
+      readVenues(walletAddress, evmAddress),
+    ]);
     if (!live.current) return;
     setSnapshot(next);
     setLoaded(true);
@@ -573,7 +610,11 @@ export function usePositions({
     };
   }, [walletAddress, evmAddress]);
 
-  const { positions: borrowPositions, collateralByMint } = summary;
+  const {
+    positions: borrowPositions,
+    collateralOnly,
+    collateralByMint,
+  } = summary;
 
   // Rate and oracle price for the markets the account is actually in. Separate
   // from the venue sweep because it depends on the borrow summary landing first,
@@ -597,6 +638,7 @@ export function usePositions({
   const groups = useMemo<PositionGroup[]>(() => {
     const borrow = borrowRows(
       borrowPositions,
+      collateralOnly,
       borrowDetail,
       snapshot.gold,
       snapshot.aaveGold,
@@ -610,7 +652,7 @@ export function usePositions({
       prices,
     );
     const total = (rows: PositionRow[]) =>
-      rows.reduce((sum, r) => sum + r.usd, 0);
+      rows.reduce((sum, r) => (r.excludeFromTotal ? sum : sum + r.usd), 0);
 
     return [
       {
@@ -642,7 +684,15 @@ export function usePositions({
         totalLabel: "notional",
       },
     ];
-  }, [borrowPositions, borrowDetail, collateralByMint, snapshot, balances, prices]);
+  }, [
+    borrowPositions,
+    collateralOnly,
+    borrowDetail,
+    collateralByMint,
+    snapshot,
+    balances,
+    prices,
+  ]);
 
   return {
     groups,

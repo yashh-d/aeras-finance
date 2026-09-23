@@ -12,7 +12,7 @@ import {
 
 import { PriceChart } from "@/components/PriceChart";
 import { KaminoBorrowCard } from "@/components/KaminoBorrowCard";
-import { FirstPositionSheet } from "@/components/FirstPositionSheet";
+import { useGasGate } from "@/lib/gas/use-gas-gate";
 import {
   pendingRecordFor,
   recordPositionSetup,
@@ -20,10 +20,17 @@ import {
 } from "@/lib/position-setup-client";
 import { estimateJupiterSetupCost } from "@/lib/jupiter/first-position";
 import {
+  atomicToNumber,
+  availableToBorrowAtomic,
+  ltvBpsFromPerMille,
+  parseScaled,
+  priceFromJupiterOracle,
+  type CollateralInput,
+} from "@/lib/borrow/limit";
+import {
   describeInsufficientLamports,
-  isBlocked,
+  estimateSolanaFeeCost,
   needsSetup,
-  type SetupCost,
 } from "@/lib/borrow/setup-cost";
 import { useAaveGoldRows } from "@/components/AaveGoldBorrowCard";
 import {
@@ -73,6 +80,7 @@ import { createPortal } from "react-dom";
 import {
   BORROW_PILL_CLASS,
   MarketDetailHeader,
+  RepayKindToggle,
   type BorrowMode,
 } from "@/components/BorrowMarketDetail";
 import { fundRepayUsdc, repayFundingSources } from "@/lib/borrow/fund-repay";
@@ -108,7 +116,8 @@ import {
   type ConversionPreview,
 } from "@/lib/trustware/use-preview";
 import { useEquivalentBalances } from "@/lib/trustware/use-equivalents";
-import { RepayPanel } from "@/components/RepayPanel";
+import { RepayForm, RepayPanel } from "@/components/RepayPanel";
+import type { OpenBorrowPosition } from "@/lib/borrow/use-borrow-summary";
 import BN from "bn.js";
 
 // Matches the loop surface so a borrow-side unwind sizes its swap identically.
@@ -167,9 +176,12 @@ export function BorrowPanel({
 
   // A settled borrow or repay changes both the wallet and the headline figures.
   const summaryRefresh = summary.refresh;
+  // Awaited, both of them: each side settles rather than firing one read, and a
+  // caller that awaits this wants the figures on screen to be the post-action
+  // ones. Cards call this after their confirmation is already showing, so the
+  // wait costs nothing the user is looking at.
   const refreshAll = useCallback(async () => {
-    await onRefresh();
-    summaryRefresh();
+    await Promise.all([onRefresh(), summaryRefresh()]);
   }, [onRefresh, summaryRefresh]);
 
   // Live borrow APR and market size for every row. Lightweight — one call per
@@ -280,6 +292,9 @@ export function BorrowPanel({
             collateral={collateral}
             walletAddress={walletAddress}
             walletUsdc={balances?.usdc ?? 0}
+            solanaUsdcAtomic={balances?.usdcAtomic ?? "0"}
+            solBalance={balances?.sol ?? 0}
+            solPriceUsd={prices?.[SOL_MINT]?.usdPrice ?? null}
             collateralBalance={held}
             collateralBalanceAtomic={
               balances?.xstocksAtomic[collateral.collateralMint] ?? "0"
@@ -721,14 +736,6 @@ export function VaultCard({
       monadUsdcAtomic: monad.balances?.usdcAtomic ?? "0",
     }).total;
 
-  // A first position in this vault mints an NFT and allocates its accounts,
-  // which the user pays rent for. Holds the priced shortfall and the submit it
-  // interrupted, so the borrow resumes with the same amounts afterwards.
-  const [setupGate, setSetupGate] = useState<{
-    cost: SetupCost;
-    args: { collateralUi: number; borrowUi: number };
-  } | null>(null);
-
   // Held from acceptance until the position settles, then written once, so an
   // abandoned or failed open records no rent. See lib/position-setup-client.ts.
   const [pendingSetup, setPendingSetup] = useState<PendingSetupRecord | null>(
@@ -837,6 +844,12 @@ export function VaultCard({
   // Which of the two actions is on screen. Borrow first: a user opening a market
   // they have no position in is here to draw, not to repay.
   const [mode, setMode] = useState<BorrowMode>("borrow");
+  // Within Repay mode: close the whole position, or pay part of the debt and
+  // leave the collateral deposited. Close is the default, since that is what
+  // most people opening Repay want; the partial path is the headline Repay
+  // panel's form mounted here, so both venues' partial repays are one code
+  // path.
+  const [repayKind, setRepayKind] = useState<"close" | "partial">("close");
   // The header cell the borrow form portals its submit button into. A ref
   // callback rather than an effect, so the node is available on the same commit
   // it mounts and the button is never a frame late.
@@ -861,29 +874,102 @@ export function VaultCard({
     position != null &&
     (position.collateralAtomic.gtn(0) || position.debtAtomic.gtn(0));
 
+  // This position in the shape the headline Repay form takes, so the partial
+  // repay below runs through that form rather than a second copy of the path.
+  // Null when nothing is owed: a partial repay of no debt is not an action.
+  const repayTarget: OpenBorrowPosition | null =
+    position && position.debtAtomic.gtn(0)
+      ? {
+          key: `jupiter:${vault.vaultId}`,
+          venueLabel: "Jupiter Lend",
+          collateralSymbol: vault.collateralSymbol,
+          collateralMint: vault.collateralMint,
+          collateralUi: positionCollateralUi,
+          debtUi,
+          debtSymbol: vault.borrowSymbol,
+          ref: { venue: "jupiter", vault, nftId: position.nftId },
+        }
+      : null;
+
   // What this market will lend against everything the user can put behind it:
   // collateral already deposited, the same stock sitting in the wallet, and what
   // converts into it from another chain. Wallet stock counts because the form
   // below deposits it as part of the borrow. Capped by the vault's own
   // liquidity, since headroom is not drawable from an empty vault.
+  // The wallet's collateral balance at "processed", for the quote below.
+  //
+  // `readCollateralAtomic` has read at this commitment at submit time for a
+  // while; the quote did not, and took the prop instead. The prop comes through
+  // the shared Connection, which is opened at "confirmed", so it can still show
+  // stock a landed deposit has already spent while the position read already
+  // counts it as posted. The same stock then lands in two of the three terms
+  // below and the card offers roughly double the real limit.
+  //
+  // "processed" is never behind a confirmed deposit, so that overlap cannot
+  // happen. A position read that lags the wallet just under-quotes, which is
+  // safe.
+  const [freshWalletAtomic, setFreshWalletAtomic] = useState<string | null>(
+    null,
+  );
+
   const availableUsd = useMemo(() => {
-    if (oraclePrice == null || live == null) return null;
-    const collateralUi =
-      positionCollateralUi + collateralBalance + convertibleUi;
-    const capacityUsd =
-      collateralUi * oraclePrice * (vault.collateralFactor / 1000);
-    const liquidityUsd = Number(
-      atomicToUiString(live.borrowableAtomic, vault.borrowDecimals),
-    );
-    return Math.max(0, Math.min(capacityUsd - debtUi, liquidityUsd));
+    if (live == null) return null;
+    // The vault's own operate mark, at Jupiter's 1e15 scale, with no float in
+    // the path. `oraclePrice` above is that same number divided into a double
+    // for display, and its own comment in lib/jupiter/borrow.ts says never to
+    // use it for transaction math -- which sizing a borrow is.
+    //
+    // Operate, not liquidate: the protocol marks borrows and withdrawals at
+    // one and liquidations at the other. They were equal on every xStock vault
+    // on 2026-09-22, which is what makes the distinction easy to miss.
+    const priceScaled = priceFromJupiterOracle(live.oraclePriceOperateScaled);
+    // Live collateral factor, not the registry's. parseLiveVault falls back to
+    // the registry only when the payload lacks the field.
+    const ltvBps = ltvBpsFromPerMille(live.collateralFactor);
+    const pool = (atomic: bigint): CollateralInput => ({
+      atomic,
+      decimals: vault.collateralDecimals,
+      priceScaled,
+      ltvBps,
+    });
+
+    const pools: CollateralInput[] = [];
+    if (position) pools.push(pool(BigInt(position.collateralAtomic.toString())));
+    const inWallet = BigInt(freshWalletAtomic ?? collateralBalanceAtomic ?? "0");
+    if (inWallet > 0n) pools.push(pool(inWallet));
+    // Held on another chain and converted into this collateral by the deposit.
+    // A third distinct pool: it is neither posted nor on Solana yet.
+    if (convertibleUi > 0) {
+      pools.push(
+        pool(
+          parseScaled(
+            convertibleUi.toFixed(vault.collateralDecimals),
+            vault.collateralDecimals,
+          ),
+        ),
+      );
+    }
+
+    const atomic = availableToBorrowAtomic({
+      pools,
+      borrowDecimals: vault.borrowDecimals,
+      debtAtomic: position
+        ? BigInt(position.debtAtomic.toString())
+        : 0n,
+      liquidityAtomic: BigInt(live.borrowableAtomic),
+      // Below this the vault reverts, so a quote under it is a failure with a
+      // number on it. About $1.02 on the xStock vaults.
+      minimumBorrowAtomic: BigInt(live.minimumBorrowingAtomic),
+    });
+    return atomicToNumber(atomic, vault.borrowDecimals);
   }, [
-    oraclePrice,
     live,
-    positionCollateralUi,
-    collateralBalance,
+    position,
+    freshWalletAtomic,
+    collateralBalanceAtomic,
     convertibleUi,
-    debtUi,
-    vault,
+    vault.collateralDecimals,
+    vault.borrowDecimals,
   ]);
 
   // Exact on-chain collateral balance. The prop is the parent's last refresh,
@@ -910,6 +996,18 @@ export function VaultCard({
       return collateralBalanceAtomic;
     }
   }, [vault.collateralMint, walletAddress, collateralBalanceAtomic]);
+
+  // Feeds the quote above. Re-reads when the posted amount changes, which is
+  // exactly when the prop is most likely to be behind the chain.
+  useEffect(() => {
+    let cancelled = false;
+    readCollateralAtomic().then((atomic) => {
+      if (!cancelled) setFreshWalletAtomic(atomic);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [readCollateralAtomic, positionCollateralUi]);
 
   // Bring the requested collateral onto Solana, converting a same-underlying
   // holding from another chain when the wallet is short. Returns the balance
@@ -1007,26 +1105,44 @@ export function VaultCard({
   // when the wallet already holds an NFT for this vault, which is the common
   // case and why storedNftId is passed straight through rather than rescanned.
   //
-  // Advisory: a preflight that cannot read the chain steps aside rather than
-  // blocking a borrow that would have worked.
+  // Every signature here goes through the gate; the sheet opens only when
+  // the wallet cannot pay. See lib/gas/use-gas-gate.tsx.
+  const gas = useGasGate({
+    walletAddress,
+    walletUsdc,
+    asset: {
+      symbol: vault.collateralSymbol,
+      mint: vault.collateralMint,
+      decimals: vault.collateralDecimals,
+      balanceUi: collateralBalance,
+      priceUsd: oraclePrice,
+    },
+    solPriceUsd,
+    signTxBase64,
+  });
+
   async function handleSubmit(args: {
     collateralUi: number;
     borrowUi: number;
   }) {
-    try {
-      setFormState({ kind: "submitting" });
-      const cost = await estimateJupiterSetupCost({
-        connection: getConnection(),
-        walletAddress,
-        existingNftId: storedNftId,
-      });
-      if (needsSetup(cost)) {
-        setSetupGate({ cost, args });
-        setFormState({ kind: "idle" });
-        return;
-      }
-    } catch (err) {
-      console.error("[jupiter setup cost]", err);
+    setFormState({ kind: "submitting" });
+    const blocked = await gas.guard({
+      estimate: () =>
+        estimateJupiterSetupCost({
+          connection: getConnection(),
+          walletAddress,
+          existingNftId: storedNftId,
+        }),
+      resume: () => runSubmit(args),
+      onCovered: (cost) => {
+        if (needsSetup(cost)) setPendingSetup(pendingRecordFor("jupiter", cost));
+      },
+      onFunded: (funding, cost) =>
+        setPendingSetup(pendingRecordFor("jupiter", cost, funding)),
+    });
+    if (blocked) {
+      setFormState({ kind: "idle" });
+      return;
     }
     await runSubmit(args);
   }
@@ -1147,6 +1263,20 @@ export function VaultCard({
   async function handleClose(method: "repay" | "sell") {
     if (!position) return;
     setClosingState({ kind: "submitting" });
+    if (
+      await gas.guard({
+        estimate: () =>
+          estimateSolanaFeeCost({
+            connection: getConnection(),
+            walletAddress,
+            venueLabel: "Jupiter Lend",
+          }),
+        resume: () => handleClose(method),
+      })
+    ) {
+      setClosingState({ kind: "idle" });
+      return;
+    }
     try {
       // A wallet-funded repay can draw on the Monad balance: bring the Solana
       // wallet up to the payoff (plus the interest buffer the gate below uses)
@@ -1265,15 +1395,38 @@ export function VaultCard({
       ) : null}
 
       {mode === "repay" && hasPosition && position ? (
-        <ClosePositionControl
-          vault={vault}
-          position={position}
-          walletUsdc={walletUsdc}
-          fundableUsdc={fundableUsdc}
-          state={closingState}
-          onClose={handleClose}
-          onReset={() => setClosingState({ kind: "idle" })}
-        />
+        <div className="space-y-3">
+          {repayKind === "partial" && repayTarget ? (
+            <RepayForm
+              key={repayTarget.key}
+              position={repayTarget}
+              walletUsdc={walletUsdc}
+              solanaUsdcAtomic={solanaUsdcAtomic}
+              sol={solBalance}
+              solPriceUsd={solPriceUsd}
+              walletAddress={walletAddress}
+              onSettled={async () => {
+                await onRefresh();
+                await refreshPosition();
+              }}
+              onClose={() => setRepayKind("close")}
+              embedded
+            />
+          ) : (
+            <ClosePositionControl
+              vault={vault}
+              position={position}
+              walletUsdc={walletUsdc}
+              fundableUsdc={fundableUsdc}
+              state={closingState}
+              onClose={handleClose}
+              onReset={() => setClosingState({ kind: "idle" })}
+            />
+          )}
+          {repayTarget && (
+            <RepayKindToggle kind={repayKind} onChange={setRepayKind} />
+          )}
+        </div>
       ) : mode === "borrow" ? (
         <OperateForm
           vault={vault}
@@ -1297,50 +1450,7 @@ export function VaultCard({
         />
       ) : null}
 
-      {setupGate && (
-        <FirstPositionSheet
-          cost={setupGate.cost}
-          walletAddress={walletAddress}
-          walletUsdc={walletUsdc}
-          collateral={{
-            symbol: vault.collateralSymbol,
-            mint: vault.collateralMint,
-            decimals: vault.collateralDecimals,
-            balanceUi: collateralBalance,
-            priceUsd: oraclePrice,
-          }}
-          solPriceUsd={solPriceUsd}
-          signTxBase64={signTxBase64}
-          onCancel={() => setSetupGate(null)}
-          onProceed={() => {
-            const { args, cost } = setupGate;
-            setPendingSetup(pendingRecordFor("jupiter", cost));
-            setSetupGate(null);
-            void runSubmit(args);
-          }}
-          onFunded={async (funding) => {
-            // Re-price rather than trusting the swap's estimate: the borrow that
-            // follows reads the same balance this does.
-            const fresh = await estimateJupiterSetupCost({
-              connection: getConnection(),
-              walletAddress,
-              existingNftId: storedNftId,
-            });
-            if (isBlocked(fresh)) {
-              setSetupGate({ cost: fresh, args: setupGate.args });
-              return;
-            }
-            const { args } = setupGate;
-            // Logged against the cost the user was shown and agreed to, not the
-            // re-price above, which by now reads as covered.
-            setPendingSetup(
-              pendingRecordFor("jupiter", setupGate.cost, funding),
-            );
-            setSetupGate(null);
-            await runSubmit(args);
-          }}
-        />
-      )}
+      {gas.element}
     </div>
   );
 }

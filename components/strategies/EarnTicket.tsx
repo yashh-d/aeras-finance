@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 
 import { USDC_DECIMALS, USDC_MINT } from "@/lib/jupiter/constants";
+import { MAG7X_MIN_DEPOSIT_USD } from "@/lib/glider/constants";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
 import type { AccountBalances } from "@/lib/solana/balances";
 import { healthAt, borrowLiquidationDrop } from "@/lib/borrow/route";
@@ -151,6 +152,12 @@ export function EarnTicket({
     balances != null &&
     amountUsd <= balances.usdc;
   const borrowUsd = amountValid ? floorCents(amountUsd * ratio) : null;
+  // Mag7X will not take a deposit under its floor (Glider skips any trade
+  // under $5 per asset, and there are eight), and it is the LAST step, so
+  // this is checked here before a buy and a borrow have landed.
+  const gliderShort =
+    earn?.venue === "glider" && borrowUsd != null && borrowUsd < MAG7X_MIN_DEPOSIT_USD;
+  const gliderNeedsUsd = ratio > 0 ? Math.ceil(MAG7X_MIN_DEPOSIT_USD / ratio) : null;
   const liquidityShort =
     borrowUsd != null && row.liquidityUsd != null && borrowUsd > row.liquidityUsd;
 
@@ -349,6 +356,7 @@ export function EarnTicket({
     borrowUsd != null &&
     borrowUsd >= MIN_BORROW_USD &&
     !liquidityShort &&
+    !gliderShort &&
     earn != null &&
     (!needsMonad(earn) || monad != null) &&
     (earn?.venue !== "glider" || attested) &&
@@ -730,6 +738,13 @@ export function EarnTicket({
         )}
       </PreviewBlock>
 
+      {gliderShort && (
+        <Note tone="warn">
+          Mag7X needs at least {fmtUsd(MAG7X_MIN_DEPOSIT_USD)} of borrowed USDC: Glider skips any
+          trade under $5 per asset, and there are eight. At this ratio that means putting in
+          at least {gliderNeedsUsd != null ? fmtUsd(gliderNeedsUsd) : "more"}, or raise the ratio.
+        </Note>
+      )}
       {liquidityShort && (
         <Note tone="warn">
           {named ? route.venueLabel : "The lending market"} only has{" "}
@@ -756,7 +771,9 @@ export function EarnTicket({
                   ? amountUsd < MIN_BUY_USD
                     ? `Minimum ${fmtUsd(MIN_BUY_USD)}`
                     : "Not enough USDC"
-                  : `Buy + Earn ${net != null ? fmtSignedPct(net) : ""}`}
+                  : gliderShort
+                    ? `Mag7X needs ${fmtUsd(MAG7X_MIN_DEPOSIT_USD)} borrowed`
+                    : `Buy + Earn ${net != null ? fmtSignedPct(net) : ""}`}
         </button>
       )}
     </div>

@@ -22,7 +22,10 @@ import { formatUnits, parseUnits } from "viem";
 
 import { AssetLogo, VenueMark } from "@/components/AssetLogo";
 import type { MorphoTxProgress } from "@/lib/morpho/deposit";
-import { MONAD_EXPLORER_TX_BASE } from "@/lib/morpho/constants";
+import { MONAD_CHAIN_ID, MONAD_EXPLORER_TX_BASE } from "@/lib/morpho/constants";
+import { planEvmGas } from "@/lib/gas/evm";
+import { useEvmGasGate } from "@/lib/gas/use-evm-gas-gate";
+import { EXIT_GAS_MIN_WEI } from "@/lib/shmonad/constants";
 import { GAS_FLOOR_WEI } from "@/lib/morpho/fund";
 import {
   EPOCH_HOURS_APPROX,
@@ -224,7 +227,7 @@ export function ShMonadCard({
               compact={compact}
             />
           ) : (
-            <WithdrawPanel earn={earn} onSettled={settled} />
+            <WithdrawPanel earn={earn} solanaUsdcAtomic={solanaUsdcAtomic} onSettled={settled} />
           )}
           {/* The way home. Always available; in Trader mode it opens from a
               line rather than sitting expanded under the card. */}
@@ -525,11 +528,26 @@ function StakeForm({
 
 // ── withdraw ────────────────────────────────────────────────────────────────
 
-function WithdrawPanel({ earn, onSettled }: { earn: ShmonEarn; onSettled: () => Promise<void> }) {
+function WithdrawPanel({
+  earn,
+  solanaUsdcAtomic,
+  onSettled,
+}: {
+  earn: ShmonEarn;
+  solanaUsdcAtomic: string;
+  onSettled: () => Promise<void>;
+}) {
   const { evm, position, metrics } = earn;
   const [tab, setTab] = useState<"instant" | "queue">("instant");
   const [input, setInput] = useState("");
   const [state, setState] = useState<FormState>({ kind: "idle" });
+  // An unstake is paid in MON from the reserve the stake kept back. A wallet
+  // under the exit minimum gets the gas sheet rather than the library's
+  // refusal. See lib/gas/use-evm-gas-gate.tsx.
+  const evmSigner = evm.address
+    ? { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider }
+    : null;
+  const gas = useEvmGasGate({ evm: evmSigner, solana: earn.solanaSigner });
 
   if (!position) return null;
   const shares = BigInt(position.sharesAtomic);
@@ -553,6 +571,23 @@ function WithdrawPanel({ earn, onSettled }: { earn: ShmonEarn; onSettled: () => 
 
   async function run(label: string, action: () => Promise<string>, doneMessage: string) {
     setState({ kind: "busy", message: label });
+    if (
+      evmSigner &&
+      (await gas.guard({
+        plan: () =>
+          planEvmGas({
+            chainId: MONAD_CHAIN_ID,
+            evm: evmSigner,
+            solanaUsdcAtomic,
+            solanaAddress: earn.solanaSigner?.address,
+            requiredWei: EXIT_GAS_MIN_WEI,
+          }),
+        resume: () => run(label, action, doneMessage),
+      }))
+    ) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
       const txHash = await action();
       setState({ kind: "done", message: doneMessage, txHash });
@@ -728,6 +763,7 @@ function WithdrawPanel({ earn, onSettled }: { earn: ShmonEarn; onSettled: () => 
       {shares === 0n && phase.phase === "none" && (
         <p className="text-[11px] text-white/50">Nothing staked.</p>
       )}
+      {gas.element}
     </div>
   );
 }

@@ -91,10 +91,14 @@ type Venue = "lighter" | "ondo";
 // Lighter first because it is the venue that is fully wired: permissionless,
 // zero fees, and margin funded natively from Solana. Ondo is the one that
 // accepts the stock itself as collateral, which costs an Ethereum leg.
+// TEMPORARY (demo): hides the Ondo venue from the toggle. Nothing else is
+// removed, and the Ondo section stays reachable the moment this is false again.
+const HIDE_ONDO = true;
+
 const VENUES: { id: Venue; label: string }[] = [
   { id: "lighter", label: "Lighter" },
   { id: "ondo", label: "Ondo" },
-];
+].filter((v) => !(HIDE_ONDO && v.id === "ondo")) as { id: Venue; label: string }[];
 
 export function HedgePanel({ balances, prices, scan }: Props) {
   const wallet = useEmbeddedEvmWallet();
@@ -472,6 +476,7 @@ function TopBar({
         <span className="text-sm font-medium tracking-tight text-white">Hedge</span>
       </div>
       <div className="flex items-center gap-2">
+        {VENUES.length > 1 && (
         <div className="flex items-center rounded-lg border border-white/10 p-0.5">
           {VENUES.map((v) => (
             <button
@@ -488,6 +493,7 @@ function TopBar({
             </button>
           ))}
         </div>
+        )}
         <button
           type="button"
           onClick={onRefresh}

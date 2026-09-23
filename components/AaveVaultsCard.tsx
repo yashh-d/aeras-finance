@@ -40,12 +40,16 @@ import {
   type AaveTxProgress,
 } from "@/lib/aave/deposit";
 import {
+  GAS_UNITS_FULL_CYCLE as AAVE_VAULT_GAS_UNITS_FULL_CYCLE,
   depositWithFunding,
   maxFundableDepositAtomic,
   needsEthGas,
   sendAaveAssetToSolana,
   type SolanaSigner,
 } from "@/lib/aave/fund";
+import { ETHEREUM_CHAIN_ID } from "@/lib/ethereum/constants";
+import { planEvmGas } from "@/lib/gas/evm";
+import { useEvmGasGate } from "@/lib/gas/use-evm-gas-gate";
 import { cooldownPhase, formatDuration } from "@/lib/aave/math";
 import type { AaveVault } from "@/lib/aave/vaults";
 
@@ -408,8 +412,36 @@ function AaveVaultForm({
     return { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider };
   }
 
+  // A deposit funded from Solana buys its own ETH on the way in. Everything
+  // else here (withdraw, cooldown, redeem, claim) is paid from what the wallet
+  // holds, and a wallet that is short gets the gas sheet, priced from the
+  // live gas price against the position. See lib/gas/use-evm-gas-gate.tsx.
+  const evmSigner = evm.address
+    ? { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider }
+    : null;
+  const gas = useEvmGasGate({ evm: evmSigner, solana: solanaSigner });
+
   async function run(label: string, action: () => Promise<string | null>, doneMessage: string) {
     setState({ kind: "busy", message: label });
+    if (
+      mode !== "deposit" &&
+      evmSigner &&
+      (await gas.guard({
+        plan: () =>
+          planEvmGas({
+            chainId: ETHEREUM_CHAIN_ID,
+            evm: evmSigner,
+            solanaUsdcAtomic,
+            solanaAddress,
+            gasUnits: AAVE_VAULT_GAS_UNITS_FULL_CYCLE,
+            positionValueUsd: Number(positionAtomic) / 10 ** decimals,
+          }),
+        resume: () => run(label, action, doneMessage),
+      }))
+    ) {
+      setState({ kind: "idle" });
+      return;
+    }
     try {
       const txHash = await action();
       setState({ kind: "done", txHash, message: doneMessage });
@@ -790,6 +822,7 @@ function AaveVaultForm({
           </>
         )}
       </p>
+      {gas.element}
     </div>
   );
 }

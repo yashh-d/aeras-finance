@@ -84,6 +84,9 @@ import {
   type GoldCollateralSource,
 } from "@/lib/morpho/gold-sources";
 import { useEmbeddedEvmWallet } from "@/lib/privy/evm";
+import { ETHEREUM_CHAIN_ID } from "@/lib/ethereum/constants";
+import { planEvmGas } from "@/lib/gas/evm";
+import { useEvmGasGate } from "@/lib/gas/use-evm-gas-gate";
 import { useSendSolanaTxBase64 } from "@/lib/privy/sign";
 import { floorToDisplay } from "@/lib/trustware/selection";
 import type { GoldHolding } from "@/lib/trustware/gold-holdings";
@@ -358,12 +361,41 @@ function AaveGoldMarketCard({
     };
   }
 
+  // A supply funded from Solana gold buys its own ETH on the way in. A
+  // supply from XAUt already in the wallet, a borrow, a repay and the close
+  // are paid from what the wallet holds, and a wallet that is short gets the
+  // gas sheet, sized to this spoke's full cycle at the live gas price. See
+  // lib/gas/use-evm-gas-gate.tsx.
+  const evmSigner = evm.address
+    ? { address: evm.address, switchChain: evm.switchChain, getProvider: evm.getProvider }
+    : null;
+  const gas = useEvmGasGate({ evm: evmSigner, solana: solanaSigner });
+  const guardGas = (resume: () => Promise<void>) =>
+    evmSigner
+      ? gas.guard({
+          plan: () =>
+            planEvmGas({
+              chainId: ETHEREUM_CHAIN_ID,
+              evm: evmSigner,
+              solanaUsdcAtomic,
+              solanaAddress,
+              gasUnits: AAVE_GAS_UNITS_FULL_CYCLE,
+              positionValueUsd: owedUsd,
+            }),
+          resume,
+        })
+      : Promise.resolve(false);
+
   async function handleOpen(args: OpenArgs) {
     if (!evm.address) {
       setFormState({ kind: "error", message: "No embedded EVM wallet available." });
       return;
     }
     setFormState({ kind: "submitting", step: "Preparing…" });
+    if (!args.source && (await guardGas(() => handleOpen(args)))) {
+      setFormState({ kind: "idle" });
+      return;
+    }
     const step = (s: string) => setFormState({ kind: "submitting", step: s });
     try {
       const signer = signerOrThrow();
@@ -440,6 +472,10 @@ function AaveGoldMarketCard({
       return;
     }
     setClosingState({ kind: "submitting", step: "Preparing…" });
+    if (await guardGas(() => handleClose())) {
+      setClosingState({ kind: "idle" });
+      return;
+    }
     const step = (s: string) => setClosingState({ kind: "submitting", step: s });
     try {
       const signer = signerOrThrow();
@@ -589,6 +625,7 @@ function AaveGoldMarketCard({
           actionSlot={borrowSlot}
         />
       ) : null}
+      {gas.element}
     </div>
   );
 }

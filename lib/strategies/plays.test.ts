@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import { borrowRouteFor } from "@/lib/borrow/route";
+import { xstockBySymbol } from "@/lib/jupiter/xstocks";
 import { isDepositable, uniswapPoolById } from "@/lib/uniswap/pools";
 
-import { PLAYS, resolvePlay, resolvePlayStatic } from "./plays";
+import {
+  PLAYS,
+  playCollateralChoices,
+  playNextChoices,
+  resolvePlay,
+  resolvePlayStatic,
+} from "./plays";
 import { uniswapOption, type StrategyRatesState, type UsdcEarnOption } from "./rates";
 
 // Every play names a catalog asset with a borrow market; a leverage play
@@ -31,6 +38,37 @@ describe("plays registry", () => {
       expect(isDepositable(pool!)).toBe(true);
       expect(play.preset.venue).toBe("uniswap");
     }
+  });
+
+  it("offers only borrowable assets as collateral choices, with the default among them", () => {
+    for (const p of PLAYS) {
+      const choices = playCollateralChoices(p);
+      if (p.collateral !== "any") {
+        expect(choices).toEqual([]);
+        continue;
+      }
+      expect(choices.length).toBeGreaterThan(1);
+      for (const x of choices) expect(borrowRouteFor(x.mint)).toBeDefined();
+      expect(choices.some((x) => x.symbol === p.symbol)).toBe(true);
+    }
+  });
+
+  it("resolves every next-pick choice in the catalog, with the default among them", () => {
+    for (const p of PLAYS) {
+      const choices = playNextChoices(p);
+      const preset = p.preset;
+      if (preset.kind !== "ladder" || !preset.nextChoices) {
+        expect(choices).toEqual([]);
+        continue;
+      }
+      expect(choices.length).toBeGreaterThan(1);
+      expect(choices.some((x) => x.symbol === preset.nextSymbol)).toBe(true);
+    }
+  });
+
+  it("lists the three golds for Stocks buy gold", () => {
+    const gold = PLAYS.find((p) => p.id === "nvda-gold")!;
+    expect(playNextChoices(gold).map((x) => x.symbol)).toEqual(["GLDx", "PAXG", "XAUt0"]);
   });
 
   it("keeps the copy inside the writing rules", () => {
@@ -69,6 +107,29 @@ describe("resolvePlay", () => {
   it("runs a play whose venue is answering", () => {
     const r = resolvePlay(PLAYS.find((p) => p.id === "nvda-carry")!, loaded);
     expect(r.blocked).toBeNull();
+  });
+
+  it("opens on the chosen collateral and next pick when the play allows them", () => {
+    const gold = PLAYS.find((p) => p.id === "nvda-gold")!;
+    const tsla = xstockBySymbol("TSLAx")!;
+    const xaut = xstockBySymbol("XAUt0")!;
+    const r = resolvePlay(gold, loaded, { collateralMint: tsla.mint, nextMint: xaut.mint });
+    expect(r.xstock.symbol).toBe("TSLAx");
+    expect(r.next?.symbol).toBe("XAUt0");
+  });
+
+  it("ignores a choice outside the play's set", () => {
+    const gold = PLAYS.find((p) => p.id === "nvda-gold")!;
+    const paxg = xstockBySymbol("PAXG")!;
+    const spy = xstockBySymbol("SPYx")!;
+    // Gold has no borrow market, so it cannot be the collateral; SPYx is not
+    // a metal, so it cannot be the next pick.
+    const r = resolvePlay(gold, loaded, { collateralMint: paxg.mint, nextMint: spy.mint });
+    expect(r.xstock.symbol).toBe("NVDAx");
+    expect(r.next?.symbol).toBe("PAXG");
+    // A fixed play takes no choice at all.
+    const fixed = resolvePlay(PLAYS.find((p) => p.id === "tsla-ladder")!, loaded, { collateralMint: spy.mint });
+    expect(fixed.xstock.symbol).toBe("TSLAx");
   });
 
   it("runs a pool play when its own pool is priced", () => {

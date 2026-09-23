@@ -137,7 +137,12 @@ export function RepayPanel({
   );
 }
 
-function RepayForm({
+// Exported for the market cards, which mount it in their Repay mode as the
+// "pay part of it" path beside their own Close control. It is the one copy of
+// the partial-repay money path for both venues; the cards do not carry a
+// second. `embedded` drops the panel chrome and opens straight on the amount
+// field, since the card's Close button already covers the full payoff.
+export function RepayForm({
   position,
   walletUsdc,
   solanaUsdcAtomic,
@@ -147,6 +152,7 @@ function RepayForm({
   onSettled,
   onClose,
   onBack,
+  embedded = false,
 }: {
   position: OpenBorrowPosition;
   walletUsdc: number;
@@ -155,8 +161,10 @@ function RepayForm({
   solPriceUsd: number | null;
   walletAddress: string;
   onSettled: () => Promise<void> | void;
+  // Embedded: called from the closed receipt's Done button only.
   onClose: () => void;
-  onBack: (() => void) | undefined;
+  onBack?: (() => void) | undefined;
+  embedded?: boolean;
 }) {
   const signTxBase64 = useSignSolanaTxBase64();
   // Sign-and-broadcast, for the funding legs (SOL swap, Trustware receipt).
@@ -182,7 +190,7 @@ function RepayForm({
   // collateral. So the default is a single confirm, and the amount field plus
   // slider stay behind an explicit "custom amount" choice rather than being the
   // first thing to solve.
-  const [custom, setCustom] = useState(false);
+  const [custom, setCustom] = useState(embedded);
   const [state, setState] = useState<RepayState>({ kind: "idle" });
 
   const debtUi = position.debtUi;
@@ -369,7 +377,8 @@ function RepayForm({
   // would have been submitted against a position that no longer exists.
   if (state.kind === "done" && state.closed) {
     return (
-      <PanelShell
+      <Shell
+        embedded={embedded}
         title={`${position.collateralSymbol} loan closed`}
         subtitle={`${position.venueLabel} · ${position.collateralUi.toFixed(4)} ${position.collateralSymbol} returned to your wallet`}
         onClose={onClose}
@@ -396,12 +405,13 @@ function RepayForm({
             Done
           </button>
         </div>
-      </PanelShell>
+      </Shell>
     );
   }
 
   return (
-    <PanelShell
+    <Shell
+      embedded={embedded}
       title={`Repay ${position.collateralSymbol}`}
       subtitle={`${position.venueLabel} · ${debtUi.toFixed(2)} ${position.debtSymbol} owed`}
       onClose={onClose}
@@ -618,19 +628,48 @@ function RepayForm({
                 : "Enter an amount"}
         </button>
 
-        <button
-          type="button"
-          onClick={() => {
-            setCustom((on) => !on);
-            setInput("");
-            setPayoffAll(false);
-            reset();
-          }}
-          className="w-full text-center text-[11px] text-white/50 underline-offset-2 transition-colors hover:text-white hover:underline"
-        >
-          {custom ? "Repay the full balance instead" : "Repay a custom amount"}
-        </button>
+        {/* Embedded in a market card, the card's own Close control is the
+            full-payoff path, so the toggle would only duplicate it. */}
+        {!embedded && (
+          <button
+            type="button"
+            onClick={() => {
+              setCustom((on) => !on);
+              setInput("");
+              setPayoffAll(false);
+              reset();
+            }}
+            className="w-full text-center text-[11px] text-white/50 underline-offset-2 transition-colors hover:text-white hover:underline"
+          >
+            {custom ? "Repay the full balance instead" : "Repay a custom amount"}
+          </button>
+        )}
       </div>
+    </Shell>
+  );
+}
+
+// The panel chrome, or none of it. Embedded in a market card the card's header
+// already names the market and the debt, so only the body is drawn.
+function Shell({
+  embedded,
+  title,
+  subtitle,
+  onClose,
+  onBack,
+  children,
+}: {
+  embedded: boolean;
+  title: string;
+  subtitle?: string;
+  onClose: () => void;
+  onBack?: () => void;
+  children: React.ReactNode;
+}) {
+  if (embedded) return <div className="space-y-4">{children}</div>;
+  return (
+    <PanelShell title={title} subtitle={subtitle} onClose={onClose} onBack={onBack}>
+      {children}
     </PanelShell>
   );
 }

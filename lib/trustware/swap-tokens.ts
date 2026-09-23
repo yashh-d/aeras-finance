@@ -49,15 +49,24 @@ export interface SwapToken {
 export const NATIVE_TOKEN_SENTINEL =
   "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
+// Monad names its native token by the zero address instead (the 0xEeee alias
+// 502s there; lib/morpho/constants.ts). Both spellings mean "the chain's gas
+// token" and both are treated as native below.
+export const ZERO_ADDRESS_SENTINEL = "0x0000000000000000000000000000000000000000";
+
 export const SWAP_CHAINS = {
   ethereum: "1",
   bnb: "56",
+  monad: "143",
+  base: "8453",
   solana: TRUSTWARE_SOLANA_CHAIN,
 } as const;
 
 const CHAIN_LABELS: Record<string, string> = {
   "1": "Ethereum",
   "56": "BNB Chain",
+  "143": "Monad",
+  "8453": "Base",
   [TRUSTWARE_SOLANA_CHAIN]: "Solana",
 };
 
@@ -79,7 +88,9 @@ function evm(
     // Lowercased so lookups are case-insensitive, matching equivalents.ts.
     address: address.toLowerCase(),
     decimals,
-    native: address.toLowerCase() === NATIVE_TOKEN_SENTINEL,
+    native:
+      address.toLowerCase() === NATIVE_TOKEN_SENTINEL ||
+      address.toLowerCase() === ZERO_ADDRESS_SENTINEL,
     logo,
   };
 }
@@ -162,6 +173,20 @@ export const SWAP_TOKENS: readonly SwapToken[] = [
   evm("56", "BNB", "BNB", NATIVE_TOKEN_SENTINEL, 18, "/logos/bnb.png"),
   evm("56", "ETH", "Ether", "0x2170ed0880ac9a755fd29b2688956bd959f933f8", 18, "/logos/eth.png"),
   evm("56", "BTCB", "Bitcoin BEP20", "0x7130d2a12b9bcbfae4f2634d864a1ee1ce3ead9c", 18),
+
+  // Monad and Base, added 2026-09-22 so the wallet's Swap sheet can move
+  // money to and from the chains the venues live on. Every route touching
+  // these four was already exercised live by a venue module before they were
+  // listed here: Solana USDC to Monad USDC and to MON (lib/morpho/fund.ts,
+  // scripts/morpho-fund-check.mts), Monad USDC and MON back to Solana USDC
+  // (lib/morpho/fund.ts, lib/shmonad/unwind.ts), Base USDC to Solana
+  // (scripts/trustware-base-check.mts) and Solana USDC to Base ETH
+  // (scripts/glider-check.mts). USDC is 6 decimals on both, native is 18.
+  // Native MON is the zero address; Base ETH takes the 0xEeee alias.
+  evm("143", "USDC", "USD Coin", "0x754704Bc059F8C67012fEd69BC8A327a5aafb603", 6, "/logos/usdc.png"),
+  evm("143", "MON", "Monad", ZERO_ADDRESS_SENTINEL, 18, "/logos/monad.png"),
+  evm("8453", "USDC", "USD Coin", "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", 6, "/logos/usdc.png"),
+  evm("8453", "ETH", "Ether", NATIVE_TOKEN_SENTINEL, 18, "/logos/eth.png"),
 ] as const;
 
 // The native sentinel is shared across all three chains, so a lookup keyed on

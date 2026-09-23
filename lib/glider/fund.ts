@@ -124,7 +124,7 @@ export async function planMag7xDeposit(args: {
   if (amountUsd < MAG7X_MIN_DEPOSIT_USD) {
     return {
       kind: "blocked",
-      reason: `The minimum deposit is $${MAG7X_MIN_DEPOSIT_USD}. Below that the route's flat cost and Glider's $1-per-holding swap floor eat too much of it.`,
+      reason: `The minimum deposit is $${MAG7X_MIN_DEPOSIT_USD}. Glider skips any trade under $5 per asset on this strategy, and there are eight, so a smaller deposit would leave slices unbought and the USDC idle.`,
     };
   }
   if (amountAtomic > BigInt(args.solanaUsdcAtomic || "0")) {

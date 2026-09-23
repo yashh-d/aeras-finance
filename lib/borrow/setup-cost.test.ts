@@ -27,15 +27,34 @@ describe("toSetupCost", () => {
     expect(cost.shortfallLamports).toBe(10_000);
   });
 
-  it("charges nothing when there is nothing to allocate", () => {
-    const cost = toSetupCost({
+  it("still charges the fee and the floor when there is nothing to allocate", () => {
+    // An ordinary transaction from an empty wallet. The runtime refuses a fee
+    // payer that ends between zero and the floor, so a wallet under the floor
+    // is as short as an empty one.
+    const empty = toSetupCost({
       venueLabel: "Kamino",
       items: [],
       haveLamports: 0,
       floorLamports: 650_240,
     });
-    expect(cost.totalLamports).toBe(0);
-    expect(cost.shortfallLamports).toBe(0);
+    expect(empty.totalLamports).toBe(30_000);
+    expect(empty.shortfallLamports).toBe(680_240);
+
+    const underFloor = toSetupCost({
+      venueLabel: "Kamino",
+      items: [],
+      haveLamports: 600_000,
+      floorLamports: 650_240,
+    });
+    expect(underFloor.shortfallLamports).toBe(80_240);
+
+    const funded = toSetupCost({
+      venueLabel: "Kamino",
+      items: [],
+      haveLamports: 5_000_000,
+      floorLamports: 650_240,
+    });
+    expect(funded.shortfallLamports).toBe(0);
   });
 });
 

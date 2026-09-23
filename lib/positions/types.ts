@@ -25,6 +25,11 @@ export interface PositionRow {
   // notional for a perp. Groups total this, which is why each group states what
   // its own total means.
   usd: number;
+  // Set when `usd` is a real figure for the row but not a member of what the
+  // group totals. Collateral posted with no loan against it is the case that
+  // needed it: the row is worth showing at its value, and the Borrow group
+  // totals what is owed, which is nothing.
+  excludeFromTotal?: boolean;
   // The position in TOKENS, when the row is denominated in one. Set by the earn
   // venues, where a deposit really is a quantity of an asset, so the row can be
   // folded into the wallet's holdings list without inferring a quantity from a

@@ -124,7 +124,7 @@ const GAS: Partial<Record<UniswapChainId, GasPolicy>> = {
 // mint with its NFT, a decrease with collect, a claim), which planEthGas
 // prices at the live gas price and refuses past 2% of the position.
 const ETHEREUM_GAS_FLOOR_WEI = 2_000_000_000_000_000n; // 0.002 ETH
-const ETHEREUM_GAS_UNITS_FULL_CYCLE = 1_000_000n;
+export const ETHEREUM_GAS_UNITS_FULL_CYCLE = 1_000_000n;
 
 export function gasFloorWei(chainId: UniswapChainId): bigint {
   return GAS[chainId]?.floorWei ?? ETHEREUM_GAS_FLOOR_WEI;

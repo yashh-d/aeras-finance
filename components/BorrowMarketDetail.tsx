@@ -97,6 +97,31 @@ export function MarketDetailHeader({
 export const BORROW_PILL_CLASS =
   "aeras-press w-full rounded-full px-4 py-2.5 text-sm font-medium text-white bg-aeras-blue hover:bg-aeras-blue-medium disabled:cursor-not-allowed disabled:opacity-40";
 
+// The one line under a card's Repay mode that switches between closing the
+// position and paying part of the debt. Shared by both venue cards so the two
+// say the same thing.
+export type RepayKind = "close" | "partial";
+
+export function RepayKindToggle({
+  kind,
+  onChange,
+}: {
+  kind: RepayKind;
+  onChange: (kind: RepayKind) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(kind === "close" ? "partial" : "close")}
+      className="w-full text-center text-[11px] text-white/50 underline-offset-2 transition-colors hover:text-white hover:underline"
+    >
+      {kind === "close"
+        ? "Repay part of the loan instead"
+        : "Close the position instead"}
+    </button>
+  );
+}
+
 function ModeButton({
   label,
   active,
