@@ -156,6 +156,18 @@ not. Plays named for their asset or tied to its pool (the two index
 leverage plays, the Tesla ladder, Elon Maxxing, the two LP plays) stay
 fixed. The grid cards keep showing each play's default.
 
+Asked for on 2026-09-23: five "Your stock" plays lead the grid, each with
+a preset asset so there is nothing to decide and the collateral open. Your
+stock funds the Mag 7 (glider), Your stock buys gold (ladder into the
+metals), Your stock buys crypto (earn with `destinationChoices`: the ETH
+pools on Ethereum and Base, the cbBTC pool on Monad, or MON staked, chosen
+from a third dropdown labelled "Loan goes into"), Your stock, yield maxxed
+(`venue: "best"`, the highest-paying USDC vault at render, decided by
+`bestUsdcDestination`), and Your stock, the Monad believer (shmonad). The
+named plays under them are unchanged. A `ResolvedPlay` now carries
+`destination`, and everything the grid prices reads it rather than the
+preset.
+
 The tickets gain additive props so a play can pre-fill them: `EarnTicket`
 takes `initialVenue` and `initialRatio`; `LeverageTicket` takes
 `initialLeverage`; `LadderTicket` takes `initialRatio` and

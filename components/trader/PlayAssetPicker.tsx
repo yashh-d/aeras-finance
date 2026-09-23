@@ -1,13 +1,13 @@
 "use client";
 
-// The asset dropdown a play's detail view opens with, for a play that lets
-// the user change what it buys: the collateral, or what a ladder buys next.
-// A trigger with the mark, symbol and chevron where the static symbol pill
-// sat, and a panel with search, the catalog's group tabs and rows drawn the
-// way the Home chart's picker (components/ChartAssetPicker.tsx) draws them:
-// a mark, a name, a symbol and which shelf it sits on. The rows choose what
-// the ticket opens on, not what it signs; the ticket still prices and signs
-// everything.
+// The dropdown a play's detail view opens with, for a play that lets the
+// user change what it does: the collateral, what a ladder buys next, or
+// where an earn play's loan goes. A trigger with the mark, symbol and
+// chevron where the static symbol pill sat, and a panel with search, group
+// tabs and rows drawn the way the Home chart's picker
+// (components/ChartAssetPicker.tsx) draws them: a mark, a name, a symbol
+// and which shelf it sits on. The rows choose what the ticket opens on, not
+// what it signs; the ticket still prices and signs everything.
 
 import { ChevronDown, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +25,21 @@ const GROUP_TAG: Record<XStockCategory, string> = {
   metals: "Metal",
 };
 
+// One row: what AssetLogo draws, the name under it, the shelf tag at the
+// right edge, and the catalog group when the set spans more than one.
+export interface PickerRow {
+  key: string;
+  symbol: string;
+  name: string;
+  logo?: string;
+  tag: string;
+  group?: XStockCategory;
+}
+
+export function assetRow(x: XStock): PickerRow {
+  return { key: x.mint, symbol: x.symbol, name: x.name, logo: x.logo, tag: GROUP_TAG[x.category], group: x.category };
+}
+
 export function PlayAssetPicker({
   label,
   choices,
@@ -33,9 +48,9 @@ export function PlayAssetPicker({
 }: {
   // What the choice is, for the trigger's eyebrow and the panel's placeholder.
   label: string;
-  choices: readonly XStock[];
-  value: XStock;
-  onChange: (next: XStock) => void;
+  choices: readonly PickerRow[];
+  value: PickerRow;
+  onChange: (next: PickerRow) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -47,14 +62,14 @@ export function PlayAssetPicker({
 
   // Only the shelves the choice set spans get a tab; one shelf gets none.
   const groups = useMemo(
-    () => XSTOCK_CATEGORIES.filter((c) => choices.some((x) => x.category === c.id)),
+    () => XSTOCK_CATEGORIES.filter((c) => choices.some((x) => x.group === c.id)),
     [choices],
   );
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
     return choices.filter((x) => {
-      if (group !== "all" && x.category !== group) return false;
+      if (group !== "all" && x.group !== group) return false;
       if (!q) return true;
       return x.symbol.toLowerCase().includes(q) || x.name.toLowerCase().includes(q);
     });
@@ -88,7 +103,7 @@ export function PlayAssetPicker({
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open, close]);
 
-  function choose(x: XStock) {
+  function choose(x: PickerRow) {
     onChange(x);
     close();
   }
@@ -150,7 +165,7 @@ export function PlayAssetPicker({
                   setQuery(e.target.value);
                   setCursor(0);
                 }}
-                placeholder={`Search ${choices.length} assets`}
+                placeholder={`Search ${choices.length} choices`}
                 className="w-full bg-transparent py-2.5 text-sm text-white outline-none placeholder:text-white/35"
               />
             </div>
@@ -185,10 +200,10 @@ export function PlayAssetPicker({
               </p>
             )}
             {rows.map((x, i) => {
-              const current = x.mint === value.mint;
+              const current = x.key === value.key;
               return (
                 <button
-                  key={x.mint}
+                  key={x.key}
                   data-row
                   type="button"
                   role="option"
@@ -209,7 +224,7 @@ export function PlayAssetPicker({
                     <div className="truncate text-[11px] text-white/45">{x.symbol}</div>
                   </div>
                   <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.12em] text-white/35">
-                    {GROUP_TAG[x.category]}
+                    {x.tag}
                   </span>
                 </button>
               );

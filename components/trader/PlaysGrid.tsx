@@ -13,7 +13,6 @@ import { LadderTicket } from "@/components/strategies/LadderTicket";
 import { LeverageTicket } from "@/components/strategies/LeverageTicket";
 import { borrowRouteFor } from "@/lib/borrow/route";
 import type { JupiterPriceMap } from "@/lib/jupiter/prices";
-import type { XStock } from "@/lib/jupiter/xstocks";
 import type { AccountBalances } from "@/lib/solana/balances";
 import {
   earnNetApy,
@@ -22,16 +21,20 @@ import {
   maxLeverageForRoute,
 } from "@/lib/strategies/math";
 import {
+  destinationKey,
+  destinationPool,
   PLAYS,
   playCollateralChoices,
+  playDestinationChoices,
   playNextChoices,
-  playPool,
   resolvePlay,
   type Play,
   type PlayChoice,
+  type PlayDestination,
   type PlayTag,
   type ResolvedPlay,
 } from "@/lib/strategies/plays";
+import { quoteToken, UNISWAP_CHAINS } from "@/lib/uniswap/pools";
 import {
   useStrategyRates,
   type StrategyRates,
@@ -42,7 +45,7 @@ import { pickRun, useStrategyRuns, type StrategyRun, type StrategyRunsStore } fr
 import { assetMark, destinationMarks, type Mark } from "@/lib/trader/exposures";
 
 import { ExposureStrip } from "./ExposureStrip";
-import { PlayAssetPicker } from "./PlayAssetPicker";
+import { assetRow, PlayAssetPicker, type PickerRow } from "./PlayAssetPicker";
 import { PositionSummary } from "./PositionSummary";
 import {
   BackLink,
@@ -71,21 +74,48 @@ const FILTERS: readonly { id: Filter; label: string }[] = [
   { id: "Fees", label: "Fees" },
 ];
 
-// The venue a play's loan goes to, when it is an earn play. A play naming a
-// Uniswap pool resolves to that pool's option, not to the venue's
-// best-paying one.
-function playOption(play: Play, rates: StrategyRatesState): UsdcEarnOption | null {
-  if (play.preset.kind !== "earn") return null;
-  const pool = playPool(play);
-  if (pool) {
+// The venue a play's loan goes to, when it is an earn play, as resolved
+// (the user's choice, or the preset). A destination naming a Uniswap pool
+// resolves to that pool's option, not to the venue's best-paying one.
+function playOption(r: ResolvedPlay, rates: StrategyRatesState): UsdcEarnOption | null {
+  if (r.play.preset.kind !== "earn") return null;
+  if (r.pool) {
+    const pool = r.pool;
     return (
       rates.uniswapOptions.find(
         (o) => o.uniswapPool?.id.toLowerCase() === pool.id.toLowerCase(),
       ) ?? null
     );
   }
-  const venue = play.preset.venue;
+  const venue = r.destination?.venue;
   return (venue ? rates.earnOptions.find((o) => o.venue === venue) : null) ?? rates.defaultEarn;
+}
+
+// A destination as a picker row: the coin or vault the loan becomes, drawn
+// with its own mark. A pool shows the side that is not the dollar, since
+// that is the exposure the row is choosing. Names stay off the lending
+// venues, as every Trader surface does.
+function destinationRow(d: PlayDestination): PickerRow {
+  const key = destinationKey(d);
+  const pool = destinationPool(d);
+  if (pool) {
+    const chain = UNISWAP_CHAINS[pool.chainId].label;
+    const quote = quoteToken(pool);
+    const side = [pool.token0, pool.token1].find((t) => t !== quote) ?? pool.token0;
+    return { key, symbol: side.symbol, name: `${pool.label} pool on ${chain}`, logo: side.logo, tag: "Pool" };
+  }
+  const marks = destinationMarks(d.venue);
+  const m = marks[0];
+  const name =
+    d.venue === "shmonad"
+      ? "MON, staked as shMON"
+      : d.venue === "glider"
+        ? "Bitwise Mag7X on Base"
+        : d.venue === "morpho"
+          ? "USDC vault on Monad"
+          : "USDC vault on Solana";
+  const tag = d.venue === "shmonad" ? "Stake" : d.venue === "glider" ? "Portfolio" : "Vault";
+  return { key, symbol: m?.symbol ?? d.venue, name, logo: m?.logo, tag };
 }
 
 // What the play ends up holding, as marks: the asset bought, then what the
@@ -94,8 +124,8 @@ function playMarks(r: ResolvedPlay, rates: StrategyRatesState): { from: Mark; to
   const from = assetMark(r.xstock);
   const { play } = r;
   if (play.preset.kind === "earn") {
-    const option = playOption(play, rates);
-    const venue = option?.venue ?? play.preset.venue;
+    const option = playOption(r, rates);
+    const venue = option?.venue ?? r.destination?.venue;
     // A pool draws as its pair. The play's own pool stands in before the
     // rates land, so the marks do not change under the reader.
     const pool = option?.uniswapPool ?? r.pool;
@@ -123,7 +153,7 @@ function headline(r: ResolvedPlay, row: StrategyRates | null, rates: StrategyRat
   const route = row?.route ?? borrowRouteFor(r.xstock.mint)!;
   if (r.blocked) return { label: r.blocked, value: "—", tone: "muted" };
   if (play.preset.kind === "earn") {
-    const option = playOption(play, rates);
+    const option = playOption(r, rates);
     const borrowApr = row?.borrowApr ?? null;
     if (!option || borrowApr == null) {
       return { label: "Net on what you put in", value: "—", tone: "muted" };
@@ -295,9 +325,15 @@ function PlayDetail({
 }) {
   const [choice, setChoice] = useState<PlayChoice>({});
   const resolved = useMemo(() => resolvePlay(play, rates, choice), [play, rates, choice]);
-  const collateralChoices = useMemo(() => playCollateralChoices(play), [play]);
-  const nextChoices = useMemo(() => playNextChoices(play), [play]);
-  const { xstock, kind, next } = resolved;
+  const collateralChoices = useMemo(() => playCollateralChoices(play).map(assetRow), [play]);
+  const nextChoices = useMemo(() => playNextChoices(play).map(assetRow), [play]);
+  const destinationChoices = useMemo(() => playDestinationChoices(play), [play]);
+  const destinationRows = useMemo(() => destinationChoices.map(destinationRow), [destinationChoices]);
+  const { xstock, kind, next, destination } = resolved;
+  const destinationValue =
+    destination && destinationRows.length > 0
+      ? (destinationRows.find((r) => r.key === destinationKey(destination)) ?? null)
+      : null;
   const row = rates.rows.find((r) => r.xstock.mint === xstock.mint) ?? null;
   const saved = pickRun(store.runs, kind, xstock.mint);
   const h = headline(resolved, row, rates);
@@ -321,8 +357,8 @@ function PlayDetail({
                 <PlayAssetPicker
                   label="Buy and borrow against"
                   choices={collateralChoices}
-                  value={xstock}
-                  onChange={(x) => setChoice((c) => ({ ...c, collateralMint: x.mint }))}
+                  value={assetRow(xstock)}
+                  onChange={(x) => setChoice((c) => ({ ...c, collateralMint: x.key }))}
                 />
               ) : (
                 <Pill>{xstock.symbol}</Pill>
@@ -331,11 +367,22 @@ function PlayDetail({
                 <PlayAssetPicker
                   label="Then buy"
                   choices={nextChoices}
-                  value={next}
-                  onChange={(x) => setChoice((c) => ({ ...c, nextMint: x.mint }))}
+                  value={assetRow(next)}
+                  onChange={(x) => setChoice((c) => ({ ...c, nextMint: x.key }))}
                 />
               ) : (
                 next && <Pill>{next.symbol}</Pill>
+              )}
+              {destinationValue && (
+                <PlayAssetPicker
+                  label="Loan goes into"
+                  choices={destinationRows}
+                  value={destinationValue}
+                  onChange={(r) => {
+                    const d = destinationChoices.find((x) => destinationKey(x) === r.key);
+                    if (d) setChoice((c) => ({ ...c, destination: d }));
+                  }}
+                />
               )}
             </div>
           </div>
@@ -348,9 +395,8 @@ function PlayDetail({
           <DetailCard title="Run it">
             {row ? (
               <PlayTicket
-                key={`${xstock.mint}-${next?.mint ?? ""}`}
-                play={play}
-                next={next}
+                key={`${xstock.mint}-${next?.mint ?? ""}-${destination ? destinationKey(destination) : ""}`}
+                resolved={resolved}
                 row={row}
                 rates={rates}
                 store={store}
@@ -397,8 +443,7 @@ function PlayDetail({
 // same asset mounts fresh, and by the caller on the chosen assets so a
 // different choice does too.
 function PlayTicket({
-  play,
-  next,
+  resolved,
   row,
   rates,
   store,
@@ -408,10 +453,9 @@ function PlayTicket({
   prices,
   onRefresh,
 }: {
-  play: Play;
-  // The ladder's first pick as resolved, which is the user's choice when
-  // the play offers one.
-  next: XStock | null;
+  // The play with the user's choices applied: the collateral, the ladder's
+  // first pick, the earn destination.
+  resolved: ResolvedPlay;
   row: StrategyRates;
   rates: StrategyRatesState;
   store: StrategyRunsStore;
@@ -421,9 +465,10 @@ function PlayTicket({
   prices: JupiterPriceMap | null;
   onRefresh: () => Promise<void> | void;
 }) {
+  const { play, next } = resolved;
   const common = { row, walletAddress, balances, prices, store, saved, onRefresh };
   if (play.preset.kind === "earn") {
-    const option = playOption(play, rates);
+    const option = playOption(resolved, rates);
     // A saved run's own venue always rides along, so its close path
     // withdraws from the venue that holds the money.
     const savedVenue = saved?.data.kind === "earn" ? saved.data.earnVenue : null;

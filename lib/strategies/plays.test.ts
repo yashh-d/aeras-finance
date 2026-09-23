@@ -132,6 +132,43 @@ describe("resolvePlay", () => {
     expect(fixed.xstock.symbol).toBe("TSLAx");
   });
 
+  it("opens on the chosen destination when the play offers one, and ignores one outside the set", () => {
+    const crypto = PLAYS.find((p) => p.id === "your-crypto")!;
+    const base = resolvePlay(crypto, loaded);
+    expect(base.pool?.label).toBe("USDC / WETH");
+    const mon = resolvePlay(crypto, loaded, { destination: { venue: "shmonad" } });
+    expect(mon.destination).toEqual({ venue: "shmonad" });
+    expect(mon.pool).toBeNull();
+    const glider = resolvePlay(crypto, loaded, { destination: { venue: "glider" } });
+    expect(glider.pool?.label).toBe("USDC / WETH");
+    // A fixed destination takes no choice.
+    const monad = resolvePlay(PLAYS.find((p) => p.id === "your-monad")!, loaded, { destination: { venue: "glider" } });
+    expect(monad.destination).toEqual({ venue: "shmonad", poolId: undefined });
+  });
+
+  it("sends the yield play to the best-paying USDC vault live", () => {
+    const play = PLAYS.find((p) => p.id === "your-yield")!;
+    const r = resolvePlay(play, {
+      ...loaded,
+      earnOptions: [
+        { venue: "morpho", label: "Vault", apy: 0.06 },
+        { venue: "kamino", label: "Vault", apy: 0.09 },
+        { venue: "shmonad", label: "Stake", apy: 0.2, monDenominated: true },
+        ...poolOptions.slice(0, 1),
+      ],
+    });
+    expect(r.destination).toEqual({ venue: "kamino" });
+    expect(r.blocked).toBeNull();
+    // Nothing chosen while the rates load, and not blocked either.
+    const loading = resolvePlay(play, { rows: [], defaultEarn: null, earnOptions: [], uniswapOptions: [], loading: true });
+    expect(loading.destination).toBeNull();
+    expect(loading.blocked).toBeNull();
+  });
+
+  it("lists the customisable plays first", () => {
+    expect(PLAYS.slice(0, 5).every((p) => p.collateral === "any")).toBe(true);
+  });
+
   it("runs a pool play when its own pool is priced", () => {
     const r = resolvePlay(PLAYS.find((p) => p.id === "nvda-lp")!, loaded);
     expect(r.blocked).toBeNull();
