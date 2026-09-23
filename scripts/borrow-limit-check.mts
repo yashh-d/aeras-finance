@@ -43,13 +43,13 @@ import {
   priceFromDecimal,
   priceFromJupiterOracle,
   type CollateralInput,
-} from "../lib/borrow/limit.ts";
+} from "../lib/borrow/limit";
 import {
   KAMINO_USDC_BORROW,
   KAMINO_XSTOCKS_MARKET,
   KAMINO_XSTOCK_COLLATERALS,
-} from "../lib/kamino/reserves.ts";
-import { XSTOCK_BORROW_VAULTS } from "../lib/jupiter/borrow.ts";
+} from "../lib/kamino/reserves";
+import { XSTOCK_BORROW_VAULTS } from "../lib/jupiter/borrow";
 
 const KAMINO_METRICS = `https://api.kamino.finance/kamino-market/${KAMINO_XSTOCKS_MARKET}/reserves/metrics`;
 const KAMINO_OBLIGATIONS = (wallet: string) =>
